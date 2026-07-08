@@ -1,0 +1,149 @@
+/* ================================================
+   Layout — Sidebar + Header + Content
+   ================================================ */
+
+/* Sidebar */
+.app-sidebar {
+  background: rgba(245, 245, 247, 0.85) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-right: 0.5px solid var(--border-default) !important;
+}
+
+.app-sidebar .ant-layout-sider-children {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-sidebar .ant-menu {
+  background: transparent !important;
+  border-inline-end: none !important;
+  padding: 8px;
+}
+
+.app-sidebar .ant-menu-item {
+  margin: 2px 0 !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-secondary) !important;
+  font-weight: 500;
+  font-size: 13.5px;
+  height: 38px !important;
+  line-height: 38px !important;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.app-sidebar .ant-menu-item:hover {
+  color: var(--text-primary) !important;
+  background: rgba(0, 0, 0, 0.04) !important;
+}
+
+.app-sidebar .ant-menu-item-selected {
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #0071e3 0%, #0077ed 100%) !important;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.25);
+}
+
+.app-sidebar .ant-menu-item-selected .anticon {
+  color: #ffffff !important;
+}
+
+.app-sidebar .ant-menu-item .anticon {
+  color: inherit !important;
+  font-size: 16px;
+}
+
+/* Logo */
+.sidebar-logo {
+  height: var(--header-height);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 10px;
+  border-bottom: 0.5px solid var(--border-default);
+  flex-shrink: 0;
+}
+
+.sidebar-logo-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--brand-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 15px;
+  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.25);
+}
+
+.sidebar-logo-text {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+
+/* Header */
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 99;
+  height: var(--header-height) !important;
+  line-height: var(--header-height) !important;
+  padding: 0 24px !important;
+  background: rgba(255, 255, 255, 0.72) !important;
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 0.5px solid var(--border-default);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* User menu pill */
+.user-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 4px;
+  border-radius: 20px;
+  background: var(--surface-secondary);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  line-height: 1.4;
+}
+.user-pill:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.user-pill-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--brand-gradient);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.user-pill-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* Content */
+.app-content {
+  background: var(--surface-secondary);
+  min-height: calc(100vh - var(--header-height));
+}
+
+.app-content-inner {
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  padding: 24px;
+}

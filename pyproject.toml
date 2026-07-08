@@ -1,0 +1,57 @@
+[project]
+name = "alibabacloud-polardb-tool-agentic-server"
+version = "0.1.0"
+description = "alibabacloud polardb tool agentic server — MCP gateway for PolarDB MySQL instances"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "alembic>=1.13.0",
+    "asyncmy>=0.2.9",
+    "asyncpg>=0.29.0",
+    "aiosqlite>=0.20.0",
+    "authlib>=1.3.0",
+    "python-jose[cryptography]>=3.3.0",
+    "cryptography>=42.0.0",
+    "sqlparse>=0.5.0",
+    "pydantic-settings>=2.0.0",
+    "pyyaml>=6.0",
+    "alibabacloud-polardb20170801>=7.3.0",
+    "alibabacloud-sts20150401>=1.1.0",
+    "httpx>=0.27.0",
+    "mcp>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "types-PyYAML>=6.0",
+    "types-python-jose>=3.3",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true

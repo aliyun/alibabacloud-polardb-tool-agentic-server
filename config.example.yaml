@@ -1,0 +1,102 @@
+server:
+  host: "0.0.0.0"
+  port: 18760
+  public_base_url: "http://localhost:18760"  # REQUIRED for production: actual external URL (env: PAS_SERVER_PUBLIC_BASE_URL)
+  workers: 4
+  log_level: "info"
+  dev_mode: false                     # set true to suppress production validations
+  cors_origins: []                    # env: PAS_SERVER_CORS_ORIGINS (comma-separated)
+
+auth:
+  mode: "builtin"                     # "oidc" | "builtin"
+  oidc:
+    preset: null                      # reserved for future presets
+    # Option 1: Auto-discovery (if IdP supports .well-known/openid-configuration)
+    discovery_url: null               # env: PAS_OIDC_DISCOVERY_URL
+    # Option 2: Manual endpoint configuration (when IdP has no discovery)
+    authorization_endpoint: null      # env: PAS_OIDC_AUTHORIZATION_ENDPOINT
+    token_endpoint: null              # env: PAS_OIDC_TOKEN_ENDPOINT
+    userinfo_endpoint: null           # env: PAS_OIDC_USERINFO_ENDPOINT
+    jwks_uri: null                    # env: PAS_OIDC_JWKS_URI (required for id_token verification)
+    # Client credentials
+    client_id: ""                     # env: PAS_OIDC_CLIENT_ID
+    client_secret: ""                 # env: PAS_OIDC_CLIENT_SECRET
+    # Scopes and claim mapping (adapt per IdP)
+    scopes: ["openid", "profile", "email"]  # env: PAS_OIDC_SCOPES (comma-separated)
+    user_id_claim: "sub"              # env: PAS_OIDC_USER_ID_CLAIM (OIDC provider uses "emp_id")
+    display_name_claim: "name"        # env: PAS_OIDC_DISPLAY_NAME_CLAIM (OIDC provider uses "nickname")
+    email_claim: "email"              # env: PAS_OIDC_EMAIL_CLAIM (OIDC provider uses "account")
+    # Override the OAuth callback URL sent to IdP (default: {public_base_url}/auth/oidc/callback)
+    # Required when IdP (e.g. OIDC provider) whitelists domains that differ from public_base_url
+    redirect_uri: null                # env: PAS_OIDC_REDIRECT_URI
+    # Non-standard IdP behavior
+    userinfo_token_method: "bearer_header"  # "bearer_header" | "form_post" (OIDC provider uses form_post)
+    # Identity provider name (stored in UserExternalIdentity for multi-IdP distinction)
+    provider_name: "oidc"             # env: PAS_OIDC_PROVIDER_NAME (e.g. "example-sso")
+    # IdP-side PKCE (send code_challenge to external IdP)
+    idp_pkce: false                   # env: PAS_OIDC_IDP_PKCE (OIDC provider supports S256; external IdP does not)
+    # Algorithms for id_token JWT verification
+    id_token_algorithms: ["RS256", "ES256"]  # env: PAS_OIDC_ID_TOKEN_ALGORITHMS (comma-separated)
+  builtin:
+    admin_username: "admin"
+    # Initial password via env: PAS_ADMIN_INITIAL_PASSWORD (required for builtin mode first run)
+  jwt:
+    algorithm: "RS256"
+    private_key_path: ""              # auto-generated if empty (dev only; set for production)
+    public_key_path: ""               # auto-generated if empty (dev only; set for production)
+    access_token_expire_minutes: 60
+    refresh_token_expire_days: 30
+
+logging:
+  log_dir: "log"                        # env: PAS_LOGGING_LOG_DIR
+  log_file: "alibabacloud-polardb-tool-agentic-server.log"  # env: PAS_LOGGING_LOG_FILE
+  max_bytes: 104857600                   # 100MB, env: PAS_LOGGING_MAX_BYTES
+  backup_count: 10                       # env: PAS_LOGGING_BACKUP_COUNT
+  timezone: "UTC+8"                      # env: PAS_LOGGING_TIMEZONE (e.g. UTC, UTC+8, UTC-5)
+
+database:
+  # SQLite for dev/single-node ONLY. Production multi-pod MUST use MySQL or PostgreSQL.
+  url: "sqlite+aiosqlite:///data/polardb_agentic.db"
+  # url: "mysql+asyncmy://user:pass@host:3306/polardb_agentic"
+  # url: "postgresql+asyncpg://user:pass@host:5432/polardb_agentic"
+  pool_size: 10
+  echo: false
+
+aliyun:
+  access_key_id: ""
+  access_key_secret: ""
+  region_id: "cn-hangzhou"
+
+polardb:
+  agentic_db:
+    enabled: true
+    db_cluster_class: "polar.mysql.ag.xs"
+    auto_stop_minutes: 30
+    auto_delete_days: 90
+    notify_before_delete_days: 7
+  connection_pool:
+    max_connections_per_pool: 5
+    idle_timeout_seconds: 300
+    max_total_pools: 200
+  endpoint_cache_ttl_seconds: 300
+
+sql_security:
+  max_rows: 1000
+  timeout_ms: 10000
+  max_timeout_ms: 30000
+  blocked_keywords: ["DROP DATABASE"]                          # always blocked, confirm cannot bypass
+  confirmable_statement_types: ["DROP", "TRUNCATE", "ALTER", "DELETE"]  # requires confirm=true
+  # blocked_statement_types is deprecated — use confirmable_statement_types instead
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+  audit:
+    enabled: true
+    encrypt_sql_text: false
+    retention_days: 90
+
+encryption:
+  method: "aes-256-gcm"
+  key: ""                              # set via env PAS_ENCRYPTION_KEY
+  kms_key_id: ""
