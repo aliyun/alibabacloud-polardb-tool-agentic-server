@@ -3,7 +3,10 @@ revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.15'",
-    "python_full_version < '3.15'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32'",
+    "python_full_version < '3.14' and sys_platform == 'win32'",
+    "python_full_version < '3.14' and sys_platform != 'win32'",
 ]
 
 [[package]]
@@ -207,6 +210,72 @@ dependencies = [
     { name = "alibabacloud-credentials" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ab/98/d7111245f17935bf72ee9bea60bbbeff2bc42cdfe24d2544db52bc517e1a/alibabacloud_gateway_spi-0.0.3.tar.gz", hash = "sha256:10d1c53a3fc5f87915fbd6b4985b98338a776e9b44a0263f56643c5048223b8b", size = 4249, upload-time = "2025-02-23T16:29:54.222Z" }
+
+[[package]]
+name = "alibabacloud-polardb-tool-agentic-server"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "alembic" },
+    { name = "alibabacloud-polardb20170801" },
+    { name = "alibabacloud-sts20150401" },
+    { name = "asyncmy" },
+    { name = "asyncpg" },
+    { name = "authlib" },
+    { name = "cryptography" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "mcp" },
+    { name = "pydantic-settings" },
+    { name = "python-dotenv" },
+    { name = "python-jose", extra = ["cryptography"] },
+    { name = "pyyaml" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "sqlparse" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "httpx" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+    { name = "types-python-jose" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiosqlite", specifier = ">=0.20.0" },
+    { name = "alembic", specifier = ">=1.13.0" },
+    { name = "alibabacloud-polardb20170801", specifier = ">=7.3.0" },
+    { name = "alibabacloud-sts20150401", specifier = ">=1.1.0" },
+    { name = "asyncmy", specifier = ">=0.2.9" },
+    { name = "asyncpg", specifier = ">=0.29.0" },
+    { name = "authlib", specifier = ">=1.3.0" },
+    { name = "cryptography", specifier = ">=42.0.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "httpx", specifier = ">=0.27.0" },
+    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
+    { name = "mcp", specifier = ">=1.28.1" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
+    { name = "pydantic-settings", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
+    { name = "sqlparse", specifier = ">=0.5.0" },
+    { name = "types-python-jose", marker = "extra == 'dev'", specifier = ">=3.3" },
+    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "alibabacloud-polardb20170801"
@@ -1236,7 +1305,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.27.2"
+version = "1.28.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1254,9 +1323,9 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/27/3c/347cf965d313f5d41764e7d46bea6ffe7d9ef13b983cc429b0340962a082/mcp-1.27.2.tar.gz", hash = "sha256:8e02db104096d1c25b28e64bde29a5c32b31bc241710213e12fd4d84985bdfef", size = 621116, upload-time = "2026-05-29T17:16:04.039Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6e/77/9450b8f251a13affb6281997d0523c4615f8a8b35d0b21ff30db3a5aac9d/mcp-1.28.1.tar.gz", hash = "sha256:d51e36a5f5644faea4f85ea649bfffa6bc6c26770d42798ad6a3de3d2ba69683", size = 638501, upload-time = "2026-06-26T12:57:29.093Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c9/11/252c6f971dc4f16af1d98a1c469d8ba523aab00d1bb76b4d3bc1ff32eacc/mcp-1.27.2-py3-none-any.whl", hash = "sha256:d6ff5160c6ca65d93013626efb3fc249de683c30b2d8570755ceddd490344de5", size = 220498, upload-time = "2026-05-29T17:16:02.442Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/5e/d118fce19f87a2e7d8101c35c8ae0ec289098a4df0ff244cec23e415aca0/mcp-1.28.1-py3-none-any.whl", hash = "sha256:2726bca5e7193f61c5dde8b12500a6de2d9acf6d1a1c0be9e8c2e706437991df", size = 222620, upload-time = "2026-06-26T12:57:27.218Z" },
 ]
 
 [[package]]
@@ -1462,72 +1531,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe
 wheels = [
     { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538, upload-time = "2025-05-15T12:30:06.134Z" },
 ]
-
-[[package]]
-name = "alibabacloud-polardb-tool-agentic-server"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "alibabacloud-polardb20170801" },
-    { name = "alibabacloud-sts20150401" },
-    { name = "asyncmy" },
-    { name = "asyncpg" },
-    { name = "authlib" },
-    { name = "cryptography" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "mcp" },
-    { name = "pydantic-settings" },
-    { name = "python-dotenv" },
-    { name = "python-jose", extra = ["cryptography"] },
-    { name = "pyyaml" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "sqlparse" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "httpx" },
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-    { name = "types-python-jose" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.20.0" },
-    { name = "alembic", specifier = ">=1.13.0" },
-    { name = "alibabacloud-polardb20170801", specifier = ">=7.3.0" },
-    { name = "alibabacloud-sts20150401", specifier = ">=1.1.0" },
-    { name = "asyncmy", specifier = ">=0.2.9" },
-    { name = "asyncpg", specifier = ">=0.29.0" },
-    { name = "authlib", specifier = ">=1.3.0" },
-    { name = "cryptography", specifier = ">=42.0.0" },
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
-    { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27.0" },
-    { name = "mcp", specifier = ">=1.0.0" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10.0" },
-    { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
-    { name = "sqlparse", specifier = ">=0.5.0" },
-    { name = "types-python-jose", marker = "extra == 'dev'", specifier = ">=3.3" },
-    { name = "types-pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "propcache"
