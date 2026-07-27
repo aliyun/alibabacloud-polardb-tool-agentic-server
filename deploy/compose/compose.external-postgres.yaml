@@ -1,0 +1,41 @@
+name: polardb-agentic
+
+x-pas-image: &pas-image
+  image: ${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.1}
+  environment: &pas-environment
+    PAS_DATABASE_URL: ${PAS_DATABASE_URL:?set PAS_DATABASE_URL}
+    PAS_ENCRYPTION_KEY: ${PAS_ENCRYPTION_KEY:?set PAS_ENCRYPTION_KEY}
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  migrate:
+    <<: *pas-image
+    command:
+      - database
+      - migrate
+    restart: "no"
+
+  server:
+    <<: *pas-image
+    command:
+      - serve
+    restart: unless-stopped
+    init: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - ${PAS_PORT:-18760}:18760
+    volumes:
+      - pas-log:/app/log
+      - pas-run:/var/run/pas
+
+volumes:
+  pas-log:
+  pas-run:

@@ -1,0 +1,64 @@
+name: polardb-agentic
+
+x-pas-image: &pas-image
+  image: ${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.1}
+  environment: &pas-environment
+    PAS_DATABASE_URL: mysql+asyncmy://pas:${MYSQL_PASSWORD:?set MYSQL_PASSWORD}@mysql:3306/polardb_agentic
+    PAS_ENCRYPTION_KEY: ${PAS_ENCRYPTION_KEY:?set PAS_ENCRYPTION_KEY}
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.0.44@sha256:9c3380eac945af0736031b200027f581925927c81e010056214a4bd6b6693714}
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: polardb_agentic
+      MYSQL_USER: pas
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - MYSQL_PWD="$$MYSQL_ROOT_PASSWORD" mysqladmin ping --host=127.0.0.1 --user=root --silent
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  migrate:
+    <<: *pas-image
+    command:
+      - database
+      - migrate
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  server:
+    <<: *pas-image
+    command:
+      - serve
+    restart: unless-stopped
+    init: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - ${PAS_PORT:-18760}:18760
+    volumes:
+      - pas-log:/app/log
+      - pas-run:/var/run/pas
+
+volumes:
+  mysql-data:
+  pas-log:
+  pas-run:

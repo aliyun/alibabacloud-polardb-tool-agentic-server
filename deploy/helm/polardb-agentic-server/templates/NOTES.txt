@@ -1,0 +1,30 @@
+PAS is installed with {{ .Values.replicaCount }} application replicas.
+
+The migration hook used the same image and Secret as the Deployment.
+Wait for readiness:
+
+  kubectl rollout status deployment/{{ include "polardb-agentic-server.fullname" . }} \
+    --namespace {{ .Release.Namespace }}
+
+For first ownership, select one exact Pod and write the one-time token to the
+Pod-local restricted volume. Copy the file without printing it to logs:
+
+  POD="$(kubectl get pods --namespace {{ .Release.Namespace }} \
+    -l app.kubernetes.io/instance={{ .Release.Name }},app.kubernetes.io/name={{ include "polardb-agentic-server.name" . }} \
+    -o jsonpath='{.items[0].metadata.name}')"
+  kubectl exec --namespace {{ .Release.Namespace }} "$POD" -- \
+    pas config bootstrap-token issue \
+    --output /var/run/pas/bootstrap-token
+  umask 077
+  kubectl cp \
+    "{{ .Release.Namespace }}/$POD:/var/run/pas/bootstrap-token" \
+    ./pas-bootstrap-token
+
+Use ./pas-bootstrap-token in the setup UI or terminal workflow. Then delete
+both the Pod-local and local copies:
+
+  kubectl exec --namespace {{ .Release.Namespace }} "$POD" -- \
+    rm /var/run/pas/bootstrap-token
+  rm ./pas-bootstrap-token
+
+Treat both files as password-equivalent secrets.

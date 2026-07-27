@@ -1,0 +1,7 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Private security report
+    url: https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/security/advisories/new
+    about: >-
+      Report vulnerabilities privately. Do not include secrets, passwords,
+      tokens, access keys, or production connection strings in a public issue.

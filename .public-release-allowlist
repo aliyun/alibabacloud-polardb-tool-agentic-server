@@ -1,0 +1,29 @@
+# Root project metadata
+.dockerignore
+.env.compose.example
+.env.example
+.github/
+.gitignore
+.public-release-allowlist
+CONTRIBUTING.md
+Dockerfile
+LICENSE
+NOTICE
+README.md
+README_zh-CN.md
+SECURITY.md
+THIRD_PARTY_LICENSES.json
+alembic.ini
+compose.yaml
+pyproject.toml
+uv.lock
+
+# Public source, migrations, deployments, tests, and user documentation
+alembic/
+deploy/
+docs/en/
+docs/zh-cn/
+scripts/
+server/
+tests/
+web/

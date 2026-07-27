@@ -1,0 +1,168 @@
+/* ================================================
+   alibabacloud polardb tool agentic server — Global Design Tokens
+   ================================================ */
+
+:root {
+  /* Surface Colors */
+  --surface-primary: #ffffff;
+  --surface-secondary: #f5f5f7;
+  --surface-tertiary: #fafafc;
+  --surface-elevated: #ffffff;
+
+  /* Text Colors */
+  --text-primary: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #aeaeb2;
+
+  /* Brand */
+  --brand-primary: #0071e3;
+  --brand-primary-hover: #0077ed;
+  --brand-gradient: linear-gradient(135deg, #0071e3 0%, #5ac8fa 100%);
+
+  /* Borders */
+  --border-default: rgba(60, 60, 67, 0.08);
+  --border-strong: rgba(60, 60, 67, 0.15);
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+
+  /* Radius */
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Transition */
+  --ease-default: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 350ms;
+
+  /* Layout */
+  --header-height: 56px;
+  --sidebar-width: 240px;
+  --sidebar-collapsed-width: 64px;
+  --content-max-width: 1440px;
+}
+
+/* ================================================
+   Global Reset & Base Styles
+   ================================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Display",
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  background: var(--surface-secondary);
+  color: var(--text-primary);
+  letter-spacing: -0.011em;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ================================================
+   Ant Design Component Overrides
+   ================================================ */
+
+/* Card */
+.ant-card {
+  border: 0.5px solid var(--border-default) !important;
+  box-shadow: var(--shadow-card) !important;
+  transition: box-shadow var(--duration-normal) var(--ease-default),
+    transform var(--duration-normal) var(--ease-default);
+}
+.ant-card:hover {
+  box-shadow: var(--shadow-md) !important;
+}
+
+/* Table */
+.ant-table-wrapper .ant-table-thead > tr > th,
+.ant-table-wrapper .ant-table-thead > tr > td {
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.ant-table-wrapper .ant-table-tbody > tr {
+  transition: background var(--duration-fast) var(--ease-default);
+}
+.ant-table-wrapper .ant-table-tbody > tr:hover > td {
+  background: rgba(0, 113, 227, 0.03) !important;
+}
+
+/* Button */
+.ant-btn-primary {
+  font-weight: 500;
+  box-shadow: 0 2px 6px rgba(0, 113, 227, 0.2) !important;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+.ant-btn-primary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.3) !important;
+}
+.ant-btn-primary:active {
+  transform: translateY(0);
+}
+
+/* Tags */
+.ant-tag {
+  font-weight: 500;
+  border: none !important;
+}
+
+/* Input / Select */
+.ant-input,
+.ant-select-selector,
+.ant-picker,
+.ant-input-affix-wrapper {
+  border-radius: 8px !important;
+}
+
+/* Modal */
+.ant-modal-content {
+  border-radius: var(--radius-lg) !important;
+  overflow: hidden;
+}
+
+/* Message */
+.ant-message-notice-content {
+  border-radius: 10px !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+/* ================================================
+   Scrollbar
+   ================================================ */
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.22);
+}
+
+/* Selection */
+::selection {
+  background: rgba(0, 113, 227, 0.15);
+}

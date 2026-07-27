@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a reproducible non-security defect
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not submit security vulnerabilities here. Never include secrets,
+        passwords, tokens, access keys, production connection strings, or
+        customer data. Use private vulnerability reporting for security issues.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: v0.0.1 or an exact commit SHA
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the expected and actual behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide minimal, sanitized steps and configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove passwords, tokens, authorization headers, SQL parameters, endpoints, and customer data.
+      render: shell
