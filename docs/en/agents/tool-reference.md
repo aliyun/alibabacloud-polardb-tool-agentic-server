@@ -47,5 +47,7 @@ When a tool returns `INSTANCE_NOT_ACCESSIBLE`, call `list_db_instances` and use
 one returned identifier. `DB_INSTANCE_NOT_FOUND` means the identifier is
 unknown or no longer visible. `NO_PROVISIONING_BACKEND` and
 `CAPACITY_EXHAUSTED` require an administrator to review provisioning bindings
-or capacity. `RATE_LIMITED` requires bounded retry. Never guess another
-tenant's identifier or credentials.
+or capacity. `DATABASE_REQUIRED` means the direct binding has no default
+database: run `SHOW DATABASES`, choose an authorized database, and retry with
+the `database` argument. `RATE_LIMITED` requires bounded retry. Never guess
+another tenant's identifier or credentials.

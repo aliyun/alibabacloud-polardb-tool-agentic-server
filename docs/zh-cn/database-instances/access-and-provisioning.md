@@ -144,7 +144,8 @@ DDL 并发数。服务验证定义和连接后才会激活后端。
 - **MCP server URL** 优先展示已激活 Runtime Policy 的
   `external_base_url` 加 `/mcp` 后的地址；该配置为空或无法读取时，回退到
   控制台 origin。请填写目标 MCP 客户端能够访问的地址；使用 VPC 地址时，
-  客户端必须具备 VPC 网络连通性。
+  客户端必须具备 VPC 网络连通性。HTTP 仅支持受控私网中的 Agent Token
+  模式；交互式 OAuth 和 OIDC 必须使用 HTTPS。
 - **Copy JSON configuration** 会复制包含 MCP 地址和 Token 的客户端配置，
   其中 server 名称默认为 Agent 名称。
 - **Regenerate Token** 会替换 Token，旧 Token 立即停止认证。

@@ -15,7 +15,7 @@ checksums before moving files across the network boundary:
 ```bash
 sha256sum --check SHA256SUMS
 gh attestation verify \
-  polardb-agentic-server-0.0.1-deploy.tar.gz \
+  polardb-agentic-server-0.0.2-deploy.tar.gz \
   --repo aliyun/alibabacloud-polardb-tool-agentic-server
 ```
 
@@ -29,7 +29,7 @@ Choose the archive that matches the target nodes:
 
 ```bash
 gzip --decompress --stdout \
-  polardb-agentic-server-0.0.1-image-linux-amd64.tar.gz \
+  polardb-agentic-server-0.0.2-image-linux-amd64.tar.gz \
   | docker load
 ```
 
@@ -37,8 +37,8 @@ For multiple hosts or Kubernetes, import the image into a customer-controlled
 ACR, Harbor, or other private registry:
 
 ```bash
-docker tag SOURCE_IMAGE PRIVATE_REGISTRY/polardb-agentic-server:0.0.1
-docker push PRIVATE_REGISTRY/polardb-agentic-server:0.0.1
+docker tag SOURCE_IMAGE PRIVATE_REGISTRY/polardb-agentic-server:0.0.2
+docker push PRIVATE_REGISTRY/polardb-agentic-server:0.0.2
 ```
 
 Record the private-registry digest after the push. This project does not claim
@@ -52,7 +52,7 @@ For Compose, set `PAS_IMAGE` to the imported image reference (prefer
 For Helm, set the private repository and immutable digest:
 
 ```bash
-helm upgrade --install pas ./polardb-agentic-server-0.0.1-chart.tgz \
+helm upgrade --install pas ./polardb-agentic-server-0.0.2-chart.tgz \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=PRIVATE_REGISTRY/polardb-agentic-server \

@@ -30,7 +30,7 @@ curl --fail http://127.0.0.1:18760/readyz
 Chart 的 `pre-upgrade` 迁移 Job 会阻止失败的 Deployment 更新：
 
 ```bash
-helm upgrade pas ./polardb-agentic-server-0.0.1-chart.tgz \
+helm upgrade pas ./polardb-agentic-server-0.0.2-chart.tgz \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=REGISTRY/polardb-agentic-server \

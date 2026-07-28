@@ -17,6 +17,20 @@ from server.core.sql_executor import SQLExecutionError, is_select, apply_paginat
 logger = logging.getLogger(__name__)
 
 
+def _sanitized_sql_error(error: Exception) -> SQLExecutionError:
+    error_code = (
+        error.args[0]
+        if error.args and isinstance(error.args[0], int)
+        else None
+    )
+    if error_code == 1046:
+        return SQLExecutionError(
+            "No database is selected. Pass the database argument and retry.",
+            "DATABASE_REQUIRED",
+        )
+    return SQLExecutionError("Database operation failed", "SQL_ERROR")
+
+
 def _json_safe_cell(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat(sep=" ")
@@ -153,11 +167,9 @@ class SQLGateway:
         except asyncio.CancelledError:
             discard = True
             raise
-        except Exception:
+        except Exception as error:
             discard = True
-            raise SQLExecutionError(
-                "Database operation failed", "SQL_ERROR"
-            ) from None
+            raise _sanitized_sql_error(error) from None
         finally:
             if branch_set and not discard:
                 try:
@@ -220,11 +232,9 @@ class SQLGateway:
         except SQLExecutionError:
             discard = True
             raise
-        except Exception:
+        except Exception as error:
             discard = True
-            raise SQLExecutionError(
-                "Database operation failed", "SQL_ERROR"
-            ) from None
+            raise _sanitized_sql_error(error) from None
         finally:
             await self._cache.release(
                 user_id, instance_id, conn, discard=discard
@@ -296,16 +306,14 @@ class SQLGateway:
             except Exception:
                 pass
             raise
-        except Exception:
+        except Exception as error:
             discard = True
             try:
                 await _exec_simple(conn, "ROLLBACK")
                 discard = session_state_touched
             except Exception:
                 pass
-            raise SQLExecutionError(
-                "Database operation failed", "SQL_ERROR"
-            ) from None
+            raise _sanitized_sql_error(error) from None
         finally:
             await self._cache.release(user_id, instance_id, conn, discard=discard)
 

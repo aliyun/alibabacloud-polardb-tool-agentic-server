@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from asyncmy.errors import OperationalError
 import pytest
 
 from server.config import reset_config
@@ -133,6 +134,61 @@ class TestExecute:
         assert error.value.code == "SQL_ERROR"
         assert error.value.message == "Database operation failed"
         assert sentinel not in str(error.value)
+
+    async def test_no_database_selected_is_actionable_and_sanitized(self):
+        from server.core.sql_gateway import SQLGateway
+
+        sentinel = "No database selected: private_database"
+        cursor = _make_mock_cursor()
+        cursor.execute = AsyncMock(side_effect=OperationalError(1046, sentinel))
+        conn = _make_mock_conn(cursor)
+        cache = _make_mock_cache()
+        cache.acquire = AsyncMock(return_value=conn)
+
+        with pytest.raises(SQLExecutionError) as error:
+            await SQLGateway(cache).execute(
+                host="private",
+                port=3306,
+                user="u",
+                password="SECRET",
+                sql="CREATE TABLE t (id INT)",
+                database=None,
+                user_id="uid",
+                instance_id="iid",
+            )
+        assert error.value.code == "DATABASE_REQUIRED"
+        assert error.value.message == (
+            "No database is selected. Pass the database argument and retry."
+        )
+        assert sentinel not in str(error.value)
+
+    async def test_parameterized_no_database_selected_is_actionable(self):
+        from server.core.sql_gateway import SQLGateway
+
+        cursor = _make_mock_cursor()
+        cursor.execute = AsyncMock(
+            side_effect=OperationalError(1046, "private database detail")
+        )
+        conn = _make_mock_conn(cursor)
+        cache = _make_mock_cache()
+        cache.acquire = AsyncMock(return_value=conn)
+
+        with pytest.raises(SQLExecutionError) as error:
+            await SQLGateway(cache).execute_parameterized(
+                host="private",
+                port=3306,
+                user="u",
+                password="SECRET",
+                sql="SELECT * FROM information_schema.tables WHERE name = %s",
+                params=["t"],
+                database=None,
+                user_id="uid",
+                instance_id="iid",
+            )
+        assert error.value.code == "DATABASE_REQUIRED"
+        assert error.value.message == (
+            "No database is selected. Pass the database argument and retry."
+        )
 
     async def test_single_select(self):
         from server.core.sql_gateway import SQLGateway
@@ -575,6 +631,33 @@ class TestExecuteTransaction:
             )
         assert error.value.code == "SQL_ERROR"
         assert error.value.message == "Database operation failed"
+        assert sentinel not in str(error.value)
+
+    async def test_no_database_selected_is_actionable_and_sanitized(self):
+        from server.core.sql_gateway import SQLGateway
+
+        sentinel = "No database selected: private_database"
+        cursor = _make_mock_cursor()
+        cursor.execute = AsyncMock(side_effect=OperationalError(1046, sentinel))
+        conn = _make_mock_conn(cursor)
+        cache = _make_mock_cache()
+        cache.acquire = AsyncMock(return_value=conn)
+
+        with pytest.raises(SQLExecutionError) as error:
+            await SQLGateway(cache).execute_transaction(
+                host="private",
+                port=3306,
+                user="u",
+                password="SECRET",
+                sql_statements=["CREATE TABLE t (id INT)"],
+                database=None,
+                user_id="uid",
+                instance_id="iid",
+            )
+        assert error.value.code == "DATABASE_REQUIRED"
+        assert error.value.message == (
+            "No database is selected. Pass the database argument and retry."
+        )
         assert sentinel not in str(error.value)
 
     async def test_begin_commit_flow(self):

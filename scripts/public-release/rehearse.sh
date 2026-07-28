@@ -25,7 +25,7 @@ done
 
 SOURCE=$(CDPATH= cd -- "$SOURCE" && pwd)
 if [ -z "$REPORT" ]; then
-  REPORT=$DEFAULT_SOURCE/.public-release/v0.0.1-audit.json
+  REPORT=$DEFAULT_SOURCE/.public-release/v0.0.2-audit.json
 fi
 case "$REPORT" in
   /*) ;;
@@ -46,19 +46,19 @@ git -C "$PUBLIC_TREE" \
   -c user.name="Public Release Rehearsal" \
   -c user.email="release-rehearsal@example.invalid" \
   commit -qm "release: public source snapshot"
-git -C "$PUBLIC_TREE" tag v0.0.1
+git -C "$PUBLIC_TREE" tag v0.0.2
 
-SOURCE_TAR=$TEMP_ROOT/polardb-agentic-server-0.0.1-source.tar
+SOURCE_TAR=$TEMP_ROOT/polardb-agentic-server-0.0.2-source.tar
 SOURCE_ARCHIVE=$SOURCE_TAR.gz
 git -C "$PUBLIC_TREE" archive \
   --format=tar \
-  --prefix=polardb-agentic-server-0.0.1/ \
+  --prefix=polardb-agentic-server-0.0.2/ \
   HEAD >"$SOURCE_TAR"
 gzip -n -c "$SOURCE_TAR" >"$SOURCE_ARCHIVE"
 
 "$SCRIPT_DIR/audit-refs.sh" \
   --repo "$PUBLIC_TREE" \
-  --tag v0.0.1 \
+  --tag v0.0.2 \
   --archive "$SOURCE_ARCHIVE" \
   --report "$REPORT"
 

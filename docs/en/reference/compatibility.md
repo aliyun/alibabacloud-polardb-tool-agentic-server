@@ -7,6 +7,13 @@ The `0.0.x` line may correct contracts while user evaluation continues.
 Version `0.1.0` is reserved for the first stabilized feature line after trial
 feedback and critical defect resolution.
 
+Version `0.0.2` is a patch release. It persists stale resource-pool
+placeholder cleanup when the configured target is already satisfied and
+returns `DATABASE_REQUIRED` when MySQL reports that no database is selected.
+Agent Token-only deployments also restart safely with an HTTP VPC
+`external_base_url`. It does not require a metadata schema migration from
+`0.0.1`.
+
 ## Runtime compatibility
 
 - Python runtime: 3.11 or later for source installation.

@@ -2,7 +2,7 @@
 
 [简体中文](../../zh-cn/deployment/prerequisites.md)
 
-Version `0.0.1` is an early public trial release. Use it in a controlled
+Version `0.0.2` is an early public trial release. Use it in a controlled
 environment, keep backups, and pin the deployed image by digest.
 
 ## Supported runtime
@@ -47,7 +47,7 @@ Verify an image after mirroring:
 
 ```bash
 docker buildx imagetools inspect \
-  ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.1
+  ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.2
 ```
 
 Continue with the Docker Compose or Kubernetes/Helm deployment guide after

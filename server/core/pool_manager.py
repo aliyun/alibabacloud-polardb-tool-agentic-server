@@ -254,6 +254,8 @@ async def _replenish_once(
 
         effective = pooled_count + fallback_count
         if effective >= target:
+            if stale_placeholders:
+                await session.commit()
             return
 
         needed = target - effective

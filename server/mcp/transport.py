@@ -6,6 +6,7 @@ import asyncio
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
@@ -54,11 +55,31 @@ from server.models import Agent, User
 logger = logging.getLogger(__name__)
 
 _background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+_INTERNAL_OAUTH_BASE_URL = "https://pas.invalid"
 
 
 def set_background_tasks(tasks: set[asyncio.Task]) -> None:  # type: ignore[type-arg]
     global _background_tasks
     _background_tasks = tasks
+
+
+def _mcp_oauth_base_url(external_base_url: str) -> str:
+    candidate = external_base_url.rstrip("/")
+    if not candidate:
+        return _INTERNAL_OAUTH_BASE_URL
+    parsed = urlsplit(candidate)
+    if parsed.scheme == "https":
+        return candidate
+    if (
+        parsed.scheme == "http"
+        and parsed.hostname is not None
+        and (
+            parsed.hostname == "localhost"
+            or parsed.hostname.startswith("127.0.0.1")
+        )
+    ):
+        return candidate
+    return _INTERNAL_OAUTH_BASE_URL
 
 
 async def _get_current_user(
@@ -249,9 +270,7 @@ def _build_mcp_server() -> AuthorizedFastMCP:
     # The MCP surface is request-gated during SETUP. A syntactically valid
     # internal placeholder lets routes remain installed before an external
     # URL is configured.
-    base_url = (
-        config.server.public_base_url or "https://pas.invalid"
-    )
+    base_url = _mcp_oauth_base_url(config.server.public_base_url)
 
     provider = PASAuthProvider(
         session_factory=get_session_factory(),

@@ -10,11 +10,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_ASSETS = {
-    "polardb-agentic-server-0.0.1-chart.tgz",
-    "polardb-agentic-server-0.0.1-deploy.tar.gz",
-    "polardb-agentic-server-0.0.1-image-linux-amd64.tar.gz",
-    "polardb-agentic-server-0.0.1-image-linux-arm64.tar.gz",
-    "polardb-agentic-server-0.0.1.spdx.json",
+    "polardb-agentic-server-0.0.2-chart.tgz",
+    "polardb-agentic-server-0.0.2-deploy.tar.gz",
+    "polardb-agentic-server-0.0.2-image-linux-amd64.tar.gz",
+    "polardb-agentic-server-0.0.2-image-linux-arm64.tar.gz",
+    "polardb-agentic-server-0.0.2.spdx.json",
     "SHA256SUMS",
 }
 
@@ -30,22 +30,22 @@ def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_release_version_matches_all_versioned_components() -> None:
-    result = _run("scripts/release/verify-version.py", "v0.0.1")
+    result = _run("scripts/release/verify-version.py", "v0.0.2")
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "0.0.1"
+    assert result.stdout.strip() == "0.0.2"
 
 
 def test_release_version_rejects_invalid_or_mismatched_tag() -> None:
-    invalid = _run("scripts/release/verify-version.py", "0.0.1")
-    mismatch = _run("scripts/release/verify-version.py", "v0.0.2")
+    invalid = _run("scripts/release/verify-version.py", "0.0.2")
+    mismatch = _run("scripts/release/verify-version.py", "v0.0.1")
 
     assert invalid.returncode != 0
     assert mismatch.returncode != 0
 
 
 def test_expected_release_asset_names_are_exact() -> None:
-    result = _run("scripts/release/check-assets.py", "names", "--version", "0.0.1")
+    result = _run("scripts/release/check-assets.py", "names", "--version", "0.0.2")
 
     assert result.returncode == 0, result.stderr
     assert set(json.loads(result.stdout)) == EXPECTED_ASSETS
@@ -58,7 +58,7 @@ def test_deployment_bundle_is_deterministic_and_allowlisted(tmp_path: Path) -> N
     second.mkdir()
     for output in (first, second):
         result = subprocess.run(
-            ["scripts/release/build-deployment-bundle.sh", "0.0.1", str(output)],
+            ["scripts/release/build-deployment-bundle.sh", "0.0.2", str(output)],
             cwd=ROOT,
             capture_output=True,
             text=True,
@@ -67,21 +67,21 @@ def test_deployment_bundle_is_deterministic_and_allowlisted(tmp_path: Path) -> N
         assert result.returncode == 0, result.stderr
 
     for name in (
-        "polardb-agentic-server-0.0.1-chart.tgz",
-        "polardb-agentic-server-0.0.1-deploy.tar.gz",
+        "polardb-agentic-server-0.0.2-chart.tgz",
+        "polardb-agentic-server-0.0.2-deploy.tar.gz",
     ):
         assert hashlib.sha256((first / name).read_bytes()).digest() == hashlib.sha256(
             (second / name).read_bytes()
         ).digest()
 
-    bundle = first / "polardb-agentic-server-0.0.1-deploy.tar.gz"
+    bundle = first / "polardb-agentic-server-0.0.2-deploy.tar.gz"
     with tarfile.open(bundle, "r:gz") as archive:
         members = archive.getmembers()
     assert members
     assert all(not member.name.startswith("/") and ".." not in Path(member.name).parts for member in members)
     assert all(member.mtime == 0 for member in members)
     assert {Path(member.name).parts[0] for member in members} == {
-        "polardb-agentic-server-0.0.1"
+        "polardb-agentic-server-0.0.2"
     }
     assert not any("secret" in member.name.lower() for member in members)
 

@@ -2,7 +2,7 @@
 
 [English](../../en/deployment/prerequisites.md)
 
-`0.0.1` 是首个公开试用版本。请在受控环境使用，保留备份，并按镜像 digest
+`0.0.2` 是公开试用版本。请在受控环境使用，保留备份，并按镜像 digest
 固定实际部署内容。
 
 ## 支持的运行环境
@@ -40,7 +40,7 @@ Compose 或 Helm 中指定镜像仓库；不要用浮动标签替代固定版本
 
 ```bash
 docker buildx imagetools inspect \
-  ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.1
+  ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.2
 ```
 
 满足以上前提后，再继续 Docker Compose 或 Kubernetes/Helm 部署指南。

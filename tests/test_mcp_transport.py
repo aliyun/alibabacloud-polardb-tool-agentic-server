@@ -186,6 +186,17 @@ def _parse_sse_response(text: str) -> list[dict]:
     return events
 
 
+async def test_mcp_app_starts_with_http_vpc_external_base_url(
+    setup_data,
+) -> None:
+    from server.mcp.transport import _build_mcp_server
+
+    get_config().server.public_base_url = "http://10.0.0.8:18760"
+
+    mcp = _build_mcp_server()
+    assert mcp.streamable_http_app() is not None
+
+
 def _schema_type_signature(schema: dict) -> str:
     if "anyOf" in schema:
         return "anyOf(" + ",".join(sorted(_schema_type_signature(item) for item in schema["anyOf"])) + ")"

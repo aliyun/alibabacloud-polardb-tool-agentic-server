@@ -15,7 +15,7 @@ MYSQL_IMAGE = (
 )
 DEFAULT_PAS_IMAGE = (
     "ghcr.io/aliyun/"
-    "alibabacloud-polardb-tool-agentic-server:0.0.1"
+    "alibabacloud-polardb-tool-agentic-server:0.0.2"
 )
 
 

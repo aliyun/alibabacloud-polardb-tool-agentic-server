@@ -31,7 +31,7 @@ helm upgrade --install pas \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server \
-  --set image.tag=0.0.1 \
+  --set image.tag=0.0.2 \
   --wait --timeout 10m
 ```
 
@@ -103,7 +103,7 @@ Release 维护者可通过镜像仓库中的 Kind 和 MySQL 镜像执行完整�
 
 ```bash
 scripts/deploy/smoke-helm.sh \
-  --image polardb-agentic-server:local-v0.0.1 \
+  --image polardb-agentic-server:local-v0.0.2 \
   --mysql-image registry.example.com/library/mysql:8.0.44 \
   --kind-image registry.example.com/kindest/node:v1.35.0
 ```

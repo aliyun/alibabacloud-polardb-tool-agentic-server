@@ -2,8 +2,8 @@ apiVersion: v2
 name: polardb-agentic-server
 description: Alibaba Cloud PolarDB Tool Agentic Server
 type: application
-version: 0.0.1
-appVersion: "0.0.1"
+version: 0.0.2
+appVersion: "0.0.2"
 home: https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server
 sources:
   - https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server

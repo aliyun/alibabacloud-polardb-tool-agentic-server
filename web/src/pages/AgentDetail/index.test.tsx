@@ -269,7 +269,7 @@ describe('Agent detail page', () => {
           revision: 5,
           state: 'ACTIVE',
           config: {
-            external_base_url: 'http://172.26.188.46:18760/',
+            external_base_url: 'http://10.0.0.8:18760/',
           },
         },
         schema: {},
@@ -286,7 +286,7 @@ describe('Agent detail page', () => {
       confirmed: true,
     })
     expect(
-      await screen.findByText('http://172.26.188.46:18760/mcp'),
+      await screen.findByText('http://10.0.0.8:18760/mcp'),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: /reveal credential/i }),

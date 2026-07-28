@@ -32,7 +32,7 @@ Do not update the server if migration fails.
 The Chart's `pre-upgrade` migration Job blocks the Deployment update:
 
 ```bash
-helm upgrade pas ./polardb-agentic-server-0.0.1-chart.tgz \
+helm upgrade pas ./polardb-agentic-server-0.0.2-chart.tgz \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=REGISTRY/polardb-agentic-server \

@@ -136,10 +136,13 @@ the Secret value alone is not rotation.
 
 ## External URLs and reload behavior
 
-The setup UI uses same-origin requests by default. Configure
-`runtime_policy.external_base_url` before enabling OAuth or OIDC. It must be
-the trusted externally reachable HTTPS origin used for redirects and MCP
-metadata; the service does not infer it from untrusted proxy headers.
+The setup UI uses same-origin requests by default. An Agent Token-only
+deployment on a controlled private network may use an HTTP
+`runtime_policy.external_base_url`; the Agent MCP endpoint remains available
+after restart, but interactive MCP OAuth metadata is intentionally not
+advertised at that insecure origin. Configure a trusted, externally reachable
+HTTPS origin before enabling OAuth or OIDC. The service does not infer the
+origin from untrusted proxy headers.
 
 Active configuration is projected into immutable in-process snapshots. Every
 replica polls the global version every 5 seconds by default (allowed range

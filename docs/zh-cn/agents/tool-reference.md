@@ -43,4 +43,6 @@ PAS 动态开放工具。Agent 只能看到有效绑定和资源所有权允许�
 工具返回 `INSTANCE_NOT_ACCESSIBLE` 时，先调用 `list_db_instances`，使用其中
 一个标识。`DB_INSTANCE_NOT_FOUND` 表示标识未知或已不可见。
 `NO_PROVISIONING_BACKEND` 和 `CAPACITY_EXHAUSTED` 需要管理员检查供应绑定或
-容量。`RATE_LIMITED` 应采用有界重试。绝不能猜测其他租户的标识或凭证。
+容量。`DATABASE_REQUIRED` 表示直连绑定没有默认数据库：执行
+`SHOW DATABASES`，选择有权访问的数据库，并携带 `database` 参数重试。
+`RATE_LIMITED` 应采用有界重试。绝不能猜测其他租户的标识或凭证。

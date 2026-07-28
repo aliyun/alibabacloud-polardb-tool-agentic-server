@@ -358,6 +358,37 @@ class TestStalePlaceholderCleanup:
             }
         assert remaining == {"pool-pending-fresh"}
 
+    async def test_replenish_commits_stale_cleanup_when_target_is_satisfied(
+        self, session_factory
+    ):
+        from server import config as config_module
+        from server.config import AppConfig
+        from server.core.pool_manager import _replenish_once
+
+        config_module._config = AppConfig(
+            polardb={
+                "resource_pool": {
+                    "target_size": 1,
+                    "region_id": "cn-test",
+                    "zone_id": "cn-test-a",
+                }
+            }
+        )
+
+        async with session_factory() as s:
+            s.add(_placeholder("pool-active", InstanceStatus.ACTIVE))
+            s.add(_placeholder("pool-pending-stale", InstanceStatus.CREATING, 3600))
+            await s.commit()
+
+        await _replenish_once(session_factory, set())
+
+        async with session_factory() as s:
+            remaining = {
+                row.cluster_id
+                for row in (await s.execute(select(Instance))).scalars().all()
+            }
+        assert remaining == {"pool-active"}
+
 
 class TestRemovePoolInstance:
     async def _add(self, inst) -> str:

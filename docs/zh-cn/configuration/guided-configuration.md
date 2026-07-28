@@ -117,9 +117,11 @@ pas config export --module resource_pool --file resource-pool.yaml
 
 ## 外部地址与热加载
 
-初始化 UI 默认使用同源请求。启用 OAuth 或 OIDC 前，应配置
-`runtime_policy.external_base_url`。它必须是可信、外部可访问的 HTTPS
-origin，用于重定向和 MCP 元数据；服务不会从不可信代理请求头推断该地址。
+初始化 UI 默认使用同源请求。仅使用 Agent Token、且运行在受控私网中的部署
+可以配置 HTTP `runtime_policy.external_base_url`；Agent MCP 端点在重启后
+仍然可用，但服务不会在这个不安全的 origin 上发布交互式 MCP OAuth 元数据。
+启用 OAuth 或 OIDC 前，必须配置可信、外部可访问的 HTTPS origin。服务不会
+从不可信代理请求头推断该地址。
 
 有效配置会投影为进程内不可变快照。每个副本默认每 5 秒轮询全局版本（可配置
 范围 1–60 秒），按依赖顺序加载变更；必要适配器失败时继续使用最后一个已知
