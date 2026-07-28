@@ -147,6 +147,7 @@ for the complete UI workflow, security model, Tool examples, and lifecycle.
 
 - [English documentation](docs/en/README.md)
 - [简体中文文档](docs/zh-cn/README.md)
+- [Getting started tutorial](docs/en/getting-started/overview.md)
 - [Initial setup](docs/en/setup/initial-setup.md)
 - [Guided modular configuration](docs/en/configuration/guided-configuration.md)
 - [Database instance access and provisioning](docs/en/database-instances/access-and-provisioning.md)

@@ -55,7 +55,7 @@ function ReadyRoutes() {
         <Route path="/audit-logs" element={<AuditLogs />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/pool" element={<Pool />} />
-        {user?.role === 'admin' && (
+        {(loading || user?.role === 'admin') && (
           <>
             <Route path="/agents" element={<Agents />} />
             <Route path="/agents/:id" element={<AgentDetail />} />

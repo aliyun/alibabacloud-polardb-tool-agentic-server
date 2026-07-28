@@ -15,6 +15,7 @@ import {
   revokeAgentToken,
   updateAgent,
 } from '../../api/agents'
+import { executeConfig } from '../../api/configuration'
 import { listInstanceCredentials } from '../../api/credentials'
 import {
   createAgentInstanceAccess,
@@ -37,6 +38,10 @@ vi.mock('../../api/agents', () => ({
 
 vi.mock('../../api/credentials', () => ({
   listInstanceCredentials: vi.fn(),
+}))
+
+vi.mock('../../api/configuration', () => ({
+  executeConfig: vi.fn(),
 }))
 
 vi.mock('../../api/instanceAccess', () => ({
@@ -192,6 +197,23 @@ describe('Agent detail page', () => {
       data: { token: 'pas_agent_default_plaintext' },
     } as never)
     vi.mocked(revokeAgentToken).mockResolvedValue({ data: {} } as never)
+    vi.mocked(executeConfig).mockResolvedValue({
+      config_version: 1,
+      system_state: 'READY',
+      module: {
+        name: 'runtime_policy',
+        revision: 1,
+        workflow_state: 'ACTIVE',
+        effective: {
+          revision: 1,
+          state: 'ACTIVE',
+          config: {},
+        },
+        schema: {},
+        dependencies: [],
+        dependents: [],
+      },
+    })
   })
 
   it('regenerates a token only after destructive confirmation and replaces it inline', async () => {
@@ -232,10 +254,29 @@ describe('Agent detail page', () => {
     expect(sessionStorage).toHaveLength(0)
   })
 
-  it('automatically displays the active Token and MCP server URL', async () => {
+  it('uses the configured external base URL for the MCP server URL', async () => {
     vi.mocked(revealAgentToken).mockResolvedValue({
       data: { token: 'pas_agent_revealed_plaintext' },
     } as never)
+    vi.mocked(executeConfig).mockResolvedValue({
+      config_version: 1,
+      system_state: 'READY',
+      module: {
+        name: 'runtime_policy',
+        revision: 5,
+        workflow_state: 'ACTIVE',
+        effective: {
+          revision: 5,
+          state: 'ACTIVE',
+          config: {
+            external_base_url: 'http://172.26.188.46:18760/',
+          },
+        },
+        schema: {},
+        dependencies: [],
+        dependents: [],
+      },
+    })
     renderPage()
 
     expect(
@@ -245,11 +286,20 @@ describe('Agent detail page', () => {
       confirmed: true,
     })
     expect(
-      screen.getByText(`${window.location.origin}/mcp`),
+      await screen.findByText('http://172.26.188.46:18760/mcp'),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: /reveal credential/i }),
     ).not.toBeInTheDocument()
+  })
+
+  it('falls back to the browser origin when runtime policy cannot be loaded', async () => {
+    vi.mocked(executeConfig).mockRejectedValue(new Error('unavailable'))
+    renderPage()
+
+    expect(
+      await screen.findByText(`${window.location.origin}/mcp`),
+    ).toBeInTheDocument()
   })
 
   it('keeps a Token reveal error visible and retries in place', async () => {

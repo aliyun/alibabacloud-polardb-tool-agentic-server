@@ -198,3 +198,49 @@ async def test_provisioning_lifespan_starts_without_unique_instance_gate(monkeyp
     build.assert_awaited_once()
     runtime.health.run_once.assert_awaited_once()
     runtime.pool_manager.close_all.assert_awaited_once()
+
+
+class TestDiscoverStaticDir:
+    def _make_dist(self, root, *parts):
+        d = root
+        for p in parts:
+            d = d / p
+        d.mkdir(parents=True)
+        (d / "index.html").write_text("<html></html>")
+        return d
+
+    def test_env_override_wins(self, tmp_path, monkeypatch):
+        from server.app import _discover_static_dir
+
+        override = self._make_dist(tmp_path, "custom-static")
+        monkeypatch.setenv("PAS_STATIC_DIR", str(override))
+        assert _discover_static_dir() == override
+
+    def test_cwd_static_found_when_module_root_has_none(
+        self, tmp_path, monkeypatch
+    ):
+        from server.app import _discover_static_dir
+
+        static = self._make_dist(tmp_path, "static")
+        monkeypatch.delenv("PAS_STATIC_DIR", raising=False)
+        monkeypatch.chdir(tmp_path)
+        found = _discover_static_dir()
+        # The repo checkout may provide web/dist; otherwise the working
+        # directory fallback (the packaged-image layout) must be used.
+        assert found is not None
+        assert found.name in ("dist", "static")
+        if found.name == "static":
+            assert found == static
+
+    def test_none_when_nothing_exists(self, tmp_path, monkeypatch):
+        from server.app import _discover_static_dir
+        from server import app as app_module
+
+        monkeypatch.delenv("PAS_STATIC_DIR", raising=False)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            app_module,
+            "__file__",
+            str(tmp_path / "pkg" / "server" / "app.py"),
+        )
+        assert _discover_static_dir() is None

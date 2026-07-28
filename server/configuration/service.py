@@ -549,6 +549,16 @@ class ConfigService:
                     error_code=error.code,
                     message=error.message,
                 )
+        if checked.valid:
+            try:
+                await self._dependency_revisions(module)
+            except ConfigError as error:
+                checked = ModuleValidationResult(
+                    valid=False,
+                    normalized_config=checked.normalized_config,
+                    error_code=error.code,
+                    message=error.message,
+                )
         return await self._result(
             plan={
                 "module": module,
@@ -652,7 +662,20 @@ class ConfigService:
                 )
                 raise ConfigError(error.code, error.message) from None
 
-        dependency_revisions = await self._dependency_revisions(module)
+        try:
+            dependency_revisions = await self._dependency_revisions(module)
+        except ConfigError as error:
+            failed = transition(
+                validating, "validation_failed"
+            ).model_copy(
+                update={"last_error_code": error.code}
+            )
+            await self.repository.compare_and_set_module(
+                module,
+                expected_revision=validating.revision,
+                document=failed,
+            )
+            raise
         validation_id = secrets.token_urlsafe(32)
         final_revision = validating.revision + 1
         proof = ValidationProof(

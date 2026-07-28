@@ -129,6 +129,7 @@ Web 控制台是运行时实例访问配置的事实来源：
 
 - [English documentation](docs/en/README.md)
 - [简体中文文档](docs/zh-cn/README.md)
+- [快速上手教程](docs/zh-cn/getting-started/overview.md)
 - [初始化设置](docs/zh-cn/setup/initial-setup.md)
 - [引导式模块化配置](docs/zh-cn/configuration/guided-configuration.md)
 - [数据库实例访问与供应](docs/zh-cn/database-instances/access-and-provisioning.md)

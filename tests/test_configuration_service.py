@@ -105,6 +105,62 @@ async def test_plan_is_dry_run_and_does_not_write(context) -> None:
     assert await context.repository.global_version() == before
 
 
+async def test_plan_rejects_inactive_dependency_without_writing(
+    context,
+) -> None:
+    before = await context.repository.global_version()
+
+    result = await context.service.execute(
+        command(
+            ConfigAction.PLAN,
+            "agentic_db_purchase",
+            config={},
+        ),
+        ADMIN,
+    )
+
+    assert result.plan["valid"] is False
+    assert result.plan["error_code"] == "DEPENDENCY_NOT_ACTIVE"
+    assert await context.repository.global_version() == before
+    document = await context.repository.get_module(
+        "agentic_db_purchase"
+    )
+    assert document.workflow_state == ModuleState.SKIPPED
+    assert document.draft is None
+
+
+async def test_inactive_dependency_validation_does_not_stay_validating(
+    context,
+) -> None:
+    saved = await context.service.execute(
+        command(
+            ConfigAction.SAVE_DRAFT,
+            "agentic_db_purchase",
+            expected_revision=0,
+            config={},
+        ),
+        ADMIN,
+    )
+
+    with pytest.raises(ConfigError) as exc:
+        await context.service.execute(
+            command(
+                ConfigAction.VALIDATE,
+                "agentic_db_purchase",
+                expected_revision=saved.module["revision"],
+            ),
+            ADMIN,
+        )
+
+    assert exc.value.code == "DEPENDENCY_NOT_ACTIVE"
+    document = await context.repository.get_module(
+        "agentic_db_purchase"
+    )
+    assert document.workflow_state == ModuleState.ERROR
+    assert document.last_error_code == "DEPENDENCY_NOT_ACTIVE"
+    assert document.validation_operation is None
+
+
 @pytest.mark.parametrize(
     ("password", "valid", "error_code"),
     [

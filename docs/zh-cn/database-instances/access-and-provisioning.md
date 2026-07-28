@@ -141,7 +141,10 @@ DDL 并发数。服务验证定义和连接后才会激活后端。
 
 - 创建结果会显示新的 `pas_agent_...` Token。
 - Agent 详情页会自动向已认证管理员展示当前有效的明文 Token。
-- **MCP server URL** 展示控制台 origin 加 `/mcp` 后的地址。
+- **MCP server URL** 优先展示已激活 Runtime Policy 的
+  `external_base_url` 加 `/mcp` 后的地址；该配置为空或无法读取时，回退到
+  控制台 origin。请填写目标 MCP 客户端能够访问的地址；使用 VPC 地址时，
+  客户端必须具备 VPC 网络连通性。
 - **Copy JSON configuration** 会复制包含 MCP 地址和 Token 的客户端配置，
   其中 server 名称默认为 Agent 名称。
 - **Regenerate Token** 会替换 Token，旧 Token 立即停止认证。

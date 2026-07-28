@@ -281,6 +281,30 @@ async def lifespan(app: FastAPI):
     logger.info("alibabacloud polardb tool agentic server shutting down", extra={"action": "shutdown"})
 
 
+def _discover_static_dir() -> Path | None:
+    """Locate the built web console across supported layouts.
+
+    The package may be imported from site-packages (packaged image), where
+    __file__-relative paths contain no build output, so the working
+    directory and an explicit override are also consulted.
+    """
+    import os
+
+    override = os.environ.get("PAS_STATIC_DIR")
+    module_root = Path(__file__).resolve().parent.parent
+    candidates = [
+        *( [Path(override)] if override else [] ),
+        module_root / "web" / "dist",
+        module_root / "static",
+        Path.cwd() / "web" / "dist",
+        Path.cwd() / "static",
+    ]
+    for candidate in candidates:
+        if (candidate / "index.html").is_file():
+            return candidate
+    return None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="alibabacloud polardb tool agentic server",
@@ -396,13 +420,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_router)
 
     # Serve frontend static files if build exists.
-    # Try web/dist (dev/bare-metal) then static/ (Docker).
-    _project_root = Path(__file__).resolve().parent.parent
-    _static_dir: Path | None = None
-    for candidate in [_project_root / "web" / "dist", _project_root / "static"]:
-        if (candidate / "index.html").is_file():
-            _static_dir = candidate
-            break
+    _static_dir = _discover_static_dir()
 
     if _static_dir is not None:
         app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="static-assets")

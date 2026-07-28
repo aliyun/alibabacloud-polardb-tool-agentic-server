@@ -4,6 +4,23 @@
 
 Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 
+## 快速上手
+
+- [快速上手教程总览](getting-started/overview.md)：单台 ECS 试用的端到端
+  路线图，从云资源到功能使用。
+- [资源要求](getting-started/cloud-resources.md)：购买 ECS 与 PolarDB MySQL
+  元数据库，并拼出连接串。
+- [部署（单台 ECS + Docker Compose）](getting-started/deploy-compose.md)：
+  安装 Docker、准备 `.env`、迁移、启动并完成接管。
+- [功能使用：引导式配置](getting-started/configure.md)：配置云凭证、购买
+  规格与资源池网络位置。
+- [功能使用：注册数据库实例](getting-started/register-instance.md)：注册
+  已有 PolarDB 集群并验证连通性。
+- [功能使用：Agent、Token 与 MCP](getting-started/agents-and-mcp.md)：创建
+  Agent、签发 Token、授权并调用工具。
+- [功能使用：资源池与实例](getting-started/resource-pool.md)：设置目标容量、
+  补货并管理池中实例。
+
 ## 初始化
 
 - [初始化设置](setup/initial-setup.md)：配置元数据库和根密钥、执行迁移、完成

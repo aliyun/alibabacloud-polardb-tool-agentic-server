@@ -177,7 +177,10 @@ Agent has exactly one Token record:
 - The creation response displays the new `pas_agent_...` Token.
 - The Agent detail page automatically displays the current active plaintext
   Token to an authenticated administrator.
-- **MCP server URL** shows the console origin with `/mcp`.
+- **MCP server URL** uses the active Runtime Policy `external_base_url` with
+  `/mcp`. If that setting is empty or unavailable, it falls back to the
+  console origin. Configure an address that the intended MCP client can
+  reach; a VPC address requires the client to have VPC connectivity.
 - **Copy JSON configuration** copies the MCP URL and Token in a ready-to-paste
   client configuration whose server name is the Agent name.
 - **Regenerate Token** replaces it; the previous Token stops authenticating

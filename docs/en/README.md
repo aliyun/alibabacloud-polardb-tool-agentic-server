@@ -4,6 +4,23 @@
 
 User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
+## Getting started
+
+- [Getting started overview](getting-started/overview.md): end-to-end roadmap
+  for a single ECS trial, from cloud resources to feature usage.
+- [Resource requirements](getting-started/cloud-resources.md): buy an ECS and a
+  PolarDB MySQL metadata database, and build the connection string.
+- [Deployment (single ECS + Docker Compose)](getting-started/deploy-compose.md):
+  install Docker, prepare `.env`, migrate, start, and claim ownership.
+- [Feature usage: guided configuration](getting-started/configure.md): set cloud
+  credentials, purchase settings, and pool network placement.
+- [Feature usage: register a database instance](getting-started/register-instance.md):
+  register an existing PolarDB cluster and verify connectivity.
+- [Feature usage: Agent, Token, and MCP](getting-started/agents-and-mcp.md):
+  create an Agent, issue a Token, grant access, and call the tools.
+- [Feature usage: resource pool and instances](getting-started/resource-pool.md):
+  set target capacity, replenish, and manage pooled instances.
+
 ## Setup
 
 - [Initial setup](setup/initial-setup.md): configure the metadata database and

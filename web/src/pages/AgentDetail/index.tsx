@@ -33,6 +33,7 @@ import {
   type AgentTokenSummary,
 } from '../../api/agents'
 import { getAPIErrorMessage } from '../../api/client'
+import { executeConfig } from '../../api/configuration'
 import {
   listInstanceCredentials,
   type InstanceCredential,
@@ -85,6 +86,13 @@ function editableAccessCapabilities(
     (capability): capability is AgentInstanceAccessCapability =>
       EDITABLE_ACCESS_CAPABILITIES.has(capability),
   )
+}
+
+function buildMCPServerURL(baseUrl: unknown): string {
+  const configuredBaseUrl =
+    typeof baseUrl === 'string' ? baseUrl.trim() : ''
+  const effectiveBaseUrl = configuredBaseUrl || window.location.origin
+  return `${effectiveBaseUrl.replace(/\/+$/, '')}/mcp`
 }
 
 type Confirmation =
@@ -163,6 +171,9 @@ export default function AgentDetail() {
   const [token, setToken] = useState<string | null>(null)
   const [tokenLoading, setTokenLoading] = useState(false)
   const [tokenError, setTokenError] = useState<string | null>(null)
+  const [mcpUrl, setMcpUrl] = useState(() =>
+    buildMCPServerURL(window.location.origin),
+  )
   const [accessDraft, setAccessDraft] =
     useState<AgentInstanceAccessInput | null>(null)
   const [accessDraftInstanceId, setAccessDraftInstanceId] =
@@ -256,6 +267,26 @@ export default function AgentDetail() {
     }
   }, [isCurrentScope, loadToken])
 
+  const loadMCPServerURL = useCallback(
+    async (scope: RouteScope) => {
+      let externalBaseUrl: unknown
+      try {
+        const response = await executeConfig({
+          action: 'describe',
+          module: 'runtime_policy',
+        })
+        externalBaseUrl =
+          response.module?.effective?.config.external_base_url
+      } catch {
+        // The Agent page remains usable when runtime configuration is unavailable.
+      }
+      if (isCurrentScope(scope)) {
+        setMcpUrl(buildMCPServerURL(externalBaseUrl))
+      }
+    },
+    [isCurrentScope],
+  )
+
   const beginRouteLoad = useCallback(() => {
     const generation = scopeRef.current.generation + 1
     const scope = { agentId: id, generation, mounted: true }
@@ -277,12 +308,16 @@ export default function AgentDetail() {
     setToken(null)
     setTokenLoading(false)
     setTokenError(null)
+    setMcpUrl(buildMCPServerURL(window.location.origin))
     setAccessDraft(null)
     setAccessDraftInstanceId(null)
     setAccessDraftValid(false)
     setAccessDeleteConflict(null)
-    if (id) void load(scope)
-  }, [id, load])
+    if (id) {
+      void load(scope)
+      void loadMCPServerURL(scope)
+    }
+  }, [id, load, loadMCPServerURL])
 
   const loadCredentialsForInstance = useCallback(
     async (instanceId: string) => {
@@ -663,7 +698,7 @@ export default function AgentDetail() {
         <section aria-labelledby="agent-mcp-connection-heading">
           <MCPConnectionPanel
             agentName={agent.name}
-            mcpUrl={`${window.location.origin}/mcp`}
+            mcpUrl={mcpUrl}
             token={token}
             loading={tokenLoading}
             error={tokenError}
