@@ -26,7 +26,7 @@ lockfile、Chart 和 app 版本一致。
 ```text
 fix: harden resource pool networking and endpoint selection
 
-Release-Version: v0.0.3
+Release-Version: vMAJOR.MINOR.PATCH
 Source-Develop: 0123456789abcdef0123456789abcdef01234567
 ```
 
@@ -73,12 +73,16 @@ Release；不会自动发布。
 标签源码的全部版本、镜像标签与平台 digest、Chart 可读性，以及 Release
 确实不存在。工作流不会重建或重新推送已有版本的镜像或 Chart。
 
-必须先运行只读预检：
+将 `RELEASE_TAG` 和 `EXPECTED_COMMIT` 设置为未完成 Release 的准确值，再先
+运行只读预检：
 
 ```bash
+RELEASE_TAG="${RELEASE_TAG:?set the existing vMAJOR.MINOR.PATCH tag}"
+EXPECTED_COMMIT="${EXPECTED_COMMIT:?set the exact 40-character tag commit}"
+
 gh workflow run recover-release.yml \
-  -f tag=v0.0.2 \
-  -f expected_commit=f60b33cf5fc6a22da5bc0b10e2d42faa74660dae \
+  -f tag="${RELEASE_TAG}" \
+  -f expected_commit="${EXPECTED_COMMIT}" \
   -f dry_run=true
 ```
 

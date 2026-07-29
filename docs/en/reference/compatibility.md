@@ -14,6 +14,14 @@ Agent Token-only deployments also restart safely with an HTTP VPC
 `external_base_url`. It does not require a metadata schema migration from
 `0.0.1`.
 
+Version `0.0.3` requires resource-pool provisioning to use an explicit VPC
+and vSwitch, hardens SQL and credential-sensitive paths, updates dependency
+security baselines, and adds signed multi-architecture release and recovery
+artifacts. Its container no longer needs the v0.0.1 `PYTHONPATH: /app`
+workaround. Upgrading from `0.0.2` keeps the same metadata schema head, but
+operators must still run the release migration command before replacing the
+server container.
+
 ## Runtime compatibility
 
 - Python runtime: 3.11 or later for source installation.

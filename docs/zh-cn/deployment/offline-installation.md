@@ -11,9 +11,10 @@ AMD64 和 ARM64 镜像归档。生产网络无法稳定访问 GHCR 时（包括�
 从同一个不可变 Release 下载所需资产。跨网络边界传输前先验证：
 
 ```bash
+PAS_VERSION=0.0.3
 sha256sum --check SHA256SUMS
 gh attestation verify \
-  polardb-agentic-server-0.0.2-deploy.tar.gz \
+  "polardb-agentic-server-${PAS_VERSION}-deploy.tar.gz" \
   --repo aliyun/alibabacloud-polardb-tool-agentic-server
 ```
 
@@ -26,15 +27,16 @@ gh attestation verify \
 
 ```bash
 gzip --decompress --stdout \
-  polardb-agentic-server-0.0.2-image-linux-amd64.tar.gz \
+  "polardb-agentic-server-${PAS_VERSION}-image-linux-amd64.tar.gz" \
   | docker load
 ```
 
 多主机或 Kubernetes 环境应将镜像导入客户自有 ACR、Harbor 或其他私有仓库：
 
 ```bash
-docker tag SOURCE_IMAGE PRIVATE_REGISTRY/polardb-agentic-server:0.0.2
-docker push PRIVATE_REGISTRY/polardb-agentic-server:0.0.2
+docker tag SOURCE_IMAGE \
+  "PRIVATE_REGISTRY/polardb-agentic-server:${PAS_VERSION}"
+docker push "PRIVATE_REGISTRY/polardb-agentic-server:${PAS_VERSION}"
 ```
 
 推送后记录私有仓库 digest。本项目不声明不存在的中国大陆官方 ACR 地址。
@@ -47,7 +49,8 @@ Compose 部署将 `PAS_IMAGE` 设为导入后的镜像引用，优先使用
 Helm 部署指定私有仓库和不可变 digest：
 
 ```bash
-helm upgrade --install pas ./polardb-agentic-server-0.0.2-chart.tgz \
+helm upgrade --install pas \
+  "./polardb-agentic-server-${PAS_VERSION}-chart.tgz" \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=PRIVATE_REGISTRY/polardb-agentic-server \

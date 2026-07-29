@@ -11,6 +11,11 @@
 Token 的部署也可以在配置 HTTP VPC `external_base_url` 后安全重启。从
 `0.0.1` 升级不需要执行新的元数据 Schema 迁移。
 
+`0.0.3` 要求资源池创建显式配置 VPC 和 vSwitch，强化 SQL 与凭证敏感路径，
+更新依赖安全基线，并增加带签名的多架构发布及恢复制品。其容器不再需要
+v0.0.1 的 `PYTHONPATH: /app` workaround。从 `0.0.2` 升级时元数据库
+Schema head 不变，但替换 server 容器前仍必须执行发布版本的迁移命令。
+
 ## 运行时兼容性
 
 - 源码安装的 Python 运行时：3.11 或更高版本。

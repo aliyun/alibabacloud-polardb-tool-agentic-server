@@ -79,19 +79,9 @@ python3 -c 'import base64,os; print("PAS_ENCRYPTION_KEY="+base64.b64encode(os.ur
 
 ## 第四步：执行迁移并启动
 
-v0.0.1 镜像存在一个已知问题：直接启动时 Web 控制台（含 `/setup` 页面）会
-返回 `Not Found`。启动前请编辑
-`deploy/compose/compose.external-mysql.yaml`，在 `environment:` 块中加入
-`PYTHONPATH: /app`：
-
-```yaml
-  environment: &pas-environment
-    PAS_DATABASE_URL: ${PAS_DATABASE_URL:?set PAS_DATABASE_URL}
-    PAS_ENCRYPTION_KEY: ${PAS_ENCRYPTION_KEY:?set PAS_ENCRYPTION_KEY}
-    PYTHONPATH: /app
-```
-
-已启动的服务补加该行后重新执行 `up -d server` 即可生效。
+v0.0.3 镜像已经正确安装 `pas` 入口与 server package，不需要覆盖
+`PYTHONPATH`。如果从曾添加 `PYTHONPATH: /app` workaround 的 v0.0.1
+部署升级，请从 `deploy/compose/compose.external-mysql.yaml` 中删除该行。
 
 使用面向外部元数据库的 Compose 文件，先迁移再启动：
 

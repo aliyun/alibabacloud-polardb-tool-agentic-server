@@ -87,20 +87,10 @@ Edit `.env`:
 
 ## Step 4: Migrate and start
 
-The v0.0.1 image has a known issue: when started as-is, the web console
-(including the `/setup` page) returns `Not Found`. Before starting, edit
-`deploy/compose/compose.external-mysql.yaml` and add `PYTHONPATH: /app` to
-the `environment:` block:
-
-```yaml
-  environment: &pas-environment
-    PAS_DATABASE_URL: ${PAS_DATABASE_URL:?set PAS_DATABASE_URL}
-    PAS_ENCRYPTION_KEY: ${PAS_ENCRYPTION_KEY:?set PAS_ENCRYPTION_KEY}
-    PYTHONPATH: /app
-```
-
-For an already-running service, add the line and run `up -d server` again to
-apply it.
+The v0.0.3 image installs the `pas` entry point and server package without
+requiring a `PYTHONPATH` override. If you are upgrading a v0.0.1 deployment
+that added `PYTHONPATH: /app` as a workaround, remove that line from
+`deploy/compose/compose.external-mysql.yaml`.
 
 Use the Compose file for an external metadata database, migrating before
 starting:

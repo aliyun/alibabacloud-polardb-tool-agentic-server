@@ -27,13 +27,14 @@ creates or copies these values.
 ## Install or upgrade
 
 ```bash
+PAS_VERSION=0.0.3
 helm lint deploy/helm/polardb-agentic-server
 helm upgrade --install pas \
   deploy/helm/polardb-agentic-server \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server \
-  --set image.tag=0.0.2 \
+  --set "image.tag=${PAS_VERSION}" \
   --wait --timeout 10m
 ```
 
@@ -108,8 +109,9 @@ Release maintainers can run the complete two-replica lifecycle test with
 mirrored Kind and MySQL images:
 
 ```bash
+PAS_VERSION=0.0.3
 scripts/deploy/smoke-helm.sh \
-  --image polardb-agentic-server:local-v0.0.2 \
+  --image "polardb-agentic-server:local-v${PAS_VERSION}" \
   --mysql-image registry.example.com/library/mysql:8.0.44 \
   --kind-image registry.example.com/kindest/node:v1.35.0
 ```

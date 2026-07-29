@@ -27,12 +27,18 @@ curl --fail http://127.0.0.1:18760/readyz
 
 Do not update the server if migration fails.
 
+When upgrading from a v0.0.1 Compose deployment, remove the historical
+`PYTHONPATH: /app` workaround from the Compose environment. The v0.0.3 image
+installs the application and `pas` entry point correctly without that
+override.
+
 ## Helm
 
 The Chart's `pre-upgrade` migration Job blocks the Deployment update:
 
 ```bash
-helm upgrade pas ./polardb-agentic-server-0.0.2-chart.tgz \
+PAS_VERSION=0.0.3
+helm upgrade pas "./polardb-agentic-server-${PAS_VERSION}-chart.tgz" \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=REGISTRY/polardb-agentic-server \

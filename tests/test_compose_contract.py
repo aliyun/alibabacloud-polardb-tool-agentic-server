@@ -83,11 +83,22 @@ def test_external_database_compose_has_no_embedded_database(
     services = _load(path)["services"]
 
     assert set(services) == {"migrate", "server"}
+    for name in ("migrate", "server"):
+        assert services[name]["image"] == (
+            "${PAS_IMAGE:-" + DEFAULT_PAS_IMAGE + "}"
+        )
+        assert "PYTHONPATH" not in services[name]["environment"]
     assert services["migrate"]["command"] == ["database", "migrate"]
     assert (
         services["server"]["depends_on"]["migrate"]["condition"]
         == "service_completed_successfully"
     )
+
+
+def test_compose_env_example_uses_current_image_version() -> None:
+    content = (ROOT / ".env.compose.example").read_text(encoding="utf-8")
+
+    assert f"PAS_IMAGE={DEFAULT_PAS_IMAGE}\n" in content
 
 
 def test_docker_compose_config_is_valid_when_cli_is_available() -> None:

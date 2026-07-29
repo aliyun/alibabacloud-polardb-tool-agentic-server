@@ -14,6 +14,7 @@ CURRENT_VERSION = tomllib.loads(
 major, minor, patch = (int(part) for part in CURRENT_VERSION.split("."))
 NEXT_VERSION = f"{major}.{minor}.{patch + 1}"
 VERSION_PATHS = (
+    ".env.compose.example",
     "Dockerfile",
     "pyproject.toml",
     "server/version.py",
@@ -22,9 +23,16 @@ VERSION_PATHS = (
     "web/package-lock.json",
     "compose.yaml",
     "deploy/compose/compose.external-mysql.yaml",
+    "deploy/compose/compose.external-postgres.yaml",
     "deploy/helm/polardb-agentic-server/Chart.yaml",
     "deploy/helm/polardb-agentic-server/values.yaml",
     "scripts/public-release/rehearse.sh",
+    "docs/en/deployment/kubernetes-helm.md",
+    "docs/zh-cn/deployment/kubernetes-helm.md",
+    "docs/en/deployment/offline-installation.md",
+    "docs/zh-cn/deployment/offline-installation.md",
+    "docs/en/deployment/upgrade-and-rollback.md",
+    "docs/zh-cn/deployment/upgrade-and-rollback.md",
     "docs/en/getting-started/deploy-compose.md",
     "docs/zh-cn/getting-started/deploy-compose.md",
     "docs/en/deployment/prerequisites.md",
@@ -141,6 +149,17 @@ def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
     assert (source / "release-notes.md").read_text(encoding="utf-8") == (
         "Historical releases v0.0.1 and v0.0.2 remain immutable.\n"
     )
+    expected_occurrences = {
+        "docs/en/deployment/kubernetes-helm.md": 2,
+        "docs/zh-cn/deployment/kubernetes-helm.md": 2,
+        "docs/en/deployment/offline-installation.md": 1,
+        "docs/zh-cn/deployment/offline-installation.md": 1,
+        "docs/en/deployment/upgrade-and-rollback.md": 1,
+        "docs/zh-cn/deployment/upgrade-and-rollback.md": 1,
+    }
+    for relative, count in expected_occurrences.items():
+        content = (source / relative).read_text(encoding="utf-8")
+        assert content.count(f"PAS_VERSION={NEXT_VERSION}") == count
 
 
 def test_bump_version_rejects_dirty_tracked_worktree(

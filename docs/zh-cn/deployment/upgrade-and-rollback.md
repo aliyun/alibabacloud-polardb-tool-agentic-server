@@ -25,12 +25,17 @@ curl --fail http://127.0.0.1:18760/readyz
 
 迁移失败时不要更新 server。
 
+从 v0.0.1 Compose 部署升级时，请从 Compose 环境中删除历史
+`PYTHONPATH: /app` workaround。v0.0.3 镜像已经正确安装应用和 `pas`
+入口，不需要该覆盖项。
+
 ## Helm
 
 Chart 的 `pre-upgrade` 迁移 Job 会阻止失败的 Deployment 更新：
 
 ```bash
-helm upgrade pas ./polardb-agentic-server-0.0.2-chart.tgz \
+PAS_VERSION=0.0.3
+helm upgrade pas "./polardb-agentic-server-${PAS_VERSION}-chart.tgz" \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \
   --set image.repository=REGISTRY/polardb-agentic-server \

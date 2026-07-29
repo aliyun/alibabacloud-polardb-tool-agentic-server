@@ -24,9 +24,10 @@ provider, not as a PAS dual-secret mechanism.
 
 ## Root encryption key
 
-Version `0.0.2` does not provide online root-key re-encryption. Do not replace
-`PAS_ENCRYPTION_KEY` on a running database. A changed key causes fail-closed
-decryption errors. Preserve and restore the original key with the database.
+The current release does not provide online root-key re-encryption. Do not
+replace `PAS_ENCRYPTION_KEY` on a running database. A changed key causes
+fail-closed decryption errors. Preserve and restore the original key with the
+database.
 
 ## Validation
 

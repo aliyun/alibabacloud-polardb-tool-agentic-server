@@ -49,8 +49,26 @@ TEXT_VERSIONS = (
         ),
     ),
     TextVersion(
+        "Compose environment example",
+        ".env.compose.example",
+        re.compile(
+            r"(?m)^PAS_IMAGE=ghcr\.io/aliyun/"
+            r"alibabacloud-polardb-tool-agentic-server:"
+            r"(\d+\.\d+\.\d+)$"
+        ),
+    ),
+    TextVersion(
         "External MySQL Compose",
         "deploy/compose/compose.external-mysql.yaml",
+        re.compile(
+            r"(?m)^  image: \$\{PAS_IMAGE:-"
+            r"ghcr\.io/aliyun/alibabacloud-polardb-tool-agentic-server:"
+            r"(\d+\.\d+\.\d+)\}$"
+        ),
+    ),
+    TextVersion(
+        "External PostgreSQL Compose",
+        "deploy/compose/compose.external-postgres.yaml",
         re.compile(
             r"(?m)^  image: \$\{PAS_IMAGE:-"
             r"ghcr\.io/aliyun/alibabacloud-polardb-tool-agentic-server:"
@@ -80,6 +98,56 @@ TEXT_VERSIONS = (
     TextVersion(
         "Chinese prerequisites",
         "docs/zh-cn/deployment/prerequisites.md",
+        re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "English Helm install guide",
+        "docs/en/deployment/kubernetes-helm.md",
+        re.compile(
+            r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)\nhelm lint"
+        ),
+    ),
+    TextVersion(
+        "English Helm smoke guide",
+        "docs/en/deployment/kubernetes-helm.md",
+        re.compile(
+            r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)\n"
+            r"scripts/deploy/smoke-helm\.sh"
+        ),
+    ),
+    TextVersion(
+        "Chinese Helm install guide",
+        "docs/zh-cn/deployment/kubernetes-helm.md",
+        re.compile(
+            r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)\nhelm lint"
+        ),
+    ),
+    TextVersion(
+        "Chinese Helm smoke guide",
+        "docs/zh-cn/deployment/kubernetes-helm.md",
+        re.compile(
+            r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)\n"
+            r"scripts/deploy/smoke-helm\.sh"
+        ),
+    ),
+    TextVersion(
+        "English offline installation guide",
+        "docs/en/deployment/offline-installation.md",
+        re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "Chinese offline installation guide",
+        "docs/zh-cn/deployment/offline-installation.md",
+        re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "English upgrade guide",
+        "docs/en/deployment/upgrade-and-rollback.md",
+        re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "Chinese upgrade guide",
+        "docs/zh-cn/deployment/upgrade-and-rollback.md",
         re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
     ),
 )

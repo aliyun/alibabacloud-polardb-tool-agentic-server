@@ -182,7 +182,7 @@ def discover_source_versions(source: Path) -> dict[str, str]:
     )
     try:
         return module.read_versions(source)
-    except ValueError:
+    except (FileNotFoundError, ValueError):
         return _legacy_source_versions(source)
 
 
