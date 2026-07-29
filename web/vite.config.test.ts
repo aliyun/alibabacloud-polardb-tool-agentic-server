@@ -16,3 +16,11 @@ it('proxies setup discovery to the backend in local development', () => {
     },
   })
 })
+
+it('allows interaction-heavy jsdom tests enough time on shared runners', () => {
+  if (typeof config === 'function') {
+    throw new Error('Expected a static Vite configuration')
+  }
+
+  expect(config.test?.testTimeout).toBe(10_000)
+})
