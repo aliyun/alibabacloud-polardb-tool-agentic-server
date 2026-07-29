@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -161,19 +162,33 @@ class IdentityFederation:
             resp.raise_for_status()
             claims = resp.json()
         elif "id_token" in token_response:
-            from jose import jwt as jose_jwt
-
             if endpoints.jwks_uri:
                 async with httpx.AsyncClient() as client:
                     jwks_resp = await client.get(endpoints.jwks_uri)
                     jwks_resp.raise_for_status()
                     jwks = jwks_resp.json()
-                claims = jose_jwt.decode(
+                header = jwt.get_unverified_header(
+                    token_response["id_token"]
+                )
+                keys = jwks.get("keys", [])
+                matching_keys = [
+                    key
+                    for key in keys
+                    if not header.get("kid")
+                    or key.get("kid") == header["kid"]
+                ]
+                if len(matching_keys) != 1:
+                    raise ValueError(
+                        "Cannot select a unique OIDC signing key"
+                    )
+                signing_key = jwt.PyJWK.from_dict(
+                    matching_keys[0]
+                ).key
+                claims = jwt.decode(
                     token_response["id_token"],
-                    jwks,
+                    signing_key,
                     algorithms=config.id_token_algorithms,
                     audience=config.client_id,
-                    options={"verify_at_hash": False},
                 )
             else:
                 raise ValueError(

@@ -12,7 +12,9 @@ import json
 import logging
 import time
 from typing import Any
-from jose import jwt as jose_jwt, JWTError
+
+import jwt
+from jwt import PyJWTError
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
@@ -51,9 +53,9 @@ def _is_excluded(path: str, extra_excluded: list[str]) -> bool:
 def _verify_guard_cookie(token: str) -> bool:
     try:
         _, public_key = _load_keys()
-        payload = jose_jwt.decode(token, public_key, algorithms=["RS256"])
+        payload = jwt.decode(token, public_key, algorithms=["RS256"])
         return payload.get("type") == "web_sso_guard"
-    except JWTError:
+    except PyJWTError:
         return False
 
 
@@ -177,7 +179,7 @@ async def handle_web_sso_guard_callback(request: Request) -> Response:
     private_key, _ = _load_keys()
     ttl_hours = config.auth.web_sso_guard.session_ttl_hours
     now = int(time.time())
-    guard_token = jose_jwt.encode(
+    guard_token = jwt.encode(
         {"type": "web_sso_guard", "iat": now, "exp": now + ttl_hours * 3600},
         private_key,
         algorithm="RS256",

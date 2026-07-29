@@ -60,7 +60,7 @@ async def resolve_config_actor(
             ).hexdigest(),
         )
 
-    from jose import JWTError
+    from jwt import PyJWTError
     from sqlalchemy import select
 
     from server.auth.jwt_manager import verify_token
@@ -92,7 +92,7 @@ async def resolve_config_actor(
     try:
         payload = verify_token(token)
         principal = parse_subject(str(payload.get("sub", "")))
-    except (JWTError, InvalidPrincipalSubject):
+    except (PyJWTError, InvalidPrincipalSubject):
         raise HTTPException(
             status_code=401,
             detail={

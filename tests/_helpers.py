@@ -4,7 +4,7 @@ import hashlib
 import secrets
 import time
 
-from jose import jwt
+import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import server.auth.jwt_manager as _jm

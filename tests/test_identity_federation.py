@@ -310,7 +310,7 @@ class TestExtractUserIdentity:
     async def test_extract_via_id_token_with_jwks(self):
         """id_token fallback with jwks_uri verifies signature."""
         import base64
-        from jose import jwt as jose_jwt
+        import jwt as jose_jwt
         from cryptography.hazmat.primitives.asymmetric import rsa as rsa_mod
         from cryptography.hazmat.primitives import serialization
 

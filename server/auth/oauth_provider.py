@@ -11,7 +11,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, cast
 from urllib.parse import urlparse, urlunparse
 
-from jose import jwt, JWTError
+import jwt
+from jwt import PyJWTError
 from pydantic import AnyUrl
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -649,7 +650,7 @@ class PASAuthProvider:
                 algorithms=["RS256"],
                 options={"verify_aud": False},
             )
-        except JWTError:
+        except PyJWTError:
             return None
 
         if payload.get("type") != "access":
@@ -740,7 +741,7 @@ class PASAuthProvider:
                     algorithms=["RS256"],
                     options={"verify_aud": False},
                 )
-            except JWTError:
+            except PyJWTError:
                 return
             jti = payload.get("jti")
             exp = payload.get("exp")

@@ -192,6 +192,11 @@ class SQLGateway:
         instance_id: str,
     ) -> dict:
         """Execute trusted server SQL with separately bound parameters."""
+        if not isinstance(params, (list, tuple)):
+            raise SQLExecutionError(
+                "Parameterized SQL requires positional parameters",
+                "INVALID_PARAMS",
+            )
         config = get_config()
         conn = await self._acquire(
             user_id=user_id,

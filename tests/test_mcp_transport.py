@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from server.aliyun.polardb_client import MockPolarDBClient, set_polardb_client, reset_polardb_client

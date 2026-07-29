@@ -9,7 +9,7 @@ from datetime import timedelta
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine

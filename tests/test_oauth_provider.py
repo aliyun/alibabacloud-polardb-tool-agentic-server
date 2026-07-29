@@ -367,7 +367,7 @@ class TestCodeExchange:
         assert token.scope == "openid"
 
         # Verify JWT contents
-        from jose import jwt as jose_jwt
+        import jwt as jose_jwt
         from server.auth.jwt_manager import get_public_key
 
         payload = jose_jwt.decode(
@@ -624,7 +624,7 @@ class TestAccessToken:
         assert await provider.load_access_token("pas_agent_unknown") is None
 
     async def test_load_wrong_audience(self, provider):
-        from jose import jwt as jose_jwt
+        import jwt as jose_jwt
         from server.auth.jwt_manager import _load_keys
 
         private_key, _ = _load_keys()

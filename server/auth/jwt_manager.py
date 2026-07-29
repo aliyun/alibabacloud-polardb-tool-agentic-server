@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 from sqlalchemy import select
 
 from server.auth.principal import user_subject
@@ -197,14 +198,14 @@ def verify_token(token: str) -> dict[str, object]:
     header = jwt.get_unverified_header(token)
     kid = header.get("kid", "")
     if not isinstance(kid, str) or kid not in ring.public_keys:
-        raise JWTError("unknown JWT signing key")
+        raise PyJWTError("unknown JWT signing key")
     result: dict[str, object] = jwt.decode(
         token,
         ring.public_keys[kid],
         algorithms=[ring.algorithm],
     )
     if ring.require_epoch and result.get("session_epoch") != ring.session_epoch:
-        raise JWTError("JWT session epoch is no longer active")
+        raise PyJWTError("JWT session epoch is no longer active")
     return result
 
 

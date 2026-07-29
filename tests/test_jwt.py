@@ -1,7 +1,7 @@
 import time
 
 import pytest
-from jose import JWTError
+from jwt import PyJWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -72,7 +72,7 @@ class TestJWTManager:
         assert "BEGIN PUBLIC KEY" in pub
 
     def test_invalid_token_rejected(self):
-        with pytest.raises(JWTError):
+        with pytest.raises(PyJWTError):
             verify_token("invalid.token.here")
 
     def test_token_from_different_key_rejected(self):
@@ -86,7 +86,7 @@ class TestJWTManager:
         jm._private_key = priv_pem
         jm._public_key = pub_pem
 
-        with pytest.raises(JWTError):
+        with pytest.raises(PyJWTError):
             verify_token(token)
 
     def test_key_persistence_across_calls(self):
@@ -163,5 +163,5 @@ class TestJWTDatabaseInit:
             algorithm="RS256",
             headers={"kid": "unknown"},
         )
-        with pytest.raises(JWTError):
+        with pytest.raises(PyJWTError):
             verify_token(unknown)

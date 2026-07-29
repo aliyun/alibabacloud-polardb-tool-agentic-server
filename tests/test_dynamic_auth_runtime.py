@@ -48,11 +48,11 @@ async def test_session_epoch_invalidates_human_jwt() -> None:
         async with context.repository.session_factory() as session:
             await initialize_jwt_keys_from_db(session, context.crypto)
 
-        from jose import JWTError
+        from jwt import PyJWTError
 
         try:
             verify_token(old_token)
-        except JWTError:
+        except PyJWTError:
             pass
         else:
             raise AssertionError("stale human token was accepted")
@@ -113,9 +113,9 @@ async def test_activating_sso_increments_session_epoch() -> None:
         async with context.repository.session_factory() as session:
             await initialize_jwt_keys_from_db(session, context.crypto)
 
-        from jose import JWTError
+        from jwt import PyJWTError
 
-        with pytest.raises(JWTError):
+        with pytest.raises(PyJWTError):
             verify_token(old_token)
     finally:
         reset_keys()

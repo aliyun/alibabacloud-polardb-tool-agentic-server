@@ -88,6 +88,30 @@ def test_json_safe_cell_binary_fallback():
 
 
 class TestExecute:
+    async def test_parameterized_sql_rejects_mapping_parameters_before_connecting(self):
+        from server.core.sql_gateway import SQLGateway
+
+        cache = _make_mock_cache()
+
+        with pytest.raises(SQLExecutionError) as error:
+            await SQLGateway(cache).execute_parameterized(
+                host="private",
+                port=3306,
+                user="u",
+                password="SECRET",
+                sql="SELECT %(unsafe)s",
+                params={"unsafe": "value"},  # type: ignore[arg-type]
+                database=None,
+                user_id="uid",
+                instance_id="iid",
+            )
+
+        assert error.value.code == "INVALID_PARAMS"
+        assert error.value.message == (
+            "Parameterized SQL requires positional parameters"
+        )
+        cache.acquire.assert_not_awaited()
+
     async def test_generic_connection_error_is_sanitized(self):
         from server.core.sql_gateway import SQLGateway
 
