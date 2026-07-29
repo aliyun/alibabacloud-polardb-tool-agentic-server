@@ -24,6 +24,22 @@ def _fixture_repo(tmp_path: Path, *, secret: bool = False) -> Path:
     _write(source / "README.md", "# Public\n")
     _write(source / "server/app.py", "TOKEN = 'placeholder'\n")
     _write(source / "scripts/run.sh", "#!/bin/sh\nexit 0\n")
+    _write(
+        source / "pyproject.toml",
+        '[project]\nname = "fixture"\nversion = "1.2.3"\n',
+    )
+    _write(
+        source / "web/package.json",
+        '{"name":"fixture","version":"1.2.3"}\n',
+    )
+    _write(
+        source / "web/package-lock.json",
+        '{"name":"fixture","version":"1.2.3","packages":{"":{"version":"1.2.3"}}}\n',
+    )
+    _write(
+        source / "deploy/helm/polardb-agentic-server/Chart.yaml",
+        'apiVersion: v2\nname: fixture\nversion: 1.2.3\nappVersion: "1.2.3"\n',
+    )
     _write(source / ("docs/" + "superpowers/spec.md"), "internal\n")
     _write(source / "benign-unlisted.txt", "not selected\n")
     if secret:
@@ -128,6 +144,8 @@ def test_rehearsal_creates_one_root_commit_without_mutating_source_refs(tmp_path
             str(REHEARSE),
             "--source",
             str(source),
+            "--version",
+            "1.2.3",
             "--report",
             str(tmp_path / "audit.json"),
         ],
@@ -148,7 +166,31 @@ def test_rehearsal_creates_one_root_commit_without_mutating_source_refs(tmp_path
     assert result.returncode == 0, result.stderr
     assert before == after
     assert "one-root-commit: ok" in result.stdout
-    assert (tmp_path / "audit.json").exists()
+    report = (tmp_path / "audit.json").read_text(encoding="utf-8")
+    assert '"tag": "v1.2.3"' in report
+
+
+def test_rehearsal_rejects_malformed_version(tmp_path: Path) -> None:
+    source = _fixture_repo(tmp_path)
+
+    result = subprocess.run(
+        [
+            str(REHEARSE),
+            "--source",
+            str(source),
+            "--version",
+            "1..2",
+            "--report",
+            str(tmp_path / "audit.json"),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "--version must use MAJOR.MINOR.PATCH" in result.stderr
 
 
 def _audit_repo(tmp_path: Path) -> Path:

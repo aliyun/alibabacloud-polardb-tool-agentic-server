@@ -3,19 +3,23 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
+CURRENT_VERSION = tomllib.loads(
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
 MYSQL_IMAGE = (
     "mysql:8.0.44@"
     "sha256:9c3380eac945af0736031b200027f581925927c81e010056214a4bd6b6693714"
 )
 DEFAULT_PAS_IMAGE = (
     "ghcr.io/aliyun/"
-    "alibabacloud-polardb-tool-agentic-server:0.0.2"
+    f"alibabacloud-polardb-tool-agentic-server:{CURRENT_VERSION}"
 )
 
 

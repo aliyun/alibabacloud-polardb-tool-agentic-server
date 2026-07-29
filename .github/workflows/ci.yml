@@ -169,6 +169,9 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --locked --extra dev
+      - name: Validate public snapshot commit
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        run: python scripts/release/validate-public-commit.py "$GITHUB_SHA"
       - name: Test public metadata and documentation
         run: >-
           uv run pytest

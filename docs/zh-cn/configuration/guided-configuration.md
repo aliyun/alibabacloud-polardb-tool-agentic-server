@@ -31,7 +31,8 @@
   池化与专属建集群共用同一份规格。
 - `resource_pool` 依赖 `agentic_db_purchase`，持有网络位置以及资源池
   容量与补充行为。`region_id` 与 `zone_id` 为必填；`vpc_id` 与
-  `vswitch_id` 可选，留空时阿里云会在账号默认 VPC 中创建集群。
+  `vswitch_id` 也必须填写，并指向 PAS 可达的 VPC 与 VSwitch。PAS
+  无法识别自身部署环境所在的 VPC，因此不会使用阿里云账号的默认 VPC。
 
 可选模块可保持 `SKIPPED`，以后再配置。例如，可以跳过 `user_sso`，完全采用
 管理员颁发 Agent Token 的模式。停用已激活模块时会执行依赖感知的安全停用

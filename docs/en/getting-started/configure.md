@@ -41,8 +41,15 @@ for a trial; adjust later as needed.
 Set the network placement and pool parameters:
 
 - `region_id` and `zone_id` are required.
-- `vpc_id` and `vswitch_id` are optional; when omitted, Alibaba Cloud creates
-  clusters in the account's default VPC.
+- Both `vpc_id` and `vswitch_id` are required. PAS cannot automatically
+  determine the VPC of the ECS instance, container, or Kubernetes environment
+  where it runs, so it does not use the Alibaba Cloud account's default VPC.
+- Specify a VPC reachable from PAS and choose a VSwitch in that VPC and target
+  zone. PAS and the resource pool normally use the same VPC. If they use
+  different VPCs, establish connectivity first, for example through Cloud
+  Enterprise Network or VPC peering.
+- `security_ip_list` must allow PAS to reach the database; do not leave it at
+  the `127.0.0.1` default.
 
 <p align="center">
   <img src="../../zh-cn/getting-started/images/configure-resource-pool.png" alt="resource_pool configuration form" width="820">

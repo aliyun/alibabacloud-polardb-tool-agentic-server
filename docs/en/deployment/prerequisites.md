@@ -2,8 +2,8 @@
 
 [简体中文](../../zh-cn/deployment/prerequisites.md)
 
-Version `0.0.2` is an early public trial release. Use it in a controlled
-environment, keep backups, and pin the deployed image by digest.
+This is an early public trial release. Use it in a controlled environment,
+keep backups, and pin the deployed image by digest.
 
 ## Supported runtime
 
@@ -43,11 +43,16 @@ Container Registry mirror. Mirror the exact release digest and configure
 Compose or Helm to use that mirror; do not replace a version with a floating
 tag.
 
+The container image also provides a mutable `latest` alias for evaluation.
+Do not use it for production: pin the semantic version shown below or the
+verified digest instead.
+
 Verify an image after mirroring:
 
 ```bash
+PAS_VERSION=0.0.3
 docker buildx imagetools inspect \
-  ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.2
+  "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}"
 ```
 
 Continue with the Docker Compose or Kubernetes/Helm deployment guide after

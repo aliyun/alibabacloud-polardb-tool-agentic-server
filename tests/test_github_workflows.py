@@ -68,6 +68,25 @@ def test_ci_has_all_release_gate_jobs() -> None:
     )
 
 
+def test_public_commit_policy_validates_only_the_pushed_main_head() -> None:
+    workflow = _workflow("ci.yml")
+    steps = workflow["jobs"]["public-boundary"]["steps"]
+    validators = [
+        step
+        for step in steps
+        if "validate-public-commit.py" in step.get("run", "")
+    ]
+
+    assert len(validators) == 1
+    assert validators[0]["if"] == (
+        "${{ github.event_name == 'push' "
+        "&& github.ref == 'refs/heads/main' }}"
+    )
+    assert validators[0]["run"] == (
+        'python scripts/release/validate-public-commit.py "$GITHUB_SHA"'
+    )
+
+
 def test_all_current_workflow_actions_are_pinned() -> None:
     for workflow_path in sorted((ROOT / ".github/workflows").glob("*.yml")):
         workflow = _workflow(workflow_path.name)
@@ -109,3 +128,72 @@ def test_release_builds_and_verifies_immutable_public_artifacts() -> None:
     assert "actions/attest-build-provenance@" in content
     assert "--draft" in content
     assert "--prerelease" in content
+
+
+def test_recovery_workflow_is_manual_guarded_and_non_rebuilding() -> None:
+    workflow = _workflow("recover-release.yml")
+    content = (
+        ROOT / ".github/workflows/recover-release.yml"
+    ).read_text(encoding="utf-8")
+
+    assert set(workflow["on"]) == {"workflow_dispatch"}
+    inputs = workflow["on"]["workflow_dispatch"]["inputs"]
+    assert inputs["tag"]["required"] == "true"
+    assert inputs["expected_commit"]["required"] == "true"
+    assert inputs["dry_run"] == {
+        "description": "Validate only; do not create a GitHub Release",
+        "required": "true",
+        "type": "boolean",
+        "default": "true",
+    }
+    validate = workflow["jobs"]["validate"]
+    recover = workflow["jobs"]["recover"]
+    assert "environment" not in validate
+    assert recover["environment"] == "release"
+    assert recover["if"] == "${{ inputs.dry_run == false }}"
+    assert recover["needs"] == "validate"
+    assert "path: tools" in content
+    assert "path: tagged" in content
+    assert "ref: ${{ inputs.tag }}" in content
+    assert "docker build" not in content
+    assert "docker push" not in content
+    assert "helm push" not in content
+    assert "--verify-tag" in content
+    assert "--draft" in content
+    assert "--prerelease" in content
+    assert all(
+        FULL_SHA.fullmatch(step["uses"])
+        for step in _steps(workflow)
+        if "uses" in step
+    )
+
+
+def test_latest_promotion_runs_only_for_published_releases() -> None:
+    workflow = _workflow("promote-latest.yml")
+    job = workflow["jobs"]["promote"]
+    content = (
+        ROOT / ".github/workflows/promote-latest.yml"
+    ).read_text(encoding="utf-8")
+
+    assert workflow["on"] == {"release": {"types": ["published"]}}
+    assert workflow["permissions"] == {
+        "contents": "read",
+        "packages": "write",
+    }
+    assert job["environment"] == "release"
+    assert "scripts/release/select-latest-release.py" in content
+    assert "org.opencontainers.image.version" in content
+    assert "org.opencontainers.image.revision" in content
+    assert (
+        "docker buildx imagetools create --tag \"$IMAGE:latest\""
+        in content
+    )
+    assert "docker logout ghcr.io" in content
+    assert "FINAL_DIGEST" in content
+    assert "docker/build-push-action@" not in content
+    assert "helm push" not in content
+    assert all(
+        FULL_SHA.fullmatch(step["uses"])
+        for step in _steps(workflow)
+        if "uses" in step
+    )

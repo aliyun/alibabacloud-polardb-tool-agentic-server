@@ -38,7 +38,12 @@
 设置网络位置与资源池参数：
 
 - `region_id` 与 `zone_id` 为必填项。
-- `vpc_id` 与 `vswitch_id` 可选；留空时阿里云会在账号默认 VPC 中创建集群。
+- `vpc_id` 与 `vswitch_id` 均为必填项。PAS 无法自动识别承载自身的 ECS、
+  容器或 Kubernetes 环境所在的 VPC，因此不会使用阿里云账号的默认 VPC。
+- 请填写 PAS 可达的 VPC，并选择该 VPC、目标可用区中的 VSwitch。通常应与
+  PAS 部署在同一 VPC；如果使用不同 VPC，必须先通过云企业网、VPC 对等连接
+  等方式打通网络。
+- `security_ip_list` 应允许 PAS 访问数据库，不能保留默认的 `127.0.0.1`。
 
 <p align="center">
   <img src="images/configure-resource-pool.png" alt="resource_pool 配置表单" width="820">

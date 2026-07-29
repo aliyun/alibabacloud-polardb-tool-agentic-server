@@ -37,21 +37,23 @@ For a detailed installation guide, see
 
 ## Step 2: Download the deployment files
 
-Download the `v0.0.2` tag source archive from GitHub (it contains the Compose
-deployment files under `deploy/compose/`); Git is not required:
+Set `PAS_VERSION` to the release you want, then download that tag's source
+archive from GitHub. It contains the Compose deployment files under
+`deploy/compose/`, and Git is not required:
 
 ```bash
-wget https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v0.0.2.tar.gz
-tar -xzf v0.0.2.tar.gz
-cd alibabacloud-polardb-tool-agentic-server-0.0.2
+PAS_VERSION=0.0.3
+wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
+tar -xzf "v${PAS_VERSION}.tar.gz"
+cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
 ```
 
 Run all later commands inside this directory. The service image does not need
-a manual download; Compose pulls
-`ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.2` automatically
-on start, and you may pre-pull it with `docker pull`. If you prefer Git, you
-can `git clone` the repository and check out the `v0.0.2` tag instead; the
-directory layout is the same.
+a manual download; Compose pulls the image selected by that release's
+deployment files automatically on start, and you may pre-pull it with
+`docker pull`. If you prefer Git, you can `git clone` the repository and
+check out the matching `v${PAS_VERSION}` tag instead; the directory layout is
+the same.
 
 ## Step 3: Prepare .env
 

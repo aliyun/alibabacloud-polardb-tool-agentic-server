@@ -14,8 +14,9 @@ def test_all_runtime_version_sources_match_current_public_version() -> None:
     web = json.loads((ROOT / "web/package.json").read_text())
     web_lock = json.loads((ROOT / "web/package-lock.json").read_text())
 
-    assert project["project"]["version"] == "0.0.2"
-    assert web["version"] == "0.0.2"
-    assert web_lock["version"] == "0.0.2"
-    assert web_lock["packages"][""]["version"] == "0.0.2"
-    assert create_app().version == "0.0.2"
+    current = project["project"]["version"]
+
+    assert web["version"] == current
+    assert web_lock["version"] == current
+    assert web_lock["packages"][""]["version"] == current
+    assert create_app().version == current

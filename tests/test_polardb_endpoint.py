@@ -114,6 +114,17 @@ class TestPreflightNetworkCheck:
         assert result is not None
         assert "Region/Zone" in result["message"]
 
-    async def test_vpc_and_vswitch_are_optional(self):
+    async def test_vpc_and_vswitch_are_required(self):
         _install_config(region_id="cn-hangzhou", zone_id="cn-hangzhou-j")
+        result = await _preflight_check(None)
+        assert result is not None
+        assert "VPC/VSwitch" in result["message"]
+
+    async def test_explicit_vpc_and_vswitch_pass(self):
+        _install_config(
+            region_id="cn-hangzhou",
+            zone_id="cn-hangzhou-j",
+            vpc_id="vpc-bp-example",
+            vswitch_id="vsw-bp-example",
+        )
         assert await _preflight_check(None) is None

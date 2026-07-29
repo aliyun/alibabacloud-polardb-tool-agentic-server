@@ -37,9 +37,10 @@ The remaining capabilities are modular:
   cluster creation.
 - `resource_pool` depends on `agentic_db_purchase` and owns network
   placement plus pool sizing and replenishment behavior. `region_id`
-  and `zone_id` are required. `vpc_id` and `vswitch_id` are optional;
-  when omitted, Alibaba Cloud creates clusters in the account's
-  default VPC.
+  and `zone_id` are required. `vpc_id` and `vswitch_id` are also
+  required and must identify a VPC and VSwitch reachable from PAS.
+  PAS cannot detect its deployment VPC, so it does not use the
+  Alibaba Cloud account's default VPC.
 
 An optional module may remain `SKIPPED` and can be configured later. For
 example, a deployment can skip `user_sso` and use only administrator-issued

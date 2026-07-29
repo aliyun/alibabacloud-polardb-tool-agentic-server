@@ -156,7 +156,11 @@ class MockPolarDBClient(PolarDBClient):
 
     def set_endpoint_data(self, cluster_id: str, host: str, port: int) -> None:
         self._endpoints[cluster_id] = {"items": [{"endpoint_type": "Primary", "address_items": [
-            {"connection_string": host, "port": str(port)},
+            {
+                "connection_string": host,
+                "port": str(port),
+                "net_type": "Private",
+            },
         ]}]}
 
     def set_duplicate_error(self, method: str, should_duplicate: bool) -> None:

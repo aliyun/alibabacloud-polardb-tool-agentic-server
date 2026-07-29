@@ -334,6 +334,31 @@ def _placeholder(cluster_id: str, status: InstanceStatus, age_seconds: int = 0):
 
 
 class TestStalePlaceholderCleanup:
+    async def test_replenish_skips_when_vpc_network_is_missing(
+        self, session_factory
+    ):
+        from server import config as config_module
+        from server.config import AppConfig
+        from server.core.pool_manager import _replenish_once
+
+        config_module._config = AppConfig(
+            polardb={
+                "resource_pool": {
+                    "target_size": 1,
+                    "region_id": "cn-test",
+                    "zone_id": "cn-test-a",
+                }
+            }
+        )
+
+        await _replenish_once(session_factory, set())
+
+        async with session_factory() as session:
+            instances = (
+                await session.execute(select(Instance))
+            ).scalars().all()
+        assert instances == []
+
     async def test_replenish_removes_stale_placeholders(self, session_factory):
         from server import config as config_module
         from server.config import AppConfig

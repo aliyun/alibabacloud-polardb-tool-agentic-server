@@ -114,6 +114,13 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
       - name: Save platform image archives
         run: |
+          index_manifest="$RUNNER_TEMP/release-image-index.json"
+          docker buildx imagetools inspect --raw \
+            "$IMAGE@${{ steps.build.outputs.digest }}" >"$index_manifest"
+          amd64_digest=$(python scripts/release/resolve-platform-digest.py \
+            --manifest "$index_manifest" --platform linux/amd64)
+          arm64_digest=$(python scripts/release/resolve-platform-digest.py \
+            --manifest "$index_manifest" --platform linux/arm64)
           scripts/release/save-image-archive.sh \
             --image "$IMAGE@${{ steps.build.outputs.digest }}" \
             --platform linux/amd64 \
@@ -126,6 +133,15 @@ jobs:
             --version "$VERSION" \
             --revision "$GITHUB_SHA" \
             --output "$ASSET_DIR/polardb-agentic-server-$VERSION-image-linux-arm64.tar.gz"
+          {
+            echo "### Release image digests"
+            echo
+            echo "| Manifest | Digest |"
+            echo "| --- | --- |"
+            echo "| index | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| linux/amd64 | \`$amd64_digest\` |"
+            echo "| linux/arm64 | \`$arm64_digest\` |"
+          } >>"$GITHUB_STEP_SUMMARY"
       - name: Install Syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610
       - name: Generate SPDX SBOM and checksums

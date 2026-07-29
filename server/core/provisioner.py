@@ -63,9 +63,25 @@ async def resolve_primary_endpoint(
             f"available types: {list(by_type.keys())}"
         )
     addr = next(
-        (a for a in chosen["address_items"] if a.get("net_type") == preferred_net_type),
-        chosen["address_items"][0],
+        (
+            item
+            for item in chosen["address_items"]
+            if item.get("net_type") == preferred_net_type
+        ),
+        None,
     )
+    if addr is None:
+        available_net_types = sorted(
+            {
+                str(item.get("net_type"))
+                for item in chosen["address_items"]
+                if item.get("net_type")
+            }
+        )
+        raise ProvisioningError(
+            f"no {preferred_net_type} endpoint for {cluster_id}; "
+            f"available network types: {available_net_types}"
+        )
     return addr["connection_string"], int(addr["port"])
 
 
@@ -127,6 +143,8 @@ async def _preflight_check(session: AsyncSession) -> dict | None:
     pool = config.polardb.resource_pool
     if not pool.region_id or not pool.zone_id:
         errors.append("Network config (Region/Zone) not configured")
+    if not pool.vpc_id or not pool.vswitch_id:
+        errors.append("Network config (VPC/VSwitch) not configured")
     if errors:
         return {"error": "PROVISIONING_NOT_READY", "message": "; ".join(errors)}
     return None

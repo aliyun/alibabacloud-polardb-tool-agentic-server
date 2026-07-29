@@ -1,0 +1,92 @@
+name: Promote Published Release to Latest
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: promote-container-latest
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server
+  CANDIDATE_TAG: ${{ github.event.release.tag_name }}
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    environment: release
+    steps:
+      - name: Check out published tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+      - name: Install Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - name: Verify highest published semantic version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts/release/select-latest-release.py \
+            --candidate "$CANDIDATE_TAG" \
+            --repo "$GITHUB_REPOSITORY"
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Verify immutable candidate image
+        run: |
+          version="${CANDIDATE_TAG#v}"
+          commit=$(git rev-parse "$CANDIDATE_TAG^{commit}")
+          source="$IMAGE:$version"
+          manifest="$RUNNER_TEMP/candidate-index.json"
+          docker buildx imagetools inspect --raw "$source" >"$manifest"
+          source_digest=$(docker buildx imagetools inspect "$source" \
+            --format '{{json .Manifest}}' | jq -er '.digest // .Digest')
+          for platform in linux/amd64 linux/arm64; do
+            child_digest=$(python scripts/release/resolve-platform-digest.py \
+              --manifest "$manifest" --platform "$platform")
+            image_json=$(docker buildx imagetools inspect \
+              "$IMAGE@$child_digest" --format '{{json .Image}}')
+            actual_version=$(printf '%s' "$image_json" | jq -er \
+              '.config.Labels["org.opencontainers.image.version"] // .config.labels["org.opencontainers.image.version"]')
+            actual_revision=$(printf '%s' "$image_json" | jq -er \
+              '.config.Labels["org.opencontainers.image.revision"] // .config.labels["org.opencontainers.image.revision"]')
+            test "$actual_version" = "$version"
+            test "$actual_revision" = "$commit"
+          done
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+          echo "COMMIT=$commit" >>"$GITHUB_ENV"
+          echo "SOURCE_DIGEST=$source_digest" >>"$GITHUB_ENV"
+      - name: Promote verified digest
+        run: |
+          docker buildx imagetools create --tag "$IMAGE:latest" \
+            "$IMAGE@$SOURCE_DIGEST"
+      - name: Verify alias anonymously
+        run: |
+          docker logout ghcr.io
+          final_digest=$(docker buildx imagetools inspect "$IMAGE:latest" \
+            --format '{{json .Manifest}}' | jq -er '.digest // .Digest')
+          test "$final_digest" = "$SOURCE_DIGEST"
+          echo "FINAL_DIGEST=$final_digest" >>"$GITHUB_ENV"
+          {
+            echo "### Container latest promotion"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Candidate | \`$CANDIDATE_TAG\` |"
+            echo "| Commit | \`$COMMIT\` |"
+            echo "| Source digest | \`$SOURCE_DIGEST\` |"
+            echo "| Final latest digest | \`$final_digest\` |"
+          } >>"$GITHUB_STEP_SUMMARY"

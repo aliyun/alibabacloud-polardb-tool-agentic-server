@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from server.configuration.registry import (
     MODULE_REGISTRY,
     topological_modules,
@@ -125,3 +127,39 @@ def test_aliyun_access_accepts_vpc_openapi_network() -> None:
 
     assert result.valid is True
     assert result.normalized_config["openapi_network"] == "vpc"
+
+
+@pytest.mark.parametrize(
+    ("vpc_id", "vswitch_id"),
+    [
+        ("", ""),
+        ("vpc-bp-example", ""),
+        ("", "vsw-bp-example"),
+    ],
+)
+def test_resource_pool_requires_explicit_vpc_and_vswitch(
+    vpc_id: str,
+    vswitch_id: str,
+) -> None:
+    result = validate_module_config(
+        "resource_pool",
+        {
+            "region_id": "cn-hangzhou",
+            "zone_id": "cn-hangzhou-j",
+            "vpc_id": vpc_id,
+            "vswitch_id": vswitch_id,
+        },
+        effective_configs={},
+    )
+
+    assert result.valid is False
+    assert result.error_code == "INVALID_MODULE_CONFIG"
+
+
+def test_resource_pool_describes_vpc_reachability_requirement() -> None:
+    schema = MODULE_REGISTRY[
+        "resource_pool"
+    ].model.model_json_schema()
+
+    assert "PAS" in schema["properties"]["vpc_id"]["description"]
+    assert "reachable" in schema["properties"]["vpc_id"]["description"]

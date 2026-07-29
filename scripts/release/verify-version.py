@@ -4,25 +4,14 @@
 from __future__ import annotations
 
 import argparse
-import json
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+from versioning import verify_versions
 
 
 SEMVER_TAG = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
-
-
-def _chart_versions(path: Path) -> tuple[str, str]:
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"(version|appVersion):\s*[\"']?([^\"'\s]+)[\"']?", line)
-        if match:
-            values[match.group(1)] = match.group(2)
-    if set(values) != {"version", "appVersion"}:
-        raise ValueError("Chart.yaml must define version and appVersion")
-    return values["version"], values["appVersion"]
 
 
 def verify(tag: str, root: Path) -> str:
@@ -30,21 +19,7 @@ def verify(tag: str, root: Path) -> str:
     if not match:
         raise ValueError("release tag must use vMAJOR.MINOR.PATCH")
     version = tag.removeprefix("v")
-    python_version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-    web_version = json.loads((root / "web/package.json").read_text(encoding="utf-8"))["version"]
-    lock_version = json.loads((root / "web/package-lock.json").read_text(encoding="utf-8"))["version"]
-    chart_version, app_version = _chart_versions(root / "deploy/helm/polardb-agentic-server/Chart.yaml")
-    versions = {
-        "Python": python_version,
-        "Web": web_version,
-        "Web lock": lock_version,
-        "Chart": chart_version,
-        "Chart appVersion": app_version,
-    }
-    mismatches = {name: value for name, value in versions.items() if value != version}
-    if mismatches:
-        rendered = ", ".join(f"{name}={value}" for name, value in sorted(mismatches.items()))
-        raise ValueError(f"tag {tag} does not match: {rendered}")
+    verify_versions(root, version)
     return version
 
 

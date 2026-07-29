@@ -216,11 +216,17 @@ async def _replenish_once(
                 await session.commit()
             return
 
-        if not pool.region_id or not pool.zone_id:
+        if (
+            not pool.region_id
+            or not pool.zone_id
+            or not pool.vpc_id
+            or not pool.vswitch_id
+        ):
             if stale_placeholders:
                 await session.commit()
             logger.warning(
-                "pool replenishment skipped: pool_region_id or pool_zone_id not configured"
+                "pool replenishment skipped: explicit region, zone, VPC, "
+                "and VSwitch configuration is required"
             )
             return
 

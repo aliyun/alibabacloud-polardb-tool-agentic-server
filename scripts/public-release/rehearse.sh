@@ -5,6 +5,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DEFAULT_SOURCE=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 SOURCE=$DEFAULT_SOURCE
 REPORT=
+VERSION=
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -16,6 +17,10 @@ while [ "$#" -gt 0 ]; do
       REPORT=$2
       shift 2
       ;;
+    --version)
+      VERSION=$2
+      shift 2
+      ;;
     *)
       echo "unknown argument: $1" >&2
       exit 2
@@ -24,8 +29,21 @@ while [ "$#" -gt 0 ]; do
 done
 
 SOURCE=$(CDPATH= cd -- "$SOURCE" && pwd)
+python3 - "$VERSION" <<'PY' || {
+import re
+import sys
+
+if re.fullmatch(
+    r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)",
+    sys.argv[1],
+) is None:
+    raise SystemExit(1)
+PY
+  echo "--version must use MAJOR.MINOR.PATCH" >&2
+  exit 2
+}
 if [ -z "$REPORT" ]; then
-  REPORT=$DEFAULT_SOURCE/.public-release/v0.0.2-audit.json
+  REPORT=$DEFAULT_SOURCE/.public-release/v"$VERSION"-audit.json
 fi
 case "$REPORT" in
   /*) ;;
@@ -46,19 +64,19 @@ git -C "$PUBLIC_TREE" \
   -c user.name="Public Release Rehearsal" \
   -c user.email="release-rehearsal@example.invalid" \
   commit -qm "release: public source snapshot"
-git -C "$PUBLIC_TREE" tag v0.0.2
+git -C "$PUBLIC_TREE" tag v"$VERSION"
 
-SOURCE_TAR=$TEMP_ROOT/polardb-agentic-server-0.0.2-source.tar
+SOURCE_TAR=$TEMP_ROOT/polardb-agentic-server-"$VERSION"-source.tar
 SOURCE_ARCHIVE=$SOURCE_TAR.gz
 git -C "$PUBLIC_TREE" archive \
   --format=tar \
-  --prefix=polardb-agentic-server-0.0.2/ \
+  --prefix=polardb-agentic-server-"$VERSION"/ \
   HEAD >"$SOURCE_TAR"
 gzip -n -c "$SOURCE_TAR" >"$SOURCE_ARCHIVE"
 
 "$SCRIPT_DIR/audit-refs.sh" \
   --repo "$PUBLIC_TREE" \
-  --tag v0.0.2 \
+  --tag v"$VERSION" \
   --archive "$SOURCE_ARCHIVE" \
   --report "$REPORT"
 

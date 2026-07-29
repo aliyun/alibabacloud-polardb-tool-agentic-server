@@ -35,19 +35,20 @@ sudo docker compose version
 
 ## 第二步：下载部署文件
 
-从 GitHub 下载 `v0.0.2` 标签的源码包（包含 `deploy/compose/` 下的
-Compose 部署文件），无需安装 Git：
+将 `PAS_VERSION` 设置为要部署的版本，再从 GitHub 下载对应标签的源码包。
+源码包包含 `deploy/compose/` 下的 Compose 部署文件，无需安装 Git：
 
 ```bash
-wget https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v0.0.2.tar.gz
-tar -xzf v0.0.2.tar.gz
-cd alibabacloud-polardb-tool-agentic-server-0.0.2
+PAS_VERSION=0.0.3
+wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
+tar -xzf "v${PAS_VERSION}.tar.gz"
+cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
 ```
 
-后续命令均在该目录内执行。服务镜像无需手动下载，启动时会自动从
-`ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.2` 拉取；也可
-提前执行 `docker pull` 预热。习惯使用 Git 时，也可以
-`git clone` 仓库后切换到 `v0.0.2` 标签，目录结构相同。
+后续命令均在该目录内执行。服务镜像无需手动下载，启动时会自动拉取该版本
+部署文件指定的镜像；也可提前执行 `docker pull` 预热。习惯使用 Git 时，
+也可以 `git clone` 仓库后切换到对应的 `v${PAS_VERSION}` 标签，目录结构
+相同。
 
 ## 第三步：准备 .env
 

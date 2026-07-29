@@ -146,6 +146,34 @@ class TestResolvePrimaryEndpoint:
         with pytest.raises(ProvisioningError, match="no usable endpoint"):
             await resolve_primary_endpoint(mock_client, "pc-001")
 
+    async def test_does_not_fall_back_to_wrong_network_type(
+        self, mock_client
+    ):
+        mock_client._endpoints["pc-001"] = {
+            "items": [
+                {
+                    "endpoint_type": "Primary",
+                    "address_items": [
+                        {
+                            "connection_string": "public.example.com",
+                            "port": "3306",
+                            "net_type": "Public",
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with pytest.raises(
+            ProvisioningError,
+            match="no Private endpoint",
+        ):
+            await resolve_primary_endpoint(
+                mock_client,
+                "pc-001",
+                preferred_net_type="Private",
+            )
+
 
 # ---------------------------------------------------------------------------
 # complete_provisioning tests

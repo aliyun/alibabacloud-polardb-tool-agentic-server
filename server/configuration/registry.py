@@ -101,8 +101,23 @@ class AgenticDBPurchaseConfig(_StrictModel):
 class ResourcePoolConfig(_StrictModel):
     target_size: int = Field(default=0, ge=0)
     region_id: str = Field(min_length=1)
-    vpc_id: str = ""
-    vswitch_id: str = ""
+    vpc_id: str = Field(
+        min_length=1,
+        title="VPC ID",
+        description=(
+            "Required. Choose a VPC that is reachable from the PAS "
+            "deployment. PAS cannot detect the VPC of the ECS, container, "
+            "or Kubernetes environment where it is running."
+        ),
+    )
+    vswitch_id: str = Field(
+        min_length=1,
+        title="VSwitch ID",
+        description=(
+            "Required. Choose a VSwitch in the selected VPC and zone. "
+            "Alibaba Cloud's default VPC is not used."
+        ),
+    )
     zone_id: str = Field(min_length=1)
     security_ip_list: str = "127.0.0.1"
     endpoint_net_type: str = Field(

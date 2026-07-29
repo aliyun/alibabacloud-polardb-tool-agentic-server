@@ -20,6 +20,24 @@ package and OCI Chart package public and confirm repository linkage. The
 workflow deliberately logs out and performs anonymous image and Chart reads;
 it stops before creating a Release if either package remains private.
 
+## Public snapshot commits
+
+Apply a verified `develop` snapshot to public `main` as a new incremental
+commit; never amend or replace existing public history. Its subject must use
+an allowed Conventional Commit type and describe the user-visible behavior or
+fix, rather than only the version or publication action. For example:
+
+```text
+fix: harden resource pool networking and endpoint selection
+
+Release-Version: v0.0.3
+Source-Develop: 0123456789abcdef0123456789abcdef01234567
+```
+
+The required trailers record the semantic release version and exact internal
+source commit without reducing the subject to `publish v0.0.x` or
+`port develop`.
+
 ## Draft inspection
 
 The protected workflow produces immutable multi-architecture image and Chart
@@ -39,9 +57,43 @@ Before publication, the approving maintainer must inspect:
 Document accepted vulnerability exceptions with scope, rationale, owner, and
 expiry. Do not hide or silently waive a scanner finding.
 
+## Container `latest` alias
+
+Publishing a GitHub Release may promote its verified container image digest
+to the mutable `latest` alias. Promotion runs only when the candidate is the
+highest published semantic version, so a delayed older Release cannot move
+the alias backward. The alias applies only to the container image; it does
+not create or replace a Chart version.
+
+Use `latest` only for evaluation and discovery. Production and reproducible
+deployments must continue to pin an exact semantic version or, preferably,
+the verified image digest.
+
 ## Immutability
 
 Never replace a published tag, image, Chart, archive, checksum, or Release
 asset. If a defect is found, create a new patch version. A rerun fails when a
 Release for the tag already exists. Keep `prerelease` enabled throughout the
 `v0.0.x` line.
+
+## Recovering an incomplete Release
+
+If an immutable tag, image, and Chart exist but the GitHub Release was not
+created, use the manual recovery workflow. It validates the exact tag commit,
+its reachability from public `main`, all tagged source versions, image labels
+and platform digests, Chart readability, and the absence of a Release. The
+workflow never rebuilds or republishes the versioned image or Chart.
+
+Always run the read-only validation first:
+
+```bash
+gh workflow run recover-release.yml \
+  -f tag=v0.0.2 \
+  -f expected_commit=f60b33cf5fc6a22da5bc0b10e2d42faa74660dae \
+  -f dry_run=true
+```
+
+Review the JSON evidence in the job summary. Only then may a maintainer start
+the mutating job by changing `dry_run` to `false`. That job requires approval
+through the `release` Environment and creates a **Draft, Pre-release** for
+manual inspection. It does not publish the draft.

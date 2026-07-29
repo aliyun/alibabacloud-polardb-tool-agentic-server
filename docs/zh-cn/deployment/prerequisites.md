@@ -2,8 +2,8 @@
 
 [English](../../en/deployment/prerequisites.md)
 
-`0.0.2` 是公开试用版本。请在受控环境使用，保留备份，并按镜像 digest
-固定实际部署内容。
+当前为公开试用版本。请在受控环境使用，保留备份，并按镜像 digest 固定
+实际部署内容。
 
 ## 支持的运行环境
 
@@ -36,11 +36,15 @@
 的镜像代理，或同步到私有阿里云容器镜像服务。请同步同一个发布 digest，并在
 Compose 或 Helm 中指定镜像仓库；不要用浮动标签替代固定版本。
 
+容器镜像同时提供可变的 `latest` 别名供试用。生产环境不要使用该别名，应固定
+下方所示的语义版本，或直接固定已验证的 digest。
+
 同步后可检查镜像：
 
 ```bash
+PAS_VERSION=0.0.3
 docker buildx imagetools inspect \
-  ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.2
+  "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}"
 ```
 
 满足以上前提后，再继续 Docker Compose 或 Kubernetes/Helm 部署指南。
