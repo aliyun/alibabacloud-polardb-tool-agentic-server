@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+from urllib.parse import urlsplit
 import base64
 from unittest.mock import patch, AsyncMock, MagicMock
 
@@ -193,7 +194,9 @@ class TestMiddlewareRedirect:
 
             resp = client.get("/dashboard")
             assert resp.status_code == 302
-            assert "login.example.com" in resp.headers["location"]
+            location = urlsplit(resp.headers["location"])
+            assert location.scheme == "https"
+            assert location.hostname == "login.example.com"
 
 
 class TestMiddlewareCookieValidation:

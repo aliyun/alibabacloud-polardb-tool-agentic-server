@@ -1,4 +1,6 @@
 # tests/test_sql_classifier.py
+from time import perf_counter
+
 import pytest
 from server.core.sql_classifier import classify_sql
 
@@ -42,3 +44,11 @@ class TestClassifySql:
     ])
     def test_edge_cases(self, sql, expected):
         assert classify_sql(sql) == expected
+
+    def test_unclosed_comment_input_is_processed_in_linear_time(self):
+        sql = "/*" + "a/*" * 10_000
+
+        started = perf_counter()
+        assert classify_sql(sql) == "OTHER"
+
+        assert perf_counter() - started < 0.25

@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import hmac
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -35,6 +37,19 @@ def config():
         health_check=True,
         cleanup_interval_s=1,
     )
+
+
+def test_password_fingerprint_uses_a_process_keyed_digest():
+    from server.core.connection_cache import (
+        _PASSWORD_FINGERPRINT_KEY,
+        _password_fingerprint,
+    )
+
+    assert _password_fingerprint("pw") == hmac.new(
+        _PASSWORD_FINGERPRINT_KEY,
+        b"pw",
+        hashlib.sha256,
+    ).hexdigest()
 
 
 class TestAcquire:

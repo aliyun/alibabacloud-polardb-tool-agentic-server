@@ -1,4 +1,5 @@
 import asyncio
+from time import perf_counter
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from asyncmy.errors import OperationalError
@@ -50,6 +51,7 @@ def test_mentions_session_branch_variants():
     assert _mentions_session_branch("SET branch = 'br1'")
     assert _mentions_session_branch("SET @@session./**/branch = 'br1'")
     assert _mentions_session_branch("SET @@session.-- comment\nbranch = 'br1'")
+    assert _mentions_session_branch("SET @@session.-- comment\rbranch = 'br1'")
     assert _mentions_session_branch("SET @@session.# comment\nbranch = 'br1'")
     assert _mentions_session_branch("/*! SET @@session.branch = 'br1' */ SELECT 1")
     assert _mentions_session_branch("/*!50000 SET @@session.branch = 'br1' */ SELECT 1")
@@ -60,6 +62,23 @@ def test_mentions_session_branch_variants():
     assert not _mentions_session_branch('SELECT "SET SESSION branch = br1"')
     assert not _mentions_session_branch("SELECT '/*!50000 SET @@session.branch = br1 */'")
     assert not _mentions_session_branch("/* SET @@session.branch = 'br1' */ SELECT 1")
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "/*" + "a/*" * 10_000,
+        "'" + "\\'" * 10_000,
+    ],
+    ids=["unclosed-comments", "unclosed-string"],
+)
+def test_session_branch_scan_handles_adversarial_sql_in_linear_time(sql):
+    from server.core.sql_gateway import _mentions_session_branch
+
+    started = perf_counter()
+    assert not _mentions_session_branch(sql)
+
+    assert perf_counter() - started < 0.25
 
 
 def test_changes_database_context_variants():

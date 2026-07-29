@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -60,19 +59,112 @@ async def _exec_simple(conn, sql: str, params: tuple | None = None) -> None:
             await cur.execute(sql, params)
 
 
-def _expand_executable_comments(sql: str) -> str:
-    return re.sub(r"/\*!\d*\s*(.*?)\*/", r" \1 ", sql, flags=re.DOTALL)
+def _sql_code_for_session_scan(sql: str) -> str:
+    """Return executable SQL text without literals or inert comments.
 
+    MySQL executable comments (``/*! ... */``) remain visible to the caller.
+    The scanner consumes each input character at most once, aside from a
+    non-nesting recursive scan of executable comment contents.
+    """
+    output: list[str] = []
+    index = 0
+    length = len(sql)
+    while index < length:
+        char = sql[index]
 
-def _strip_string_literals(sql: str) -> str:
-    return re.sub(r"'(?:''|\\.|[^'\\])*'|\"(?:\"\"|\\.|[^\"\\])*\"", "", sql)
+        if char in {"'", '"'}:
+            quote = char
+            output.append(" ")
+            index += 1
+            while index < length:
+                if sql[index] == "\\" and index + 1 < length:
+                    index += 2
+                    continue
+                if sql[index] == quote:
+                    if index + 1 < length and sql[index + 1] == quote:
+                        index += 2
+                        continue
+                    index += 1
+                    break
+                index += 1
+            continue
+
+        if (
+            char == "-"
+            and index + 1 < length
+            and sql[index + 1] == "-"
+        ):
+            line_end_candidates = [
+                position
+                for position in (
+                    sql.find("\r", index + 2),
+                    sql.find("\n", index + 2),
+                )
+                if position >= 0
+            ]
+            if not line_end_candidates:
+                break
+            line_end = min(line_end_candidates)
+            output.append(sql[line_end])
+            index = line_end + 1
+            continue
+
+        if char == "#":
+            line_end_candidates = [
+                position
+                for position in (
+                    sql.find("\r", index + 1),
+                    sql.find("\n", index + 1),
+                )
+                if position >= 0
+            ]
+            if not line_end_candidates:
+                break
+            line_end = min(line_end_candidates)
+            output.append(sql[line_end])
+            index = line_end + 1
+            continue
+
+        if (
+            char == "/"
+            and index + 1 < length
+            and sql[index + 1] == "*"
+        ):
+            comment_end = sql.find("*/", index + 2)
+            if comment_end < 0:
+                break
+            if index + 2 < length and sql[index + 2] == "!":
+                content_start = index + 3
+                while (
+                    content_start < comment_end
+                    and sql[content_start].isdigit()
+                ):
+                    content_start += 1
+                while (
+                    content_start < comment_end
+                    and sql[content_start].isspace()
+                ):
+                    content_start += 1
+                output.append(" ")
+                output.append(
+                    _sql_code_for_session_scan(
+                        sql[content_start:comment_end]
+                    )
+                )
+                output.append(" ")
+            else:
+                output.append(" ")
+            index = comment_end + 2
+            continue
+
+        output.append(char)
+        index += 1
+
+    return "".join(output)
 
 
 def _mentions_session_branch(sql: str) -> bool:
-    sql = _strip_string_literals(sql)
-    sql = _expand_executable_comments(sql)
-    sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
-    sql = re.sub(r"(--[^\r\n]*|#[^\r\n]*)", "", sql)
+    sql = _sql_code_for_session_scan(sql)
     normalized = "".join(sql.lower().split()).replace("`", "")
     return any(pattern in normalized for pattern in (
         "@@session.branch",
@@ -85,7 +177,7 @@ def _mentions_session_branch(sql: str) -> bool:
 
 
 def _changes_database_context(sql: str) -> bool:
-    sql = _expand_executable_comments(sql)
+    sql = _sql_code_for_session_scan(sql)
     try:
         for stmt in sqlparse.parse(sql):
             for token in stmt.flatten():

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
+import hmac
 import logging
+import secrets
 import time
 from dataclasses import dataclass
 
@@ -12,6 +13,7 @@ from server.config import ConnectionPoolConfig
 from server.core.sql_executor import SQLExecutionError
 
 logger = logging.getLogger(__name__)
+_PASSWORD_FINGERPRINT_KEY = secrets.token_bytes(32)
 
 
 async def _exec_simple(conn: asyncmy.Connection, sql: str) -> None:
@@ -32,7 +34,11 @@ class CachedConnection:
 
 
 def _password_fingerprint(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return hmac.digest(
+        _PASSWORD_FINGERPRINT_KEY,
+        password.encode("utf-8"),
+        "sha256",
+    ).hex()
 
 
 class ConnectionCache:
