@@ -14,6 +14,8 @@ import sys
 import tarfile
 from pathlib import Path, PurePosixPath
 
+from versioning import verify_versions
+
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSION = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -87,6 +89,7 @@ def _tar_gz(output: Path, files: list[tuple[Path, str]], prefix: str) -> None:
 
 def build_bundle(version: str, output_directory: Path) -> None:
     asset_names(version)
+    verify_versions(ROOT, version)
     if not output_directory.is_absolute():
         raise ValueError("output directory must be absolute")
     output_directory.mkdir(parents=True, exist_ok=True)

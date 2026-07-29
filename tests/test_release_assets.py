@@ -141,6 +141,23 @@ def test_deployment_bundle_is_deterministic_and_allowlisted(tmp_path: Path) -> N
     assert not any("secret" in member.name.lower() for member in members)
 
 
+def test_deployment_bundle_rejects_version_drift(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            "scripts/release/build-deployment-bundle.sh",
+            "9.9.9",
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "expected 9.9.9" in result.stderr
+
+
 def test_image_archive_builder_rejects_mutable_reference(tmp_path: Path) -> None:
     result = subprocess.run(
         [
