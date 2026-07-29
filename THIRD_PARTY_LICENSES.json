@@ -553,12 +553,6 @@
     },
     {
       "ecosystem": "npm",
-      "name": "@remix-run/router",
-      "version": "1.23.3",
-      "license": "MIT"
-    },
-    {
-      "ecosystem": "npm",
       "name": "@rolldown/pluginutils",
       "version": "1.0.0-rc.3",
       "license": "MIT"
@@ -1119,6 +1113,12 @@
       "ecosystem": "npm",
       "name": "convert-source-map",
       "version": "2.0.0",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "cookie",
+      "version": "1.1.1",
       "license": "MIT"
     },
     {
@@ -2084,13 +2084,13 @@
     {
       "ecosystem": "npm",
       "name": "react-router",
-      "version": "6.30.4",
+      "version": "7.18.1",
       "license": "MIT"
     },
     {
       "ecosystem": "npm",
       "name": "react-router-dom",
-      "version": "6.30.4",
+      "version": "7.18.1",
       "license": "MIT"
     },
     {
@@ -2158,6 +2158,12 @@
       "name": "semver",
       "version": "7.8.5",
       "license": "ISC"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "set-cookie-parser",
+      "version": "2.7.2",
+      "license": "MIT"
     },
     {
       "ecosystem": "npm",
