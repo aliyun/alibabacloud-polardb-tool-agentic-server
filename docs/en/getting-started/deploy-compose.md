@@ -58,15 +58,22 @@ the same.
 ## Step 3: Prepare .env
 
 The external metadata database path needs `PAS_DATABASE_URL` and
-`PAS_ENCRYPTION_KEY` provided directly. Create `.env` and generate the root
-key:
+`PAS_ENCRYPTION_KEY` provided directly. Copy the external-database template,
+restrict it to the current user, and generate the root key:
 
 ```bash
-cat > .env <<'EOF'
-PAS_DATABASE_URL=mysql+asyncmy://USER:PASSWORD@ENDPOINT:3306/DATABASE
-EOF
+cp .env.example .env
 chmod 0600 .env
-python3 -c 'import base64,os; print("PAS_ENCRYPTION_KEY="+base64.b64encode(os.urandom(32)).decode())' >> .env
+python3 - <<'PY'
+import base64
+import os
+from pathlib import Path
+
+path = Path(".env")
+text = path.read_text()
+key = base64.b64encode(os.urandom(32)).decode()
+path.write_text(text.replace("PAS_ENCRYPTION_KEY=\n", f"PAS_ENCRYPTION_KEY={key}\n"))
+PY
 ```
 
 Edit `.env`:
@@ -76,9 +83,10 @@ Edit `.env`:
 - Append `PAS_IMAGE` and `PAS_PORT` as needed; on mainland China networks,
   mirror the image into an accessible registry first and reference the
   mirror.
-- Note: the repository's `.env.compose.example` (with `MYSQL_ROOT_PASSWORD`
-  and similar variables) targets the bundled-MySQL `compose.yaml` and is not
-  used by this tutorial's external metadata database path.
+- `.env.example` is the external-metadata-database template used by this
+  tutorial. Do not copy `.env.compose.example`; it contains
+  `MYSQL_ROOT_PASSWORD` and similar variables and is only for the root
+  `compose.yaml` with bundled MySQL.
 - Back up `.env`; restarts and upgrades must use the same root key.
 
 <p align="center">
@@ -87,10 +95,10 @@ Edit `.env`:
 
 ## Step 4: Migrate and start
 
-The v0.0.3 image installs the `pas` entry point and server package without
-requiring a `PYTHONPATH` override. If you are upgrading a v0.0.1 deployment
-that added `PYTHONPATH: /app` as a workaround, remove that line from
-`deploy/compose/compose.external-mysql.yaml`.
+The v0.0.3 and later images install the `pas` entry point and server package
+without requiring a `PYTHONPATH` override. If you are upgrading a v0.0.1
+deployment that added `PYTHONPATH: /app` as a workaround, remove that line
+from `deploy/compose/compose.external-mysql.yaml`.
 
 Use the Compose file for an external metadata database, migrating before
 starting:

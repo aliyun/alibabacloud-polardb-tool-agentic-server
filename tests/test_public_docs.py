@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -296,6 +297,20 @@ def test_example_configuration_contains_only_bootstrap_settings():
     assert "guided UI" in env_example
     assert "32-byte root key" in env_example
     assert "at least 32 bytes" not in env_example
+
+
+@pytest.mark.asyncio
+async def test_example_database_url_uses_an_installed_async_driver():
+    env_example = _read(".env.example")
+    database_url = re.search(
+        r"^PAS_DATABASE_URL=(.+)$",
+        env_example,
+        re.MULTILINE,
+    )
+    assert database_url is not None
+
+    engine = create_async_engine(database_url.group(1))
+    await engine.dispose()
 
 
 @pytest.mark.parametrize(

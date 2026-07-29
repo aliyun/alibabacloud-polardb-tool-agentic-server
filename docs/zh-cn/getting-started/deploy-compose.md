@@ -53,14 +53,21 @@ cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
 ## 第三步：准备 .env
 
 外部元数据库场景需要直接提供 `PAS_DATABASE_URL` 与 `PAS_ENCRYPTION_KEY`
-两个变量。创建 `.env` 并生成根密钥：
+两个变量。复制外部数据库配置模板，设置仅当前用户可读，并生成根密钥：
 
 ```bash
-cat > .env <<'EOF'
-PAS_DATABASE_URL=mysql+asyncmy://USER:PASSWORD@ENDPOINT:3306/DATABASE
-EOF
+cp .env.example .env
 chmod 0600 .env
-python3 -c 'import base64,os; print("PAS_ENCRYPTION_KEY="+base64.b64encode(os.urandom(32)).decode())' >> .env
+python3 - <<'PY'
+import base64
+import os
+from pathlib import Path
+
+path = Path(".env")
+text = path.read_text()
+key = base64.b64encode(os.urandom(32)).decode()
+path.write_text(text.replace("PAS_ENCRYPTION_KEY=\n", f"PAS_ENCRYPTION_KEY={key}\n"))
+PY
 ```
 
 编辑 `.env`：
@@ -69,8 +76,9 @@ python3 -c 'import base64,os; print("PAS_ENCRYPTION_KEY="+base64.b64encode(os.ur
   PolarDB 连接串。
 - 按需追加 `PAS_IMAGE`、`PAS_PORT`；中国大陆网络请先将镜像同步到可访问的
   镜像仓库，再引用同步后的地址。
-- 注意：仓库中的 `.env.compose.example`（含 `MYSQL_ROOT_PASSWORD` 等变量）
-  面向自带 MySQL 的 `compose.yaml`，本教程的外部元数据库场景无需使用。
+- `.env.example` 是本教程使用的外部元数据库模板；不要复制
+  `.env.compose.example`，后者包含 `MYSQL_ROOT_PASSWORD` 等变量，仅供自带
+  MySQL 的根目录 `compose.yaml` 使用。
 - 妥善备份 `.env`，重启与升级必须使用同一个根密钥。
 
 <p align="center">
@@ -79,7 +87,7 @@ python3 -c 'import base64,os; print("PAS_ENCRYPTION_KEY="+base64.b64encode(os.ur
 
 ## 第四步：执行迁移并启动
 
-v0.0.3 镜像已经正确安装 `pas` 入口与 server package，不需要覆盖
+v0.0.3 及后续镜像已经正确安装 `pas` 入口与 server package，不需要覆盖
 `PYTHONPATH`。如果从曾添加 `PYTHONPATH: /app` workaround 的 v0.0.1
 部署升级，请从 `deploy/compose/compose.external-mysql.yaml` 中删除该行。
 
