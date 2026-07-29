@@ -1,7 +1,7 @@
 name: polardb-agentic
 
 x-pas-image: &pas-image
-  image: ${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.3}
+  image: ${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.4}
   environment: &pas-environment
     PAS_DATABASE_URL: mysql+asyncmy://pas:${MYSQL_PASSWORD:?set MYSQL_PASSWORD}@mysql:3306/polardb_agentic
     PAS_ENCRYPTION_KEY: ${PAS_ENCRYPTION_KEY:?set PAS_ENCRYPTION_KEY}

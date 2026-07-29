@@ -42,7 +42,7 @@ Compose 或 Helm 中指定镜像仓库；不要用浮动标签替代固定版本
 同步后可检查镜像：
 
 ```bash
-PAS_VERSION=0.0.3
+PAS_VERSION=0.0.4
 docker buildx imagetools inspect \
   "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}"
 ```

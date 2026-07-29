@@ -42,7 +42,7 @@ archive from GitHub. It contains the Compose deployment files under
 `deploy/compose/`, and Git is not required:
 
 ```bash
-PAS_VERSION=0.0.3
+PAS_VERSION=0.0.4
 wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
 tar -xzf "v${PAS_VERSION}.tar.gz"
 cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"

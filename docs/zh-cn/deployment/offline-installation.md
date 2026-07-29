@@ -11,7 +11,7 @@ AMD64 和 ARM64 镜像归档。生产网络无法稳定访问 GHCR 时（包括�
 从同一个不可变 Release 下载所需资产。跨网络边界传输前先验证：
 
 ```bash
-PAS_VERSION=0.0.3
+PAS_VERSION=0.0.4
 sha256sum --check SHA256SUMS
 gh attestation verify \
   "polardb-agentic-server-${PAS_VERSION}-deploy.tar.gz" \

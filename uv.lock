@@ -211,7 +211,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/ab/98/d7111245f17935bf7
 
 [[package]]
 name = "alibabacloud-polardb-tool-agentic-server"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

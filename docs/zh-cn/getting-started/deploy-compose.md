@@ -39,7 +39,7 @@ sudo docker compose version
 源码包包含 `deploy/compose/` 下的 Compose 部署文件，无需安装 Git：
 
 ```bash
-PAS_VERSION=0.0.3
+PAS_VERSION=0.0.4
 wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
 tar -xzf "v${PAS_VERSION}.tar.gz"
 cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"

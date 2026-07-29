@@ -13,7 +13,7 @@ Download every required asset from the same immutable release. Verify the
 checksums before moving files across the network boundary:
 
 ```bash
-PAS_VERSION=0.0.3
+PAS_VERSION=0.0.4
 sha256sum --check SHA256SUMS
 gh attestation verify \
   "polardb-agentic-server-${PAS_VERSION}-deploy.tar.gz" \

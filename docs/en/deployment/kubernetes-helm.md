@@ -27,7 +27,7 @@ creates or copies these values.
 ## Install or upgrade
 
 ```bash
-PAS_VERSION=0.0.3
+PAS_VERSION=0.0.4
 helm lint deploy/helm/polardb-agentic-server
 helm upgrade --install pas \
   deploy/helm/polardb-agentic-server \
@@ -109,7 +109,7 @@ Release maintainers can run the complete two-replica lifecycle test with
 mirrored Kind and MySQL images:
 
 ```bash
-PAS_VERSION=0.0.3
+PAS_VERSION=0.0.4
 scripts/deploy/smoke-helm.sh \
   --image "polardb-agentic-server:local-v${PAS_VERSION}" \
   --mysql-image registry.example.com/library/mysql:8.0.44 \
