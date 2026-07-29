@@ -168,6 +168,18 @@ def test_recovery_workflow_is_manual_guarded_and_non_rebuilding() -> None:
     )
 
 
+def test_recovery_release_commands_target_the_dispatched_repository() -> None:
+    workflow = _workflow("recover-release.yml")
+    recover_steps = workflow["jobs"]["recover"]["steps"]
+    create_release = next(
+        step
+        for step in recover_steps
+        if step["name"] == "Create Draft pre-release"
+    )
+
+    assert create_release["env"]["GH_REPO"] == "${{ github.repository }}"
+
+
 def test_latest_promotion_runs_only_for_published_releases() -> None:
     workflow = _workflow("promote-latest.yml")
     job = workflow["jobs"]["promote"]

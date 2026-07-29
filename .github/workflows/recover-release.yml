@@ -177,6 +177,7 @@ jobs:
       - name: Create Draft pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$RECOVERY_TAG" "$ASSET_DIR"/* \
             --verify-tag \
