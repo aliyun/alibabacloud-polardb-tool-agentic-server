@@ -38,17 +38,8 @@ def test_dependabot_covers_all_dependency_ecosystems_weekly() -> None:
     assert all(update.get("groups") for update in updates)
 
 
-def test_codeql_has_read_only_source_access_and_expected_languages() -> None:
-    workflow = _load_yaml(".github/workflows/codeql.yml")
-
-    assert workflow["permissions"] == {
-        "contents": "read",
-        "security-events": "write",
-    }
-    assert set(workflow["jobs"]["analyze"]["strategy"]["matrix"]["language"]) == {
-        "python",
-        "javascript-typescript",
-    }
+def test_codeql_uses_the_organization_managed_default_setup() -> None:
+    assert not (ROOT / ".github/workflows/codeql.yml").exists()
 
 
 def test_issue_templates_warn_against_secret_disclosure() -> None:
