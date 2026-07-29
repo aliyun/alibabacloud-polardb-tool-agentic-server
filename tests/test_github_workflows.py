@@ -9,6 +9,26 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 FULL_SHA = re.compile(r"^[^@\s]+@[0-9a-f]{40}$")
+REVIEWED_ACTION_REFS = {
+    "actions/attest-build-provenance":
+        "0f67c3f4856b2e3261c31976d6725780e5e4c373",
+    "actions/checkout":
+        "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-node":
+        "820762786026740c76f36085b0efc47a31fe5020",
+    "actions/setup-python":
+        "5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "astral-sh/setup-uv":
+        "c771a70e6277c0a99b617c7a806ffedaca235ff9",
+    "azure/setup-helm":
+        "9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310",
+    "docker/build-push-action":
+        "53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+    "docker/login-action":
+        "371161bbe7024a29a25c5e19bfcbc0804fe9ad2c",
+    "docker/setup-buildx-action":
+        "bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
+}
 
 
 class _WorkflowLoader(yaml.SafeLoader):
@@ -95,6 +115,24 @@ def test_all_current_workflow_actions_are_pinned() -> None:
                 assert FULL_SHA.fullmatch(step["uses"]), (
                     f"{workflow_path.name}: action is not pinned: {step['uses']}"
                 )
+
+
+def test_reviewed_workflow_actions_use_current_pins() -> None:
+    seen: set[str] = set()
+    for workflow_path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+        workflow = _workflow(workflow_path.name)
+        for step in _steps(workflow):
+            if "uses" not in step:
+                continue
+            action, _, revision = step["uses"].partition("@")
+            if action not in REVIEWED_ACTION_REFS:
+                continue
+            assert revision == REVIEWED_ACTION_REFS[action], (
+                f"{workflow_path.name}: stale pin for {action}"
+            )
+            seen.add(action)
+
+    assert seen == set(REVIEWED_ACTION_REFS)
 
 
 def test_release_is_tag_gated_protected_and_minimally_privileged() -> None:

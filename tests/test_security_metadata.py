@@ -38,6 +38,26 @@ def test_dependabot_covers_all_dependency_ecosystems_weekly() -> None:
     assert all(update.get("groups") for update in updates)
 
 
+def test_dependabot_keeps_major_runtime_migrations_separate() -> None:
+    config = _load_yaml(".github/dependabot.yml")
+    updates = {
+        update["package-ecosystem"]: update
+        for update in config["updates"]
+    }
+
+    npm_group = updates["npm"]["groups"]["web-dependencies"]
+    assert npm_group["update-types"] == ["minor", "patch"]
+
+    docker_ignores = {
+        entry["dependency-name"]: entry["update-types"]
+        for entry in updates["docker"]["ignore"]
+    }
+    assert docker_ignores == {
+        "node": ["version-update:semver-major"],
+        "python": ["version-update:semver-major"],
+    }
+
+
 def test_codeql_uses_the_organization_managed_default_setup() -> None:
     assert not (ROOT / ".github/workflows/codeql.yml").exists()
 
