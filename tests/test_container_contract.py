@@ -82,3 +82,17 @@ def test_cached_build_reinstalls_the_current_project_wheel() -> None:
         "--reinstall-package "
         "alibabacloud-polardb-tool-agentic-server"
     ) in dockerfile
+
+
+def test_environment_generator_launcher_hardens_the_container() -> None:
+    launcher = (
+        ROOT / "scripts/deploy/create-external-mysql-env.sh"
+    ).read_text()
+
+    assert "--read-only" in launcher
+    assert "--tmpfs /tmp:rw,noexec,nosuid,nodev" in launcher
+    assert '--user "$(id -u):$(id -g)"' in launcher
+    assert "--entrypoint pas" in launcher
+    assert "database create-env --output /output/generated.env" in launcher
+    assert "PAS_DATABASE_URL=" not in launcher
+    assert "PAS_ENCRYPTION_KEY=" not in launcher

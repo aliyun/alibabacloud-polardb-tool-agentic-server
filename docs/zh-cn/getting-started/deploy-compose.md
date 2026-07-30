@@ -8,7 +8,7 @@
 ## 前置条件
 
 - 已获得 ECS 的 SSH 登录方式，并拥有 sudo 权限。
-- 已获得 PolarDB 的 `PAS_DATABASE_URL` 连接串。
+- 已获得 PolarDB 的连接地址、数据库名、用户名与密码。
 - ECS 安全组已放通 TCP 18760。
 
 ## 第一步：安装 Docker
@@ -39,7 +39,7 @@ sudo docker compose version
 源码包包含 `deploy/compose/` 下的 Compose 部署文件，无需安装 Git：
 
 ```bash
-PAS_VERSION=0.0.4
+PAS_VERSION=0.0.5
 wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
 tar -xzf "v${PAS_VERSION}.tar.gz"
 cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
@@ -52,38 +52,63 @@ cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
 
 ## 第三步：准备 .env
 
-外部元数据库场景需要直接提供 `PAS_DATABASE_URL` 与 `PAS_ENCRYPTION_KEY`
-两个变量。复制外部数据库配置模板，设置仅当前用户可读，并生成根密钥：
+使用当前发布版本提供的容器化工具生成 `PAS_DATABASE_URL` 与
+`PAS_ENCRYPTION_KEY`：
 
 ```bash
-cp .env.example .env
-chmod 0600 .env
-python3 - <<'PY'
-import base64
-import os
-from pathlib import Path
-
-path = Path(".env")
-text = path.read_text()
-key = base64.b64encode(os.urandom(32)).decode()
-path.write_text(text.replace("PAS_ENCRYPTION_KEY=\n", f"PAS_ENCRYPTION_KEY={key}\n"))
-PY
+scripts/deploy/create-external-mysql-env.sh
 ```
 
-编辑 `.env`：
+宿主机只运行 POSIX shell 与 Docker；Python、SQLAlchemy 和 `asyncmy`
+驱动均在选定的 PAS 镜像内运行。工具会依次提示连接地址、端口（默认
+`3306`）、数据库名和用户名，然后展示这些非敏感字段并询问
+`Use these settings? [Y/n]`；输入 `n` 可重新填写。密码输入会显示为 `*`
+但不会暴露实际内容。工具会安全编码特殊字符，构造 `mysql+asyncmy` URL，
+并在生成加密根密钥或创建 `.env` 前打印连接地址、数据库、用户名以及将要
+执行的 `SELECT 1` 动作。失败时会给出脱敏后的具体原因，例如认证失败、
+数据库不存在、域名解析失败或连接地址不可达。
 
-- 将 `PAS_DATABASE_URL` 替换为[资源要求](./cloud-resources.md)中产出的
-  PolarDB 连接串。
-- 按需追加 `PAS_IMAGE`、`PAS_PORT`；中国大陆网络请先将镜像同步到可访问的
-  镜像仓库，再引用同步后的地址。
-- `.env.example` 是本教程使用的外部元数据库模板；不要复制
-  `.env.compose.example`，后者包含 `MYSQL_ROOT_PASSWORD` 等变量，仅供自带
-  MySQL 的根目录 `compose.yaml` 使用。
-- 妥善备份 `.env`，重启与升级必须使用同一个根密钥。
+通过 Docker 运行工具时，`127.0.0.1` 与 `localhost` 指向生成器容器自身，
+不是宿主机。若 MySQL 运行在使用 Docker Desktop 的 macOS 或 Windows
+宿主机上，工具会询问 `Use host.docker.internal instead? [Y/n]`，确认后
+会真正替换 endpoint；其他环境应填写容器能够访问的 DNS 名称或 IP 地址。
 
-<p align="center">
-  <img src="images/env-file-example.png" alt=".env 填写示例" width="820">
-</p>
+成功后 `.env` 权限为 `0600`。工具拒绝覆盖已有路径；连接或写入失败时不会
+留下新的环境文件。不要通过命令行参数传递数据库字段或密码。
+
+如果发布镜像已经同步到其他镜像仓库，请显式选择：
+
+```bash
+scripts/deploy/create-external-mysql-env.sh \
+  --image registry.example/pas:VERSION
+```
+
+显式指定的 `--image` 也会作为 `PAS_IMAGE` 写入文件，确保后续 Compose
+命令使用同一个镜像。工具会忽略宿主环境中继承的 `PAS_IMAGE`、
+`PAS_DATABASE_URL` 与 `PAS_ENCRYPTION_KEY`。中国大陆网络请在执行该命令
+前先将镜像同步到可访问的仓库。
+
+连接测试默认采用失败即停止策略。只有数据库尚不可达且你明确接受未验证
+配置时，才使用：
+
+```bash
+scripts/deploy/create-external-mysql-env.sh --skip-connection-test
+```
+
+该选项会打印警告；如果连接信息有误，后续迁移或启动仍会失败。
+
+对于无法使用交互终端的高级自动化场景，只有在分别完成各 URI 组件的百分号
+编码后才手工创建文件。保留单引号，使 Compose 将 `$` 等字符视为字面量：
+
+```dotenv
+PAS_DATABASE_URL='mysql+asyncmy://USER:PERCENT_ENCODED_PASSWORD@ENDPOINT:3306/DATABASE'
+PAS_ENCRYPTION_KEY='BASE64_ENCODED_32_BYTE_KEY'
+```
+
+切勿将包含 URI 分隔符的原始密码直接拼入 URL。不要复制
+`.env.compose.example`，它包含 `MYSQL_ROOT_PASSWORD` 等变量，仅供自带
+MySQL 的根目录 `compose.yaml` 使用。可按需追加 `PAS_PORT`。请妥善备份
+`.env`，重启与升级必须使用同一个根密钥。
 
 ## 第四步：执行迁移并启动
 

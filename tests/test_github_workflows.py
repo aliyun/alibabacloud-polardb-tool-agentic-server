@@ -168,6 +168,33 @@ def test_release_builds_and_verifies_immutable_public_artifacts() -> None:
     assert "--prerelease" in content
 
 
+def test_release_smokes_environment_generation_before_anonymous_logout() -> None:
+    workflow = _workflow("release.yml")
+    steps = workflow["jobs"]["release"]["steps"]
+    names = [step["name"] for step in steps]
+
+    build_index = names.index(
+        "Build and publish multi-architecture image"
+    )
+    anonymous_index = names.index("Verify anonymous image pull")
+    smoke = next(
+        step
+        for step in steps
+        if step["name"] == "Smoke test Compose environment generation"
+    )
+    smoke_index = steps.index(smoke)
+
+    assert build_index < smoke_index < anonymous_index
+    assert smoke["env"] == {
+        "PAS_RUN_ENV_GENERATOR_MYSQL_TEST": "1",
+        "PAS_TEST_IMAGE": "${{ env.IMAGE }}:${{ env.VERSION }}",
+    }
+    assert smoke["run"] == (
+        "uv run pytest tests/integration/"
+        "test_env_generator_mysql.py -q"
+    )
+
+
 def test_recovery_workflow_is_manual_guarded_and_non_rebuilding() -> None:
     workflow = _workflow("recover-release.yml")
     content = (

@@ -71,14 +71,40 @@ Alembic head.
 
 ## External metadata database
 
-For an existing MySQL 8.0 database:
+For an existing MySQL 8.0 database, generate a restricted environment file
+instead of placing a hand-built URL in shell history:
 
 ```bash
-export PAS_DATABASE_URL='mysql+asyncmy://USER:PASSWORD@HOST:3306/DATABASE'
-docker compose \
-  -f deploy/compose/compose.external-mysql.yaml \
-  up -d
+scripts/deploy/create-external-mysql-env.sh --output .env.external-mysql
 ```
+
+The helper collects the endpoint, port, database, and username, then displays
+them for confirmation. Answer `n` at `Use these settings? [Y/n]` to re-enter
+them. Password input appears as `*` characters. If a Docker loopback address
+is entered, accepting `Use host.docker.internal instead? [Y/n]` actually
+replaces it before the final review.
+
+Before writing the file, the helper prints the non-secret connection target
+and executes `SELECT 1`. Authentication, missing-database, DNS, and connection
+failures are reported without exposing the password or full URL. A failed
+test leaves no output file, so correct the input and rerun the same command.
+After a successful generation, use a different output name to change the
+settings; the helper does not overwrite an existing file.
+
+Migrate first, then start the server with the generated file:
+
+```bash
+docker compose --env-file .env.external-mysql \
+  -f deploy/compose/compose.external-mysql.yaml run --rm migrate
+docker compose --env-file .env.external-mysql \
+  -f deploy/compose/compose.external-mysql.yaml up -d server
+```
+
+Use `--image IMAGE` when the PAS image is mirrored or when validating a
+candidate image. The selected image is saved in the generated file so later
+Compose commands use the same image. See the
+[single-ECS Compose walkthrough](../getting-started/deploy-compose.md) for the
+complete procedure.
 
 For PostgreSQL:
 
@@ -89,8 +115,8 @@ docker compose \
   up -d
 ```
 
-Store `PAS_DATABASE_URL` and `PAS_ENCRYPTION_KEY` in a restricted env file or
-secret manager rather than shell history.
+For PostgreSQL, store `PAS_DATABASE_URL` and `PAS_ENCRYPTION_KEY` in a
+restricted env file or secret manager rather than shell history.
 
 ## Stop or remove
 

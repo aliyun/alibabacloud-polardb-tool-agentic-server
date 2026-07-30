@@ -15,6 +15,10 @@ import httpx
 import yaml
 
 from server.db.schema import DatabaseSchemaError
+from server.deployment.env_generator import (
+    EnvironmentGenerationError,
+    read_masked_secret,
+)
 
 
 class CLIError(ValueError):
@@ -336,6 +340,16 @@ def build_parser() -> argparse.ArgumentParser:
     database_check.set_defaults(handler=_handle_database_check)
     database_migrate = database_commands.add_parser("migrate")
     database_migrate.set_defaults(handler=_handle_database_migrate)
+    database_create_env = database_commands.add_parser("create-env")
+    database_create_env.add_argument("--output", required=True)
+    database_create_env.add_argument(
+        "--skip-connection-test",
+        action="store_true",
+    )
+    database_create_env.add_argument("--image")
+    database_create_env.set_defaults(
+        handler=_handle_database_create_env
+    )
     config = root.add_parser("config")
     _add_remote_options(config)
     commands = config.add_subparsers(
@@ -409,6 +423,25 @@ def _handle_database_migrate(_args: argparse.Namespace) -> None:
 
     migrate_database()
     print("Database migration completed.")
+
+
+def _handle_database_create_env(args: argparse.Namespace) -> None:
+    from server.deployment.env_generator import (
+        create_environment_file,
+    )
+
+    output = Path(args.output)
+    asyncio.run(
+        create_environment_file(
+            output=output,
+            skip_connection_test=args.skip_connection_test,
+            image=args.image,
+            input_stream=sys.stdin,
+            output_stream=sys.stdout,
+            secret_reader=read_masked_secret,
+        )
+    )
+    print(f"Environment file created at {output}")
 
 
 def _handle_modules(args: argparse.Namespace) -> None:
@@ -612,6 +645,7 @@ def main(argv: list[str] | None = None) -> int:
     except (
         CLIError,
         DatabaseSchemaError,
+        EnvironmentGenerationError,
         OSError,
         httpx.HTTPError,
     ) as exc:

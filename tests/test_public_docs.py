@@ -316,6 +316,73 @@ async def test_example_database_url_uses_an_installed_async_driver():
 @pytest.mark.parametrize(
     "path",
     (
+        "docs/en/getting-started/deploy-compose.md",
+        "docs/zh-cn/getting-started/deploy-compose.md",
+    ),
+)
+def test_compose_guide_uses_safe_environment_generator(path: str):
+    text = _read(path)
+
+    required = {
+        "scripts/deploy/create-external-mysql-env.sh",
+        "--skip-connection-test",
+        "--image",
+        "SELECT 1",
+        "mysql+asyncmy",
+        "host.docker.internal",
+        "Use these settings? [Y/n]",
+    }
+    assert not [term for term in required if term not in text]
+    assert "python3 - <<'PY'" not in text
+    assert "cp .env.example .env" not in text
+    assert "mysql+aiomysql://" not in text
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/deployment/docker-compose.md",
+        "docs/zh-cn/deployment/docker-compose.md",
+    ),
+)
+def test_compose_operations_guide_uses_external_mysql_generator(
+    path: str,
+) -> None:
+    text = _read(path)
+    required = {
+        "scripts/deploy/create-external-mysql-env.sh",
+        "Use host.docker.internal instead? [Y/n]",
+        "SELECT 1",
+        "--env-file",
+        "compose.external-mysql.yaml",
+    }
+
+    assert not [term for term in required if term not in text]
+    assert "export PAS_DATABASE_URL='mysql+asyncmy://" not in text
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/getting-started/cloud-resources.md",
+        "docs/zh-cn/getting-started/cloud-resources.md",
+    ),
+)
+def test_cloud_resource_guide_defers_url_encoding_to_generator(
+    path: str,
+) -> None:
+    text = _read(path)
+
+    assert "scripts/deploy/create-external-mysql-env.sh" in text
+    assert (
+        "mysql+asyncmy://USER:PASSWORD@ENDPOINT:3306/DATABASE"
+        not in text
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
         "README.md",
         "README_zh-CN.md",
         "docs/en/setup/initial-setup.md",

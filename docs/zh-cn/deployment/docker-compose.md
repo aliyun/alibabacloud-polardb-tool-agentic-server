@@ -65,14 +65,35 @@ docker compose up -d --no-deps server
 
 ## 外部元数据库
 
-已有 MySQL 8.0 数据库：
+使用已有 MySQL 8.0 数据库时，通过工具生成权限受限的环境文件，不要在
+shell 历史中手工拼接 URL：
 
 ```bash
-export PAS_DATABASE_URL='mysql+asyncmy://USER:PASSWORD@HOST:3306/DATABASE'
-docker compose \
-  -f deploy/compose/compose.external-mysql.yaml \
-  up -d
+scripts/deploy/create-external-mysql-env.sh --output .env.external-mysql
 ```
+
+工具会收集 endpoint、端口、数据库名与用户名，然后展示这些字段供确认。
+在 `Use these settings? [Y/n]` 输入 `n` 可以重新填写；输入密码时显示为
+`*`。如果填写了 Docker loopback 地址，接受
+`Use host.docker.internal instead? [Y/n]` 后会在最终确认前真正完成替换。
+
+写入文件前，工具会打印非敏感连接目标并执行 `SELECT 1`。认证失败、数据库
+不存在、DNS 解析失败与连接不可达都会返回不含密码和完整 URL 的具体原因。
+测试失败不会生成文件，修正输入后可重复执行同一命令。成功生成后若需修改，
+请使用新的输出文件名；工具不会覆盖已有文件。
+
+使用生成的文件先迁移，再启动服务：
+
+```bash
+docker compose --env-file .env.external-mysql \
+  -f deploy/compose/compose.external-mysql.yaml run --rm migrate
+docker compose --env-file .env.external-mysql \
+  -f deploy/compose/compose.external-mysql.yaml up -d server
+```
+
+镜像已同步到其他仓库或正在验证候选镜像时，使用 `--image IMAGE`。选定的镜像
+会写入生成文件，确保后续 Compose 命令使用同一镜像。完整流程见
+[单台 ECS Compose 部署教程](../getting-started/deploy-compose.md)。
 
 PostgreSQL：
 
@@ -83,8 +104,8 @@ docker compose \
   up -d
 ```
 
-应通过权限受限的环境文件或密钥管理系统提供 `PAS_DATABASE_URL` 和
-`PAS_ENCRYPTION_KEY`，不要把它们留在 shell 历史中。
+PostgreSQL 场景应通过权限受限的环境文件或密钥管理系统提供
+`PAS_DATABASE_URL` 和 `PAS_ENCRYPTION_KEY`，不要把它们留在 shell 历史中。
 
 ## 停止或删除
 

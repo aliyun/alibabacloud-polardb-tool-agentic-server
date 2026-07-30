@@ -76,6 +76,15 @@ TEXT_VERSIONS = (
         ),
     ),
     TextVersion(
+        "Compose environment generator",
+        "scripts/deploy/create-external-mysql-env.sh",
+        re.compile(
+            r"(?m)^DEFAULT_PAS_IMAGE=ghcr\.io/aliyun/"
+            r"alibabacloud-polardb-tool-agentic-server:"
+            r"(\d+\.\d+\.\d+)$"
+        ),
+    ),
+    TextVersion(
         "Helm values",
         "deploy/helm/polardb-agentic-server/values.yaml",
         re.compile(r'(?m)^  tag: "(\d+\.\d+\.\d+)"$'),

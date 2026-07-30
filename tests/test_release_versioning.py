@@ -26,6 +26,7 @@ VERSION_PATHS = (
     "deploy/compose/compose.external-postgres.yaml",
     "deploy/helm/polardb-agentic-server/Chart.yaml",
     "deploy/helm/polardb-agentic-server/values.yaml",
+    "scripts/deploy/create-external-mysql-env.sh",
     "scripts/public-release/rehearse.sh",
     "docs/en/deployment/kubernetes-helm.md",
     "docs/zh-cn/deployment/kubernetes-helm.md",
@@ -130,6 +131,29 @@ def test_verify_version_rejects_python_lock_drift(tmp_path: Path) -> None:
     assert "Python lock" in result.stderr
 
 
+def test_verify_version_rejects_environment_generator_drift(
+    tmp_path: Path,
+) -> None:
+    source = _copy_version_tree(tmp_path)
+    launcher = source / "scripts/deploy/create-external-mysql-env.sh"
+    launcher.write_text(
+        launcher.read_text(encoding="utf-8").replace(
+            f":{CURRENT_VERSION}\n",
+            ":9.9.9\n",
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(
+        source,
+        "scripts/release/verify-version.py",
+        f"v{CURRENT_VERSION}",
+    )
+
+    assert result.returncode != 0
+    assert "Compose environment generator" in result.stderr
+
+
 def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
     source = _copy_version_tree(tmp_path)
 
@@ -146,6 +170,12 @@ def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
         f"v{NEXT_VERSION}",
     )
     assert verified.returncode == 0, verified.stderr
+    assert (
+        source / "scripts/deploy/create-external-mysql-env.sh"
+    ).read_text(encoding="utf-8").count(
+        "DEFAULT_PAS_IMAGE=ghcr.io/aliyun/"
+        f"alibabacloud-polardb-tool-agentic-server:{NEXT_VERSION}"
+    ) == 1
     assert (source / "release-notes.md").read_text(encoding="utf-8") == (
         "Historical releases v0.0.1 and v0.0.2 remain immutable.\n"
     )

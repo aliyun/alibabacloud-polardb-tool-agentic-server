@@ -12,7 +12,8 @@ connection details required by the deployment stage.
 - A PolarDB MySQL 8.0 cluster as the PAS metadata database (it stores metadata
   such as configuration, credentials, and the key ring — not the target
   business database an Agent uses).
-- A usable `PAS_DATABASE_URL` connection string.
+- The endpoint, port, database name, username, and password needed by the
+  deployment helper.
 
 ## Step 1: Buy an ECS instance
 
@@ -70,11 +71,14 @@ Before moving to deployment, confirm you have:
 
 - The ECS public address and SSH login method.
 - The PolarDB endpoint, port, account, password, and database name.
-- The connection string built from them (note: special characters in the
-  password must be URL-encoded, for example `@` becomes `%40`):
+- Confirmation that the account can connect to and access that database.
 
-```text
-mysql+asyncmy://USER:PASSWORD@ENDPOINT:3306/DATABASE
+Do not assemble `PAS_DATABASE_URL` manually. In the next stage, the following
+helper accepts those fields separately, encodes special characters safely,
+tests the connection with `SELECT 1`, and generates both bootstrap settings:
+
+```bash
+scripts/deploy/create-external-mysql-env.sh
 ```
 
 Next: [Deployment (single ECS + Docker Compose)](./deploy-compose.md).

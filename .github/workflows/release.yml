@@ -81,6 +81,11 @@ jobs:
           labels: |
             org.opencontainers.image.version=${{ env.VERSION }}
             org.opencontainers.image.revision=${{ github.sha }}
+      - name: Smoke test Compose environment generation
+        env:
+          PAS_RUN_ENV_GENERATOR_MYSQL_TEST: "1"
+          PAS_TEST_IMAGE: ${{ env.IMAGE }}:${{ env.VERSION }}
+        run: uv run pytest tests/integration/test_env_generator_mysql.py -q
       - name: Verify anonymous image pull
         run: |
           docker logout ghcr.io

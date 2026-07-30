@@ -10,7 +10,7 @@ PolarDB MySQL 集群。完成后你将得到部署阶段所需的连接信息。
 - 一台可公网访问的 ECS，用于运行 Docker Compose 部署的 PAS。
 - 一套 PolarDB MySQL 8.0 集群，作为 PAS 的元数据库（存储配置、凭证与密钥
   环等元数据，不是被 Agent 使用的目标业务库）。
-- 一条可用的 `PAS_DATABASE_URL` 连接串。
+- 部署工具所需的 Endpoint、端口、数据库名、用户名与密码。
 
 ## 第一步：购买 ECS 实例
 
@@ -63,11 +63,13 @@ PolarDB MySQL 8.0 集群，并完成：
 
 - ECS 公网地址与 SSH 登录方式。
 - PolarDB 的 Endpoint、端口、账号、密码、数据库名。
-- 据此拼出的连接串（注意：密码中的特殊字符需要做 URL 编码转义，例如
-  `@` 写作 `%40`）：
+- 确认该账号能够连接并访问对应数据库。
 
-```text
-mysql+asyncmy://USER:PASSWORD@ENDPOINT:3306/DATABASE
+不要手工拼接 `PAS_DATABASE_URL`。下一阶段使用以下工具分别输入这些字段；
+工具会安全编码特殊字符，通过 `SELECT 1` 测试连接，并生成两个启动配置：
+
+```bash
+scripts/deploy/create-external-mysql-env.sh
 ```
 
 下一步：[部署（单台 ECS + Docker Compose）](./deploy-compose.md)。

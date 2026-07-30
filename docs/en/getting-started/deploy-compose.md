@@ -9,7 +9,7 @@ metadata database at the PolarDB MySQL prepared in
 ## Prerequisites
 
 - SSH access to the ECS with sudo privileges.
-- The PolarDB `PAS_DATABASE_URL` connection string.
+- The PolarDB endpoint, database name, username, and password.
 - The ECS security group already allows TCP 18760.
 
 ## Step 1: Install Docker
@@ -42,7 +42,7 @@ archive from GitHub. It contains the Compose deployment files under
 `deploy/compose/`, and Git is not required:
 
 ```bash
-PAS_VERSION=0.0.4
+PAS_VERSION=0.0.5
 wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
 tar -xzf "v${PAS_VERSION}.tar.gz"
 cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
@@ -57,41 +57,71 @@ the same.
 
 ## Step 3: Prepare .env
 
-The external metadata database path needs `PAS_DATABASE_URL` and
-`PAS_ENCRYPTION_KEY` provided directly. Copy the external-database template,
-restrict it to the current user, and generate the root key:
+Generate `PAS_DATABASE_URL` and `PAS_ENCRYPTION_KEY` with the release's
+containerized helper:
 
 ```bash
-cp .env.example .env
-chmod 0600 .env
-python3 - <<'PY'
-import base64
-import os
-from pathlib import Path
-
-path = Path(".env")
-text = path.read_text()
-key = base64.b64encode(os.urandom(32)).decode()
-path.write_text(text.replace("PAS_ENCRYPTION_KEY=\n", f"PAS_ENCRYPTION_KEY={key}\n"))
-PY
+scripts/deploy/create-external-mysql-env.sh
 ```
 
-Edit `.env`:
+The host runs only a POSIX shell and Docker; Python, SQLAlchemy, and the
+`asyncmy` driver run inside the selected PAS image. The helper prompts for
+the endpoint, port (default `3306`), database name, username, and password.
+It displays the non-secret fields and asks `Use these settings? [Y/n]`;
+answer `n` to re-enter them. Password input is displayed as `*` characters
+without revealing its value. The helper safely encodes special characters,
+constructs a `mysql+asyncmy` URL, and prints the endpoint, database, username,
+and `SELECT 1` action before generating the encryption key or creating
+`.env`. A failure reports a sanitized reason such as authentication failure,
+unknown database, name-resolution failure, or an unreachable endpoint.
 
-- Replace `PAS_DATABASE_URL` with the PolarDB connection string produced in
-  [Resource requirements](./cloud-resources.md).
-- Append `PAS_IMAGE` and `PAS_PORT` as needed; on mainland China networks,
-  mirror the image into an accessible registry first and reference the
-  mirror.
-- `.env.example` is the external-metadata-database template used by this
-  tutorial. Do not copy `.env.compose.example`; it contains
-  `MYSQL_ROOT_PASSWORD` and similar variables and is only for the root
-  `compose.yaml` with bundled MySQL.
-- Back up `.env`; restarts and upgrades must use the same root key.
+When the helper runs through Docker, `127.0.0.1` and `localhost` refer to the
+generator container, not the host. For MySQL running on macOS or Windows with
+Docker Desktop, the helper asks `Use host.docker.internal instead? [Y/n]`
+and actually replaces the endpoint when you accept. Otherwise use a DNS name
+or IP address reachable from the container.
 
-<p align="center">
-  <img src="../../zh-cn/getting-started/images/env-file-example.png" alt="Example of a filled .env" width="820">
-</p>
+On success, `.env` is mode `0600`. The helper refuses to overwrite an
+existing path. A connection or write failure leaves no new environment file.
+Do not pass database fields or passwords as command-line arguments.
+
+If the release image is mirrored into another registry, select it explicitly:
+
+```bash
+scripts/deploy/create-external-mysql-env.sh \
+  --image registry.example/pas:VERSION
+```
+
+An explicit `--image` is also saved as `PAS_IMAGE` so later Compose commands
+use the same image. Inherited `PAS_IMAGE`, `PAS_DATABASE_URL`, and
+`PAS_ENCRYPTION_KEY` values are ignored by the helper. On mainland China
+networks, mirror the image into an accessible registry before running this
+command.
+
+The connection test fails closed by default. Only when the database cannot
+be reached yet and you intentionally accept an unverified configuration, use:
+
+```bash
+scripts/deploy/create-external-mysql-env.sh --skip-connection-test
+```
+
+This option prints a warning. Migration or startup can still fail if the
+connection details are wrong.
+
+For advanced automation that cannot use an interactive terminal, construct
+the file manually only after percent-encoding each URI component. Keep the
+single quotes so Compose treats characters such as `$` literally:
+
+```dotenv
+PAS_DATABASE_URL='mysql+asyncmy://USER:PERCENT_ENCODED_PASSWORD@ENDPOINT:3306/DATABASE'
+PAS_ENCRYPTION_KEY='BASE64_ENCODED_32_BYTE_KEY'
+```
+
+Never place a raw password containing URI delimiters into the URL. Do not
+copy `.env.compose.example`; it contains `MYSQL_ROOT_PASSWORD` and similar
+variables and is only for the root `compose.yaml` with bundled MySQL. You may
+append `PAS_PORT` if needed. Back up `.env`; restarts and upgrades must use
+the same root key.
 
 ## Step 4: Migrate and start
 
