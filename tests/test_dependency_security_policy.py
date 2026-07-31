@@ -1,12 +1,15 @@
 import json
+from datetime import date
 from importlib.metadata import distributions
 from pathlib import Path
 
 from packaging.utils import canonicalize_name
 from packaging.version import Version
+import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXCEPTIONS_PATH = ROOT / "security" / "dependency-vulnerability-exceptions.yaml"
 
 
 def _installed_versions() -> dict[str, Version]:
@@ -44,3 +47,65 @@ def test_locked_react_router_dependencies_meet_the_security_baseline() -> None:
         "node_modules/react-router-dom",
     ):
         assert Version(packages[package_path]["version"]) >= Version("7.18.0")
+
+
+def test_dependency_vulnerability_exceptions_are_complete_and_current() -> None:
+    policy = yaml.safe_load(EXCEPTIONS_PATH.read_text(encoding="utf-8"))
+
+    assert policy["schema_version"] == 1
+    exceptions = policy["exceptions"]
+    assert {item["advisory"] for item in exceptions} == {
+        "GHSA-qhqw-rrw9-25rm",
+        "GHSA-qwww-vcr4-c8h2",
+    }
+
+    required_fields = {
+        "advisory",
+        "package",
+        "ecosystem",
+        "severity",
+        "affected_versions",
+        "release",
+        "scope",
+        "rationale",
+        "mitigation",
+        "owner",
+        "accepted_on",
+        "expires_on",
+        "advisory_url",
+    }
+    for item in exceptions:
+        assert required_fields <= item.keys()
+        assert all(item[field] for field in required_fields)
+        assert item["owner"] == "PAS maintainers"
+        assert item["release"] == "v0.0.5"
+        assert item["accepted_on"] == date(2026, 7, 31)
+        assert item["expires_on"] == date(2026, 8, 31)
+        assert item["expires_on"] >= date.today()
+        assert item["advisory_url"] == (
+            f"https://github.com/advisories/{item['advisory']}"
+        )
+
+    identities = {
+        item["advisory"]: (
+            item["package"],
+            item["ecosystem"],
+            item["severity"],
+            item["affected_versions"],
+        )
+        for item in exceptions
+    }
+    assert identities == {
+        "GHSA-qhqw-rrw9-25rm": (
+            "asyncmy",
+            "pip",
+            "critical",
+            "<=0.2.11",
+        ),
+        "GHSA-qwww-vcr4-c8h2": (
+            "react-router",
+            "npm",
+            "high",
+            ">=7.12.0,<8.3.0",
+        ),
+    }

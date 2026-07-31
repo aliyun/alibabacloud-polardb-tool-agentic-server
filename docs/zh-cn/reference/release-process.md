@@ -48,7 +48,10 @@ Release；不会自动发布。
 - 自动生成的 Release notes、已知问题、升级限制和中国网络离线说明。
 
 接受漏洞例外时，应记录范围、理由、Owner 和到期时间；不能隐藏或静默忽略
-扫描发现。
+扫描发现。例外记录在公开的
+[`dependency-vulnerability-exceptions.yaml`](../../../security/dependency-vulnerability-exceptions.yaml)
+清单中。依赖安全策略测试会拒绝已过期的例外；到期前必须删除例外、重新评审
+并续期，或升级到已修复的依赖版本。
 
 ## 容器镜像 `latest` 别名
 

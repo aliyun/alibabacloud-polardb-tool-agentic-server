@@ -24,6 +24,7 @@ deploy/
 docs/en/
 docs/zh-cn/
 scripts/
+security/
 server/
 tests/
 web/

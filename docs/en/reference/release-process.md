@@ -55,7 +55,11 @@ Before publication, the approving maintainer must inspect:
   offline instructions.
 
 Document accepted vulnerability exceptions with scope, rationale, owner, and
-expiry. Do not hide or silently waive a scanner finding.
+expiry in the public
+[`dependency-vulnerability-exceptions.yaml`](../../../security/dependency-vulnerability-exceptions.yaml)
+registry. Expired exceptions fail the dependency security policy test and must
+be removed, renewed after review, or replaced by a dependency fix. Do not hide
+or silently waive a scanner finding.
 
 ## Container `latest` alias
 

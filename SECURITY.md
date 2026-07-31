@@ -22,6 +22,14 @@ disclosure and a fixed release when appropriate. Response times vary with
 severity and reproducibility; this pre-release project does not promise a
 service-level agreement.
 
+## Accepted dependency vulnerability exceptions
+
+Time-bounded dependency vulnerability exceptions are recorded in
+[`security/dependency-vulnerability-exceptions.yaml`](security/dependency-vulnerability-exceptions.yaml).
+Each exception identifies the affected scope, rationale, mitigation, owner,
+acceptance date, and expiry date. An exception must be removed, renewed after
+review, or replaced by a dependency fix before it expires.
+
 ## Public issues
 
 Use public issues only for non-sensitive bugs and feature requests. Before
