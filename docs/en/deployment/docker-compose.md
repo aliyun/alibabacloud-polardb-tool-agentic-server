@@ -106,6 +106,21 @@ Compose commands use the same image. See the
 [single-ECS Compose walkthrough](../getting-started/deploy-compose.md) for the
 complete procedure.
 
+The connection test fails closed by default. Use `--skip-connection-test`
+only when you explicitly accept an unverified configuration; incorrect
+connection details will make migration or startup fail later.
+
+Non-interactive automation may generate the environment file directly, but it
+must percent-encode each URI component and use single quotes to protect
+characters such as `$`. Never place a raw password into the URL or copy
+`.env.compose.example`, which is only for bundled MySQL. Run
+`scripts/deploy/create-external-mysql-env.sh --help` for all options.
+
+```dotenv
+PAS_DATABASE_URL='mysql+asyncmy://USER:PERCENT_ENCODED_PASSWORD@ENDPOINT:3306/DATABASE'
+PAS_ENCRYPTION_KEY='BASE64_ENCODED_32_BYTE_KEY'
+```
+
 For PostgreSQL:
 
 ```bash

@@ -320,17 +320,15 @@ async def test_example_database_url_uses_an_installed_async_driver():
         "docs/zh-cn/getting-started/deploy-compose.md",
     ),
 )
-def test_compose_guide_uses_safe_environment_generator(path: str):
+def test_compose_getting_started_uses_safe_environment_generator(path: str):
     text = _read(path)
 
     required = {
         "scripts/deploy/create-external-mysql-env.sh",
-        "--skip-connection-test",
-        "--image",
         "SELECT 1",
-        "mysql+asyncmy",
         "host.docker.internal",
         "Use these settings? [Y/n]",
+        "external-mysql-env-generator.png",
     }
     assert not [term for term in required if term not in text]
     assert "python3 - <<'PY'" not in text
@@ -353,6 +351,9 @@ def test_compose_operations_guide_uses_external_mysql_generator(
         "scripts/deploy/create-external-mysql-env.sh",
         "Use host.docker.internal instead? [Y/n]",
         "SELECT 1",
+        "--skip-connection-test",
+        "--image",
+        "mysql+asyncmy",
         "--env-file",
         "compose.external-mysql.yaml",
     }

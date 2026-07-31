@@ -2,9 +2,8 @@
 
 **English** | [简体中文](../../zh-cn/getting-started/deploy-compose.md)
 
-This page deploys PAS on a single ECS with Docker Compose, pointing the
-metadata database at the PolarDB MySQL prepared in
-[Resource requirements](./cloud-resources.md).
+This page deploys PAS on a single ECS with the PolarDB MySQL metadata database
+prepared in [Resource requirements](./cloud-resources.md).
 
 ## Prerequisites
 
@@ -14,7 +13,7 @@ metadata database at the PolarDB MySQL prepared in
 
 ## Step 1: Install Docker
 
-After logging in to the ECS, install Docker Engine and the Compose plugin:
+Install Docker Engine and the Compose plugin on the ECS:
 
 ```bash
 curl -fsSL https://get.docker.com | sh
@@ -22,24 +21,13 @@ sudo docker version
 sudo docker compose version
 ```
 
-Note: Compose is a separate plugin, and some installation methods (such as
-installing docker directly with yum) do not include it. If
-`docker compose version` reports that compose is not a docker command,
-install the plugin separately:
-
-```bash
-sudo yum -y install docker-compose-plugin
-sudo docker compose version
-```
-
-For a detailed installation guide, see
-[Install and use Docker on ECS](https://help.aliyun.com/zh/ecs/user-guide/install-and-use-docker).
+If Compose is unavailable, follow
+[Install and use Docker on ECS](https://help.aliyun.com/zh/ecs/user-guide/install-and-use-docker)
+to install the Compose plugin.
 
 ## Step 2: Download the deployment files
 
-Set `PAS_VERSION` to the release you want, then download that tag's source
-archive from GitHub. It contains the Compose deployment files under
-`deploy/compose/`, and Git is not required:
+Download and extract the release to deploy:
 
 ```bash
 PAS_VERSION=0.0.5
@@ -48,90 +36,46 @@ tar -xzf "v${PAS_VERSION}.tar.gz"
 cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
 ```
 
-Run all later commands inside this directory. The service image does not need
-a manual download; Compose pulls the image selected by that release's
-deployment files automatically on start, and you may pre-pull it with
-`docker pull`. If you prefer Git, you can `git clone` the repository and
-check out the matching `v${PAS_VERSION}` tag instead; the directory layout is
-the same.
+Run all later commands inside this directory.
 
-## Step 3: Prepare .env
+## Step 3: Generate .env
 
-Generate `PAS_DATABASE_URL` and `PAS_ENCRYPTION_KEY` with the release's
-containerized helper:
+Run the containerized helper and enter the metadata database connection:
 
 ```bash
-scripts/deploy/create-external-mysql-env.sh
+./scripts/deploy/create-external-mysql-env.sh
 ```
 
-The host runs only a POSIX shell and Docker; Python, SQLAlchemy, and the
-`asyncmy` driver run inside the selected PAS image. The helper prompts for
-the endpoint, port (default `3306`), database name, username, and password.
-It displays the non-secret fields and asks `Use these settings? [Y/n]`;
-answer `n` to re-enter them. Password input is displayed as `*` characters
-without revealing its value. The helper safely encodes special characters,
-constructs a `mysql+asyncmy` URL, and prints the endpoint, database, username,
-and `SELECT 1` action before generating the encryption key or creating
-`.env`. A failure reports a sanitized reason such as authentication failure,
-unknown database, name-resolution failure, or an unreachable endpoint.
+<p align="center">
+  <img src="../../zh-cn/getting-started/images/external-mysql-env-generator.png" alt="Generate the environment file and test the metadata database connection" width="820">
+</p>
+
+The helper displays non-secret fields for confirmation, masks password input
+with `*`, and executes `SELECT 1` before writing `.env`. Enter `n` at
+`Use these settings? [Y/n]` to correct the values.
 
 When the helper runs through Docker, `127.0.0.1` and `localhost` refer to the
-generator container, not the host. For MySQL running on macOS or Windows with
-Docker Desktop, the helper asks `Use host.docker.internal instead? [Y/n]`
-and actually replaces the endpoint when you accept. Otherwise use a DNS name
-or IP address reachable from the container.
+helper container. For MySQL on a macOS or Windows Docker host, accept the
+prompt to use `host.docker.internal`; on ECS, normally enter the PolarDB
+endpoint.
 
-On success, `.env` is mode `0600`. The helper refuses to overwrite an
-existing path. A connection or write failure leaves no new environment file.
-Do not pass database fields or passwords as command-line arguments.
+The generated `.env` has mode `0600`. Back it up because restarts and upgrades
+must keep using its `PAS_ENCRYPTION_KEY`. See the
+[Docker Compose deployment reference](../deployment/docker-compose.md) for
+image mirrors, skipping the connection test, and automated generation.
 
-If the release image is mirrored into another registry, select it explicitly:
-
-```bash
-scripts/deploy/create-external-mysql-env.sh \
-  --image registry.example/pas:VERSION
-```
-
-An explicit `--image` is also saved as `PAS_IMAGE` so later Compose commands
-use the same image. Inherited `PAS_IMAGE`, `PAS_DATABASE_URL`, and
-`PAS_ENCRYPTION_KEY` values are ignored by the helper. On mainland China
-networks, mirror the image into an accessible registry before running this
-command.
-
-The connection test fails closed by default. Only when the database cannot
-be reached yet and you intentionally accept an unverified configuration, use:
+If a GHCR download temporarily fails, retry:
 
 ```bash
-scripts/deploy/create-external-mysql-env.sh --skip-connection-test
+docker pull "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}"
 ```
 
-This option prints a warning. Migration or startup can still fail if the
-connection details are wrong.
-
-For advanced automation that cannot use an interactive terminal, construct
-the file manually only after percent-encoding each URI component. Keep the
-single quotes so Compose treats characters such as `$` literally:
-
-```dotenv
-PAS_DATABASE_URL='mysql+asyncmy://USER:PERCENT_ENCODED_PASSWORD@ENDPOINT:3306/DATABASE'
-PAS_ENCRYPTION_KEY='BASE64_ENCODED_32_BYTE_KEY'
-```
-
-Never place a raw password containing URI delimiters into the URL. Do not
-copy `.env.compose.example`; it contains `MYSQL_ROOT_PASSWORD` and similar
-variables and is only for the root `compose.yaml` with bundled MySQL. You may
-append `PAS_PORT` if needed. Back up `.env`; restarts and upgrades must use
-the same root key.
+You can also use the offline image archive from the
+[v0.0.5 Release](https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/releases/tag/v0.0.5).
 
 ## Step 4: Migrate and start
 
-The v0.0.3 and later images install the `pas` entry point and server package
-without requiring a `PYTHONPATH` override. If you are upgrading a v0.0.1
-deployment that added `PYTHONPATH: /app` as a workaround, remove that line
-from `deploy/compose/compose.external-mysql.yaml`.
-
-Use the Compose file for an external metadata database, migrating before
-starting:
+Run the database migration before starting the service:
 
 ```bash
 sudo docker compose --env-file .env -f deploy/compose/compose.external-mysql.yaml run --rm migrate
@@ -144,13 +88,10 @@ curl --fail http://127.0.0.1:18760/readyz
   <img src="../../zh-cn/getting-started/images/deploy-migrate-start.png" alt="Migration, start, and readyz check output" width="820">
 </p>
 
-`--env-file .env` is required: when `-f` points at a Compose file in a
-subdirectory, Compose does not load `.env` from the current directory
-automatically. `server` starts only after `migrate` exits successfully. If
-the migration did not reach the expected Alembic head, the server refuses to
-start.
+`--env-file .env` is required. Start `server` only after `migrate` exits
+successfully.
 
-## Step 5: Claim ownership
+## Step 5: Create the administrator
 
 On first start, the bootstrap token is printed to the container logs:
 
@@ -162,45 +103,22 @@ sudo docker compose --env-file .env -f deploy/compose/compose.external-mysql.yam
   <img src="../../zh-cn/getting-started/images/bootstrap-token-logs.png" alt="Bootstrap token in the container logs" width="820">
 </p>
 
-If the logs are unavailable or the token has expired, reissue and view it
-inside the container. The issue command refuses to write to an existing
-file, so remove the old file before reissuing:
-
-```bash
-sudo docker compose --env-file .env -f deploy/compose/compose.external-mysql.yaml exec server \
-  rm -f /var/run/pas/bootstrap-token
-sudo docker compose --env-file .env -f deploy/compose/compose.external-mysql.yaml exec server \
-  pas config bootstrap-token issue --output /var/run/pas/bootstrap-token
-sudo docker compose --env-file .env -f deploy/compose/compose.external-mysql.yaml exec server \
-  cat /var/run/pas/bootstrap-token
-```
-
-Reissuing invalidates the old token immediately; the new token is valid for
-15 minutes. Delete the token file after setup completes.
-
-Open `http://<ECS public address>:18760/setup` in a browser, enter the token,
-and create the first administrator (password at least 12 characters). Note:
-the console page is returned only to browser requests (`Accept: text/html`);
-hitting the root path with `curl` returns `Not Found`, which does not mean
-the service is broken. The web console and the API are both served on port
-18760. The full token lifecycle and recovery procedures are in
-[Initial setup](../setup/initial-setup.md).
+Open `http://<ECS public address>:18760/setup` and enter the token:
 
 <p align="center">
   <img src="../../zh-cn/getting-started/images/setup-enter-token.png" alt="Enter the bootstrap token on the setup page" width="820">
 </p>
 
-Set the administrator password:
+Then create the first administrator with a password of at least 12 characters:
 
 <p align="center">
   <img src="../../zh-cn/getting-started/images/setup-admin-password.png" alt="Create the first administrator" width="820">
 </p>
 
-## Kubernetes / ACK multi-replica (note)
+If the token expired or must be reissued, see
+[Initial setup](../setup/initial-setup.md).
 
-This tutorial currently features the single ECS + Docker Compose path. For a
-multi-replica production deployment, the Helm Chart is published as the OCI
-artifact `oci://ghcr.io/aliyun/charts/polardb-agentic-server`; see the
+For a multi-replica deployment, see the
 [Kubernetes deployment guide](../deployment/kubernetes-helm.md) and
 [ACK with PolarDB](../deployment/ack-polardb.md).
 

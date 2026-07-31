@@ -95,6 +95,19 @@ docker compose --env-file .env.external-mysql \
 会写入生成文件，确保后续 Compose 命令使用同一镜像。完整流程见
 [单台 ECS Compose 部署教程](../getting-started/deploy-compose.md)。
 
+连接测试默认失败即停止。只有明确接受未验证配置时才使用
+`--skip-connection-test`；连接信息错误会导致后续迁移或启动失败。
+
+非交互自动化可以直接生成环境文件，但必须分别对 URI 组件进行百分号编码，
+并使用单引号保护 `$` 等字符。不要把原始密码拼入 URL，也不要复制仅供自带
+MySQL 使用的 `.env.compose.example`。运行
+`scripts/deploy/create-external-mysql-env.sh --help` 查看完整参数。
+
+```dotenv
+PAS_DATABASE_URL='mysql+asyncmy://USER:PERCENT_ENCODED_PASSWORD@ENDPOINT:3306/DATABASE'
+PAS_ENCRYPTION_KEY='BASE64_ENCODED_32_BYTE_KEY'
+```
+
 PostgreSQL：
 
 ```bash
