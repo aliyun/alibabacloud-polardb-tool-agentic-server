@@ -21,6 +21,44 @@ class TextVersion:
 
 TEXT_VERSIONS = (
     TextVersion(
+        "Canonical Docker deployment skill",
+        ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
+        re.compile(
+            r'(?m)^PAS_VERSION="\$\{PAS_VERSION:-(\d+\.\d+\.\d+)\}"$'
+        ),
+    ),
+    TextVersion(
+        "Canonical source deployment skill",
+        ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-source.sh",
+        re.compile(
+            r'(?m)^PAS_VERSION="\$\{PAS_VERSION:-(\d+\.\d+\.\d+)\}"$'
+        ),
+    ),
+    TextVersion(
+        "Claude Docker deployment skill",
+        ".claude/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
+        re.compile(
+            r'(?m)^PAS_VERSION="\$\{PAS_VERSION:-(\d+\.\d+\.\d+)\}"$'
+        ),
+    ),
+    TextVersion(
+        "Claude source deployment skill",
+        ".claude/skills/deploy-polardb-agentic-server/scripts/deploy-source.sh",
+        re.compile(
+            r'(?m)^PAS_VERSION="\$\{PAS_VERSION:-(\d+\.\d+\.\d+)\}"$'
+        ),
+    ),
+    TextVersion(
+        "English agent-assisted deployment guide",
+        "docs/en/deployment/agent-assisted-deployment.md",
+        re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "Chinese agent-assisted deployment guide",
+        "docs/zh-cn/deployment/agent-assisted-deployment.md",
+        re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
         "Runtime",
         "server/version.py",
         re.compile(r'(?m)^__version__ = "(\d+\.\d+\.\d+)"$'),

@@ -76,6 +76,10 @@ bootstrap token 交付、Docker 与 Kubernetes 命令和恢复方式详见
 阅读[生产部署前提](docs/zh-cn/deployment/prerequisites.md)和
 [Helm 部署指南](docs/zh-cn/deployment/kubernetes-helm.md)。
 
+Codex、Claude Code、Cursor 和兼容 Agent Skills 的客户端可以使用显式调用的
+[Agent 辅助部署 SKILL](docs/zh-cn/deployment/agent-assisted-deployment.md)。
+它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.5`。
+
 ## 管理流程
 
 Web 控制台是运行时实例访问配置的事实来源：
@@ -134,6 +138,7 @@ Web 控制台是运行时实例访问配置的事实来源：
 - [引导式模块化配置](docs/zh-cn/configuration/guided-configuration.md)
 - [数据库实例访问与供应](docs/zh-cn/database-instances/access-and-provisioning.md)
 - [Docker Compose 部署](docs/zh-cn/deployment/docker-compose.md)
+- [Agent 辅助的单机部署](docs/zh-cn/deployment/agent-assisted-deployment.md)
 - [Kubernetes 与 Helm 部署](docs/zh-cn/deployment/kubernetes-helm.md)
 - [贡献与翻译指南](CONTRIBUTING.md)
 - [环境变量示例](.env.example)

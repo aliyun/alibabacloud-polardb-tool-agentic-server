@@ -83,6 +83,10 @@ operators should begin with the
 [production prerequisites](docs/en/deployment/prerequisites.md) and the
 [Helm deployment guide](docs/en/deployment/kubernetes-helm.md).
 
+Codex, Claude Code, Cursor, and compatible Agent Skills clients can use the
+explicitly invoked [agent-assisted deployment skill](docs/en/deployment/agent-assisted-deployment.md).
+It validates a Linux target before mutation and pins PAS to release `0.0.5`.
+
 ## Administration workflow
 
 The web console is the source of truth for runtime instance access:
@@ -152,6 +156,7 @@ for the complete UI workflow, security model, Tool examples, and lifecycle.
 - [Guided modular configuration](docs/en/configuration/guided-configuration.md)
 - [Database instance access and provisioning](docs/en/database-instances/access-and-provisioning.md)
 - [Docker Compose deployment](docs/en/deployment/docker-compose.md)
+- [Agent-assisted single-host deployment](docs/en/deployment/agent-assisted-deployment.md)
 - [Kubernetes and Helm deployment](docs/en/deployment/kubernetes-helm.md)
 - [Contributing and translation guide](CONTRIBUTING.md)
 - [Example environment variables](.env.example)

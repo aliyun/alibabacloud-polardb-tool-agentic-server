@@ -14,6 +14,10 @@ CURRENT_VERSION = tomllib.loads(
 major, minor, patch = (int(part) for part in CURRENT_VERSION.split("."))
 NEXT_VERSION = f"{major}.{minor}.{patch + 1}"
 VERSION_PATHS = (
+    ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
+    ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-source.sh",
+    ".claude/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
+    ".claude/skills/deploy-polardb-agentic-server/scripts/deploy-source.sh",
     ".env.compose.example",
     "Dockerfile",
     "pyproject.toml",
@@ -26,10 +30,12 @@ VERSION_PATHS = (
     "deploy/compose/compose.external-postgres.yaml",
     "deploy/helm/polardb-agentic-server/Chart.yaml",
     "deploy/helm/polardb-agentic-server/values.yaml",
+    "docs/en/deployment/agent-assisted-deployment.md",
     "scripts/deploy/create-external-mysql-env.sh",
     "scripts/public-release/rehearse.sh",
     "docs/en/deployment/kubernetes-helm.md",
     "docs/zh-cn/deployment/kubernetes-helm.md",
+    "docs/zh-cn/deployment/agent-assisted-deployment.md",
     "docs/en/deployment/offline-installation.md",
     "docs/zh-cn/deployment/offline-installation.md",
     "docs/en/deployment/upgrade-and-rollback.md",
@@ -176,16 +182,24 @@ def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
         "DEFAULT_PAS_IMAGE=ghcr.io/aliyun/"
         f"alibabacloud-polardb-tool-agentic-server:{NEXT_VERSION}"
     ) == 1
+    for relative in VERSION_PATHS[:4]:
+        assert (
+            source / relative
+        ).read_text(encoding="utf-8").count(
+            f'PAS_VERSION="${{PAS_VERSION:-{NEXT_VERSION}}}"'
+        ) == 1
     assert (source / "release-notes.md").read_text(encoding="utf-8") == (
         "Historical releases v0.0.1 and v0.0.2 remain immutable.\n"
     )
     expected_occurrences = {
+        "docs/en/deployment/agent-assisted-deployment.md": 1,
         "docs/en/deployment/kubernetes-helm.md": 2,
         "docs/zh-cn/deployment/kubernetes-helm.md": 2,
         "docs/en/deployment/offline-installation.md": 1,
         "docs/zh-cn/deployment/offline-installation.md": 1,
         "docs/en/deployment/upgrade-and-rollback.md": 1,
         "docs/zh-cn/deployment/upgrade-and-rollback.md": 1,
+        "docs/zh-cn/deployment/agent-assisted-deployment.md": 1,
     }
     for relative, count in expected_occurrences.items():
         content = (source / relative).read_text(encoding="utf-8")

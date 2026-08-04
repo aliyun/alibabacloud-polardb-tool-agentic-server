@@ -19,10 +19,11 @@ pyproject.toml
 uv.lock
 
 # Public source, migrations, deployments, tests, and user documentation
+.agents/
+.claude/
 alembic/
 deploy/
 docs/en/
-docs/skills/
 docs/zh-cn/
 scripts/
 security/

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Deploy PAS"
+  short_description: "Deploy PAS safely with Docker or source mode"
+  default_prompt: "Use $deploy-polardb-agentic-server to choose Docker Compose or source mode, validate this Linux target, and deploy PAS safely."
+policy:
+  allow_implicit_invocation: false
