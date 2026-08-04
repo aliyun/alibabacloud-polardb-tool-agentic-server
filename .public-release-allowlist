@@ -22,6 +22,7 @@ uv.lock
 alembic/
 deploy/
 docs/en/
+docs/skills/
 docs/zh-cn/
 scripts/
 security/
