@@ -1,17 +1,14 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { ConfigProvider, App as AntApp } from 'antd'
-import { appTheme } from './styles/theme'
 import './styles/global.css'
 import './styles/animations.css'
 import App from './App'
+import LocaleProvider from './i18n/LocaleProvider'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <ConfigProvider theme={appTheme}>
-      <AntApp>
-        <App />
-      </AntApp>
-    </ConfigProvider>
+    <LocaleProvider>
+      <App />
+    </LocaleProvider>
   </React.StrictMode>,
 )

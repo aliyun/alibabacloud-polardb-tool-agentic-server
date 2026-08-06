@@ -16,6 +16,7 @@ import {
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import api, { getAPIErrorMessage } from '../../api/client'
 import {
@@ -24,6 +25,7 @@ import {
   type ConfigResponse,
 } from '../../api/configuration'
 import ConfigModuleForm from '../../components/ConfigModuleForm'
+import LanguageSwitcher from '../../components/LanguageSwitcher'
 import './Setup.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -58,9 +60,14 @@ interface CheckedCandidate {
 
 interface SetupProps {
   mode?: 'bootstrap' | 'admin'
+  onEnterConsole?: () => void
 }
 
-export default function Setup({ mode = 'bootstrap' }: SetupProps) {
+export default function Setup({
+  mode = 'bootstrap',
+  onEnterConsole,
+}: SetupProps) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const [bootstrapToken, setBootstrapToken] = useState('')
   const [verifiedToken, setVerifiedToken] = useState<string>()
@@ -90,11 +97,11 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
     loadModules()
       .catch((error) => {
         message.error(
-          getAPIErrorMessage(error, 'Could not load configuration.'),
+          getAPIErrorMessage(error, t('setup.loadFailed')),
         )
       })
       .finally(() => setBusy(false))
-  }, [loadModules, mode])
+  }, [loadModules, mode, t])
 
   async function verifyOwnership() {
     setBusy(true)
@@ -103,7 +110,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
       setVerifiedToken(bootstrapToken)
       setBootstrapToken('')
     } catch (error) {
-      message.error(getAPIErrorMessage(error, 'The bootstrap token is invalid or expired.'))
+      message.error(getAPIErrorMessage(error, t('setup.tokenInvalid')))
     } finally {
       setBusy(false)
     }
@@ -134,7 +141,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
       setPlan(planned.plan)
       if (!planned.plan?.valid) {
         message.error(
-          planned.plan?.message ?? 'Configuration validation failed.',
+          planned.plan?.message ?? t('setup.validationFailed'),
         )
         return
       }
@@ -150,7 +157,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
           error,
           error instanceof Error
             ? error.message
-            : 'Could not check configuration.',
+            : t('setup.checkFailed'),
         ),
       )
     } finally {
@@ -215,7 +222,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
         )
         setVerifiedToken(undefined)
       }
-      message.success(`${checkedCandidate.moduleName} is active`)
+      message.success(t('setup.activeSuccess', { module: checkedCandidate.moduleName }))
       invalidatePlan()
       await loadModules(
         checkedCandidate.moduleName === 'core_admin'
@@ -235,7 +242,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
           error,
           error instanceof Error
             ? error.message
-            : 'Could not activate configuration.',
+            : t('setup.activateFailed'),
         ),
       )
       if (mutationStarted) {
@@ -245,7 +252,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
           message.error(
             getAPIErrorMessage(
               refreshError,
-              'Could not refresh configuration state.',
+              t('setup.refreshFailed'),
             ),
           )
         }
@@ -269,9 +276,9 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
       )
       invalidatePlan()
       await loadModules(verifiedToken)
-      message.success(`${selected.name} skipped for now`)
+      message.success(t('setup.skippedSuccess', { module: selected.name }))
     } catch (error) {
-      message.error(getAPIErrorMessage(error, 'Could not skip this module.'))
+      message.error(getAPIErrorMessage(error, t('setup.skipFailed')))
       invalidatePlan()
       try {
         await loadModules(verifiedToken)
@@ -279,7 +286,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
         message.error(
           getAPIErrorMessage(
             refreshError,
-            'Could not refresh configuration state.',
+            t('setup.refreshFailed'),
           ),
         )
       }
@@ -291,19 +298,19 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
   if (mode === 'bootstrap' && !verifiedToken && !modules) {
     return (
       <main className="setup-shell setup-ownership">
+        <div className="setup-language"><LanguageSwitcher /></div>
         <section className="setup-ownership-panel" aria-labelledby="setup-title">
           <div className="setup-mark" aria-hidden="true">
             <SafetyCertificateOutlined />
           </div>
           <Title id="setup-title" level={1}>
-            Claim this installation
+            {t('setup.claimTitle')}
           </Title>
           <Paragraph>
-            Enter the one-time bootstrap token from the server terminal. It remains only in this tab
-            and is never saved by the browser.
+            {t('setup.claimDescription')}
           </Paragraph>
           <label className="setup-token-label" htmlFor="bootstrap-token">
-            Bootstrap token
+            {t('setup.bootstrapToken')}
           </label>
           <Input.Password
             id="bootstrap-token"
@@ -322,10 +329,10 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
             disabled={!bootstrapToken}
             onClick={verifyOwnership}
           >
-            Verify and continue
+            {t('setup.verifyContinue')}
           </Button>
           <Text type="secondary">
-            Lost the token? Run the Pod-local <code>pas config bootstrap-token issue</code> command.
+            {t('setup.lostTokenPrefix')} <code>pas config bootstrap-token issue</code> {t('setup.commandSuffix')}
           </Text>
         </section>
       </main>
@@ -347,20 +354,30 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
 
   return (
     <main className="setup-shell">
+      <div className="setup-language"><LanguageSwitcher /></div>
       <header className="setup-header">
         <div>
-          <Title level={2}>Configure the server</Title>
-          <Paragraph>Activate only the capabilities this installation needs. Optional modules can be skipped and configured later.</Paragraph>
+          <Title level={2}>{t('setup.configureTitle')}</Title>
+          <Paragraph>{t('setup.configureDescription')}</Paragraph>
         </div>
         {mode === 'bootstrap' && completed && (
-          <Button type="primary" onClick={() => navigate('/dashboard')}>
-            Enter administration console <RightOutlined />
+          <Button
+            type="primary"
+            onClick={() => {
+              if (onEnterConsole) {
+                onEnterConsole()
+              } else {
+                navigate('/dashboard')
+              }
+            }}
+          >
+            {t('setup.enterConsole')} <RightOutlined />
           </Button>
         )}
       </header>
 
       <div className="setup-workspace">
-        <nav className="setup-modules" aria-label="Configuration modules">
+        <nav className="setup-modules" aria-label={t('setup.modulesLabel')}>
           {modules.map((module) => (
             <button
               key={module.name}
@@ -376,10 +393,10 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
                 <strong>{module.name.replace(/_/g, ' ')}</strong>
                 <small>
                   {module.dependencies.length > 0
-                    ? `Requires ${module.dependencies.join(', ')}`
+                    ? t('setup.requires', { dependencies: module.dependencies.join(', ') })
                     : module.name === 'core_admin'
-                      ? 'Required recovery access'
-                      : 'Independent module'}
+                      ? t('setup.requiredRecovery')
+                      : t('setup.independentModule')}
                 </small>
               </span>
               <Tag color={stateColor(module.workflow_state)}>{module.workflow_state}</Tag>
@@ -393,7 +410,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
               <Title id="module-title" level={3}>
                 {selected.name.replace(/_/g, ' ')}
               </Title>
-              <Text type="secondary">Revision {selected.revision}</Text>
+              <Text type="secondary">{t('setup.revision', { revision: selected.revision })}</Text>
             </div>
             {selected.workflow_state === 'ACTIVE' && <CheckCircleOutlined className="setup-active-icon" />}
           </div>
@@ -402,15 +419,15 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
             <Alert
               type="warning"
               showIcon
-              message="Activation permits future billable database purchases"
-              description="Review the purchase policy and Aliyun dependency before continuing."
+              message={t('setup.purchaseWarning')}
+              description={t('setup.purchaseWarningDescription')}
             />
           )}
           {plan && (
             <Alert
               type={plan.valid ? 'success' : 'error'}
               showIcon
-              message={plan.valid ? 'Dry-run checks passed' : 'Dry-run checks failed'}
+              message={plan.valid ? t('setup.dryRunPassed') : t('setup.dryRunFailed')}
               description={plan.message}
             />
           )}
@@ -419,7 +436,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
             <Alert
               type="info"
               showIcon
-              message="OpenAPI connectivity checked by the backend Pod"
+              message={t('setup.connectivityChecked')}
               description={
                 <Space direction="vertical" size={2}>
                   {plan.external_validation.checks.map((check) => (
@@ -440,7 +457,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
             <Alert
               type="error"
               showIcon
-              message="Last validation failed"
+              message={t('setup.lastValidationFailed')}
               description={selected.last_error_code}
             />
           )}
@@ -448,8 +465,8 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
             <Alert
               type="info"
               showIcon
-              message="Administrator identity is managed separately"
-              description="Use account security to change the administrator password. Bootstrap credentials cannot be reused after initial setup."
+              message={t('setup.adminManagedSeparately')}
+              description={t('setup.adminManagedDescription')}
             />
           )}
 
@@ -465,7 +482,7 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
           <div className="setup-actions">
             {!coreAdminLocked && !checkedCandidate && (
               <Button type="primary" htmlType="submit" form="selected-module-form" loading={busy}>
-                Run dry-run
+                {t('setup.runDryRun')}
               </Button>
             )}
             {!coreAdminLocked && checkedCandidate && (
@@ -475,24 +492,24 @@ export default function Setup({ mode = 'bootstrap' }: SetupProps) {
                   loading={busy}
                   onClick={activateCheckedCandidate}
                 >
-                  Activate module
+                  {t('setup.activateModule')}
                 </Button>
                 <Button
                   htmlType="submit"
                   form="selected-module-form"
                   disabled={busy}
                 >
-                  Run dry-run again
+                  {t('setup.runDryRunAgain')}
                 </Button>
               </>
             )}
             {selected.name !== 'core_admin' && selected.workflow_state !== 'ACTIVE' && (
               <Button onClick={skipModule} disabled={busy}>
-                Skip for now
+                {t('setup.skipForNow')}
               </Button>
             )}
             <Space className="setup-state-note">
-              <Text type="secondary">Changes become effective only after validation and activation.</Text>
+              <Text type="secondary">{t('setup.activationNote')}</Text>
             </Space>
           </div>
         </section>

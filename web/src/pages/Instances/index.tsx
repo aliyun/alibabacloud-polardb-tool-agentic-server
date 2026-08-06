@@ -18,6 +18,7 @@ import {
 } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import { getAPIErrorMessage } from '../../api/client'
 import {
@@ -44,13 +45,14 @@ function statusColor(status: string) {
 }
 
 function Provisioning({ instance }: { instance: InstanceSummary }) {
+  const { t } = useTranslation()
   if (!instance.health) {
-    return <Tag>Not enabled</Tag>
+    return <Tag>{t('instances.provisioningDisabled')}</Tag>
   }
   return (
     <Space direction="vertical" size={0}>
       <Tag color={instance.health.healthy ? 'green' : 'red'}>
-        {instance.health.healthy ? 'Healthy' : 'Unhealthy'}
+        {instance.health.healthy ? t('instances.healthy') : t('instances.unhealthy')}
       </Tag>
       {!instance.health.healthy && instance.health.error_code && (
         <Text type="secondary">{instance.health.error_code}</Text>
@@ -60,6 +62,7 @@ function Provisioning({ instance }: { instance: InstanceSummary }) {
 }
 
 export default function Instances() {
+  const { t } = useTranslation()
   const [instances, setInstances] = useState<InstanceSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
@@ -83,11 +86,11 @@ export default function Instances() {
       setInstances(response.data.items)
       setTotal(response.data.total)
     } catch (requestError) {
-      setError(getAPIErrorMessage(requestError, 'Could not load instances.'))
+      setError(getAPIErrorMessage(requestError, t('instances.loadFailed')))
     } finally {
       setLoading(false)
     }
-  }, [page, pageSize])
+  }, [page, pageSize, t])
 
   useEffect(() => {
     void load()
@@ -115,7 +118,7 @@ export default function Instances() {
       await load()
     } catch (requestError) {
       setError(
-        getAPIErrorMessage(requestError, 'Could not register this instance.'),
+        getAPIErrorMessage(requestError, t('instances.registerFailed')),
       )
     } finally {
       setCreateLoading(false)
@@ -151,7 +154,7 @@ export default function Instances() {
       }
       setConnectionTestResult({
         status: 'error',
-        message: getAPIErrorMessage(requestError, 'Connection test failed.'),
+        message: getAPIErrorMessage(requestError, t('instances.testFailed')),
       })
     } finally {
       setConnectionTestLoading(false)
@@ -170,7 +173,7 @@ export default function Instances() {
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not remove the instance. Remove active bindings and the provisioning backend first.',
+          t('instances.removeFailed'),
         ),
       )
     } finally {
@@ -180,8 +183,8 @@ export default function Instances() {
 
   return (
     <PageContainer
-      title="Instances"
-      description="Register physical database instances and review their access and provisioning state."
+      title={t('instances.title')}
+      description={t('instances.description')}
       actions={
         <Button
           type="primary"
@@ -192,7 +195,7 @@ export default function Instances() {
             setCreateOpen(true)
           }}
         >
-          Register Instance
+          {t('instances.register')}
         </Button>
       }
     >
@@ -205,7 +208,7 @@ export default function Instances() {
             message={error}
             action={
               <Button size="small" onClick={() => void load()}>
-                Retry
+                {t('common.retry')}
               </Button>
             }
           />
@@ -218,9 +221,9 @@ export default function Instances() {
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={
               <Space direction="vertical" size={4}>
-                <Text strong>No physical instances registered</Text>
+                <Text strong>{t('instances.empty')}</Text>
                 <Text type="secondary">
-                  Register and verify an instance before granting access.
+                  {t('instances.emptyDescription')}
                 </Text>
               </Space>
             }
@@ -233,7 +236,7 @@ export default function Instances() {
                 setCreateOpen(true)
               }}
             >
-              Register Instance
+              {t('instances.register')}
             </Button>
           </Empty>
         ) : (
@@ -253,7 +256,7 @@ export default function Instances() {
             scroll={{ x: 1380 }}
             columns={[
               {
-                title: 'Instance',
+                title: t('instances.instance'),
                 dataIndex: 'name',
                 fixed: 'left',
                 render: (name: string, record: InstanceSummary) => (
@@ -264,65 +267,60 @@ export default function Instances() {
                 ),
               },
               {
-                title: 'Usage',
+                title: t('instances.usage'),
                 dataIndex: 'usage',
                 render: (value: string | null) =>
-                  value || <Text type="secondary">Not specified</Text>,
+                  value || <Text type="secondary">{t('instances.notSpecified')}</Text>,
               },
               {
-                title: 'Engine',
+                title: t('instances.engine'),
                 dataIndex: 'engine',
                 render: (value: string) => <Tag>{value}</Tag>,
               },
               {
-                title: 'Topology',
+                title: t('instances.topology'),
                 dataIndex: 'topology',
                 render: (value: string) => <Tag>{value}</Tag>,
               },
               {
-                title: 'Allocation mode',
+                title: t('instances.allocationMode'),
                 dataIndex: 'allocation_mode',
                 render: (value: string) => <Tag>{value}</Tag>,
               },
               {
-                title: 'Status',
+                title: t('instances.status'),
                 dataIndex: 'status',
                 render: (value: string) => (
                   <Tag color={statusColor(value)}>{value}</Tag>
                 ),
               },
               {
-                title: 'Provisioning',
+                title: t('instances.provisioning'),
                 render: (_: unknown, record: InstanceSummary) => (
                   <Provisioning instance={record} />
                 ),
               },
               {
-                title: 'Bindings',
+                title: t('instances.bindings'),
                 render: (_: unknown, record: InstanceSummary) => (
                   <Space size={4} wrap>
-                    <Tag>{record.binding_counts.users} users</Tag>
-                    <Tag>
-                      {record.binding_counts.departments}{' '}
-                      {record.binding_counts.departments === 1
-                        ? 'department'
-                        : 'departments'}
-                    </Tag>
-                    <Tag>{record.binding_counts.agents} agents</Tag>
+                    <Tag>{t('instances.usersCount', { count: record.binding_counts.users })}</Tag>
+                    <Tag>{t('instances.departmentsCount', { count: record.binding_counts.departments })}</Tag>
+                    <Tag>{t('instances.agentsCount', { count: record.binding_counts.agents })}</Tag>
                   </Space>
                 ),
               },
               {
-                title: 'Actions',
+                title: t('instances.actions'),
                 fixed: 'right',
                 render: (_: unknown, record: InstanceSummary) => (
                   <Button
                     size="small"
                     danger
-                    aria-label={`Remove ${record.name}`}
+                    aria-label={`${t('instances.remove')} ${record.name}`}
                     onClick={() => setRemoveTarget(record)}
                   >
-                    Remove
+                    {t('instances.remove')}
                   </Button>
                 ),
               },
@@ -332,10 +330,10 @@ export default function Instances() {
       </Space>
 
       <Modal
-        title="Register Instance"
+        title={t('instances.register')}
         width={760}
         open={createOpen}
-        okText="Save Instance"
+        okText={t('instances.save')}
         confirmLoading={createLoading}
         onOk={() => form.submit()}
         onCancel={() => {
@@ -369,12 +367,12 @@ export default function Instances() {
           <Row
             gutter={[16, 0]}
             role="group"
-            aria-label="Instance identity"
+            aria-label={t('instances.identity')}
           >
             <Col xs={24} md={12}>
               <Form.Item
                 name="cluster_id"
-                label="Cluster ID"
+                label={t('instances.clusterId')}
                 rules={[{ required: true, whitespace: true }, { max: 255 }]}
               >
                 <Input placeholder="pc-xxx" autoComplete="off" />
@@ -383,7 +381,7 @@ export default function Instances() {
             <Col xs={24} md={12}>
               <Form.Item
                 name="name"
-                label="Name"
+                label={t('instances.name')}
                 rules={[{ required: true, whitespace: true }, { max: 255 }]}
               >
                 <Input autoComplete="off" />
@@ -392,25 +390,25 @@ export default function Instances() {
           </Row>
           <Form.Item
             name="usage"
-            label="Usage"
+            label={t('instances.usage')}
             rules={[{ max: 1024 }]}
           >
             <Input.TextArea
               rows={2}
               showCount
               maxLength={1024}
-              placeholder="Describe what this instance is used for"
+              placeholder={t('instances.usagePlaceholder')}
             />
           </Form.Item>
           <Row
             gutter={[16, 0]}
             role="group"
-            aria-label="Instance classification"
+            aria-label={t('instances.classification')}
           >
             <Col xs={24} md={12}>
               <Form.Item
                 name="engine"
-                label="Engine"
+                label={t('instances.engine')}
                 rules={[{ required: true }]}
               >
                 <Select
@@ -423,13 +421,13 @@ export default function Instances() {
             <Col xs={24} md={12}>
               <Form.Item
                 name="topology"
-                label="Topology"
+                label={t('instances.topology')}
                 rules={[{ required: true }]}
               >
                 <Select
                   options={[
-                    { value: 'single_tenant', label: 'Single tenant' },
-                    { value: 'multitenant', label: 'Multi-tenant' },
+                    { value: 'single_tenant', label: t('instances.singleTenant') },
+                    { value: 'multitenant', label: t('instances.multitenant') },
                   ]}
                 />
               </Form.Item>
@@ -438,17 +436,17 @@ export default function Instances() {
           <Row
             gutter={[16, 0]}
             role="group"
-            aria-label="Instance location"
+            aria-label={t('instances.location')}
           >
             <Col xs={24} md={12}>
-              <Form.Item name="region" label="Region" rules={[{ max: 64 }]}>
+              <Form.Item name="region" label={t('instances.region')} rules={[{ max: 64 }]}>
                 <Input placeholder="cn-hangzhou" autoComplete="off" />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
               <Form.Item
                 name="port"
-                label="Port"
+                label={t('instances.port')}
                 rules={[{ required: true }]}
               >
                 <InputNumber
@@ -460,11 +458,11 @@ export default function Instances() {
               </Form.Item>
             </Col>
           </Row>
-          <Row role="group" aria-label="Instance endpoint">
+          <Row role="group" aria-label={t('instances.endpoint')}>
             <Col span={24}>
               <Form.Item
                 name="host"
-                label="Host"
+                label={t('instances.host')}
                 rules={[
                   { required: true, whitespace: true },
                   { max: 255 },
@@ -477,12 +475,12 @@ export default function Instances() {
           <Row
             gutter={[16, 0]}
             role="group"
-            aria-label="Instance credentials"
+            aria-label={t('instances.credentials')}
           >
             <Col xs={24} md={12}>
               <Form.Item
                 name="username"
-                label="Username"
+                label={t('instances.username')}
                 rules={[
                   { required: true, whitespace: true },
                   { max: 255 },
@@ -494,7 +492,7 @@ export default function Instances() {
             <Col xs={24} md={12}>
               <Form.Item
                 name="password"
-                label="Password"
+                label={t('instances.password')}
                 rules={[{ required: true }, { max: 1024 }]}
               >
                 <Input.Password autoComplete="new-password" />
@@ -504,15 +502,15 @@ export default function Instances() {
           <Alert
             type="info"
             showIcon
-            message="MySQL permissions apply"
-            description="MCP forwards SQL using this account. Database access and permissions are enforced by the MySQL backend; this service does not bypass or elevate those permissions."
+            message={t('instances.mysqlPermissions')}
+            description={t('instances.mysqlPermissionsDescription')}
           />
           <Button
             style={{ marginTop: 16 }}
             loading={connectionTestLoading}
             onClick={() => void handleTestConnection()}
           >
-            Test Connection
+            {t('instances.testConnection')}
           </Button>
           {connectionTestResult && (
             <Alert
@@ -525,7 +523,7 @@ export default function Instances() {
               }
               message={
                 connectionTestResult.status === 'success'
-                  ? 'Connection succeeded'
+                  ? t('instances.connectionSucceeded')
                   : connectionTestResult.message
               }
               style={{ marginTop: 12 }}
@@ -535,9 +533,9 @@ export default function Instances() {
       </Modal>
 
       <Modal
-        title={`Remove ${removeTarget?.name ?? 'instance'}?`}
+        title={t('instances.removeTitle', { name: removeTarget?.name ?? t('instances.instanceFallback') })}
         open={!!removeTarget}
-        okText="Confirm Remove"
+        okText={t('instances.confirmRemove')}
         okButtonProps={{ danger: true }}
         confirmLoading={removeLoading}
         onOk={() => void handleRemove()}
@@ -546,9 +544,7 @@ export default function Instances() {
         }}
       >
         <Text>
-          This removes the physical instance registration. It does not delete
-          the PolarDB cluster. Remove bindings, credentials, and provisioning
-          configuration first.
+          {t('instances.removeDescription')}
         </Text>
       </Modal>
     </PageContainer>

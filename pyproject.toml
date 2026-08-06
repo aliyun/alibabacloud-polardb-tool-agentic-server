@@ -1,6 +1,6 @@
 [project]
 name = "alibabacloud-polardb-tool-agentic-server"
-version = "0.0.5"
+version = "0.0.6"
 description = "alibabacloud polardb tool agentic server — MCP gateway for PolarDB MySQL instances"
 requires-python = ">=3.11"
 license = "Apache-2.0"

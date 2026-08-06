@@ -78,7 +78,7 @@ bootstrap token 交付、Docker 与 Kubernetes 命令和恢复方式详见
 
 Codex、Claude Code、Cursor 和兼容 Agent Skills 的客户端可以使用显式调用的
 [Agent 辅助部署 SKILL](docs/zh-cn/deployment/agent-assisted-deployment.md)。
-它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.5`。
+它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.6`。
 
 ## 管理流程
 

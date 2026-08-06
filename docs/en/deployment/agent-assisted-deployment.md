@@ -4,7 +4,7 @@
 
 The repository includes one deployment skill for explicitly requested,
 single-host PAS deployment. The skill selects either Docker Compose or source
-mode, validates the Linux target before mutation, and defaults to PAS `0.0.5`.
+mode, validates the Linux target before mutation, and defaults to PAS `0.0.6`.
 
 ## Scope and agent discovery
 
@@ -28,7 +28,7 @@ but is not a native PAS deployment target.
 The default release settings are:
 
 ```bash
-PAS_VERSION=0.0.5
+PAS_VERSION=0.0.6
 PAS_REF=v${PAS_VERSION}
 PAS_IMAGE=ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}
 ```
@@ -77,9 +77,9 @@ ssh user@linux-host \
   < "$SKILL_DIR/scripts/deploy-docker.sh"
 ```
 
-Docker mode defaults to the published `0.0.5` image and fails if the image
+Docker mode defaults to the published `0.0.6` image and fails if the image
 cannot be pulled. Set `PAS_IMAGE` to an approved fully qualified mirror when
-needed. Source mode builds the pinned `v0.0.5` checkout with its frozen Python
+needed. Source mode builds the pinned `v0.0.6` checkout with its frozen Python
 lock; use `SKIP_WEB=1` for backend-only deployment.
 
 ## Explicit expert overrides

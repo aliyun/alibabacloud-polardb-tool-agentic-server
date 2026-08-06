@@ -85,7 +85,7 @@ operators should begin with the
 
 Codex, Claude Code, Cursor, and compatible Agent Skills clients can use the
 explicitly invoked [agent-assisted deployment skill](docs/en/deployment/agent-assisted-deployment.md).
-It validates a Linux target before mutation and pins PAS to release `0.0.5`.
+It validates a Linux target before mutation and pins PAS to release `0.0.6`.
 
 ## Administration workflow
 

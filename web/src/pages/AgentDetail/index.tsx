@@ -20,6 +20,7 @@ import {
 } from 'antd'
 import { ArrowLeftOutlined } from '@ant-design/icons'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import {
   getAgent,
@@ -141,6 +142,7 @@ function SectionHeading({
 }
 
 export default function AgentDetail() {
+  const { t } = useTranslation()
   const { id = '' } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const scopeRef = useRef<RouteScope>({
@@ -210,7 +212,7 @@ export default function AgentDetail() {
           confirmed: true,
         })
         if (!isCurrentScope(scope)) return
-        if (!response.data.token) throw new Error('Agent Token is not active')
+        if (!response.data.token) throw new Error(t('agentDetail.tokenInactive'))
         setToken(response.data.token)
       } catch (requestError) {
         if (!isCurrentScope(scope)) return
@@ -218,14 +220,14 @@ export default function AgentDetail() {
         setTokenError(
           getAPIErrorMessage(
             requestError,
-            'Could not load the active Agent Token.',
+            t('agentDetail.tokenLoadFailed'),
           ),
         )
       } finally {
         if (isCurrentScope(scope)) setTokenLoading(false)
       }
     },
-    [isCurrentScope],
+    [isCurrentScope, t],
   )
 
   const load = useCallback(async (scope: RouteScope) => {
@@ -261,11 +263,11 @@ export default function AgentDetail() {
       }
     } catch (requestError) {
       if (!isCurrentScope(scope)) return
-      setError(getAPIErrorMessage(requestError, 'Could not load this Agent.'))
+      setError(getAPIErrorMessage(requestError, t('agentDetail.loadFailed')))
     } finally {
       if (isCurrentScope(scope)) setLoading(false)
     }
-  }, [isCurrentScope, loadToken])
+  }, [isCurrentScope, loadToken, t])
 
   const loadMCPServerURL = useCallback(
     async (scope: RouteScope) => {
@@ -347,7 +349,7 @@ export default function AgentDetail() {
           ...current,
           [instanceId]: getAPIErrorMessage(
             requestError,
-            'Could not load credentials for this instance.',
+            t('agentDetail.credentialLoadFailed'),
           ),
         }))
       } finally {
@@ -358,7 +360,7 @@ export default function AgentDetail() {
         }
       }
     },
-    [credentialLoadedIds, isCurrentScope],
+    [credentialLoadedIds, isCurrentScope, t],
   )
 
   const updateAccessDraft = useCallback(
@@ -434,11 +436,11 @@ export default function AgentDetail() {
         const response = await updateAgent(currentAgent.id, { status: next })
         if (!isCurrentScope(scope)) return
         setAgent(response.data)
-        showReconnectNotice('Agent status changed.')
+        showReconnectNotice(t('agentDetail.statusChanged'))
       } else if (currentConfirmation.kind === 'regenerate') {
         const response = await regenerateAgentToken(currentAgent.id)
         if (!isCurrentScope(scope)) return
-        if (!response.data.token) throw new Error('Token response was empty')
+        if (!response.data.token) throw new Error(t('agentDetail.tokenEmpty'))
         setToken(response.data.token)
         setTokenError(null)
         setAgent((current) =>
@@ -453,7 +455,7 @@ export default function AgentDetail() {
               }
             : current,
         )
-        showReconnectNotice('Token regenerated; the old Token is invalid.')
+        showReconnectNotice(t('agentDetail.tokenRegenerated'))
       } else if (currentConfirmation.kind === 'revoke') {
         const response = await revokeAgentToken(currentAgent.id)
         if (!isCurrentScope(scope)) return
@@ -471,7 +473,7 @@ export default function AgentDetail() {
               }
             : current,
         )
-        showReconnectNotice('Token revoked.')
+        showReconnectNotice(t('agentDetail.tokenRevoked'))
       } else {
         await deleteAgentInstanceAccess(
           currentAgent.id,
@@ -484,7 +486,7 @@ export default function AgentDetail() {
               item.instance_id !== currentConfirmation.access.instance_id,
           ),
         )
-        showReconnectNotice('Instance access removed.')
+        showReconnectNotice(t('agentDetail.accessRemoved'))
       }
       setConfirmation(null)
     } catch (requestError) {
@@ -508,7 +510,7 @@ export default function AgentDetail() {
         return
       }
       setError(
-        getAPIErrorMessage(requestError, 'The requested change could not be saved.'),
+        getAPIErrorMessage(requestError, t('agentDetail.saveFailed')),
       )
     } finally {
       if (isCurrentScope(scope)) setBusy(false)
@@ -548,11 +550,11 @@ export default function AgentDetail() {
       )
       setAccessDraft(null)
       setAccessDraftInstanceId(null)
-      showReconnectNotice('Instance access changed.')
+      showReconnectNotice(t('agentDetail.accessChanged'))
     } catch (requestError) {
       if (!isCurrentScope(scope)) return
       setError(
-        getAPIErrorMessage(requestError, 'Could not save instance access.'),
+        getAPIErrorMessage(requestError, t('agentDetail.accessSaveFailed')),
       )
     } finally {
       if (isCurrentScope(scope)) setBusy(false)
@@ -589,13 +591,13 @@ export default function AgentDetail() {
       )
       setAccessDeleteConflict(null)
       setConfirmation(null)
-      showReconnectNotice('Managed database creation disabled.')
+      showReconnectNotice(t('agentDetail.creationDisabled'))
     } catch (requestError) {
       if (!isCurrentScope(scope)) return
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not disable managed database creation.',
+          t('agentDetail.creationDisableFailed'),
         ),
       )
     } finally {
@@ -605,7 +607,7 @@ export default function AgentDetail() {
 
   if (loading) {
     return (
-      <PageContainer title="Agent" description="Loading Agent access settings…">
+      <PageContainer title={t('agents.agent')} description={t('agentDetail.loading')}>
         <Skeleton active paragraph={{ rows: 12 }} />
       </PageContainer>
     )
@@ -613,15 +615,15 @@ export default function AgentDetail() {
 
   if (!agent) {
     return (
-      <PageContainer title="Agent unavailable">
+      <PageContainer title={t('agentDetail.unavailable')}>
         <Alert
           type="error"
           showIcon
           role="alert"
-          message={error ?? 'The Agent could not be found.'}
+          message={error ?? t('agentDetail.notFound')}
           action={
             <Button onClick={beginRouteLoad} size="small">
-              Retry
+              {t('common.retry')}
             </Button>
           }
         />
@@ -632,13 +634,13 @@ export default function AgentDetail() {
   return (
     <PageContainer
       title={agent.name}
-      description="Manage identity, credential lifecycle, access, and provisioned resources."
+      description={t('agentDetail.description')}
       actions={
         <Button
           icon={<ArrowLeftOutlined />}
           onClick={() => navigate('/agents')}
         >
-          All Agents
+          {t('agentDetail.allAgents')}
         </Button>
       }
     >
@@ -650,7 +652,7 @@ export default function AgentDetail() {
             showIcon
             closable
             role="status"
-            message="Reconnect the MCP client"
+            message={t('agents.reconnect')}
             description={notice}
             onClose={() => setNotice(null)}
           />
@@ -659,14 +661,14 @@ export default function AgentDetail() {
         <section aria-labelledby="agent-identity-heading">
           <SectionHeading
             id="agent-identity-heading"
-            title="Identity & status"
-            description="The identity presented by this Agent to the MCP server."
+            title={t('agentDetail.identityTitle')}
+            description={t('agentDetail.identityDescription')}
             action={
               <Button
                 danger={agent.status === 'active'}
                 onClick={() => setConfirmation({ kind: 'status' })}
               >
-                {agent.status === 'active' ? 'Disable Agent' : 'Enable Agent'}
+                {agent.status === 'active' ? t('agentDetail.disableAgent') : t('agentDetail.enableAgent')}
               </Button>
             }
           />
@@ -675,19 +677,19 @@ export default function AgentDetail() {
             size="small"
             style={{ marginTop: 16 }}
           >
-            <Descriptions.Item label="Name">{agent.name}</Descriptions.Item>
-            <Descriptions.Item label="Status">
+            <Descriptions.Item label={t('agents.name')}>{agent.name}</Descriptions.Item>
+            <Descriptions.Item label={t('agents.status')}>
               <Tag color={agent.status === 'active' ? 'success' : 'default'}>
-                {agent.status === 'active' ? 'Active' : 'Disabled'}
+                {agent.status === 'active' ? t('agents.active') : t('agents.disabled')}
               </Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Description">
-              {agent.description ?? 'No description'}
+            <Descriptions.Item label={t('agents.descriptionLabel')}>
+              {agent.description ?? t('agentDetail.noDescription')}
             </Descriptions.Item>
-            <Descriptions.Item label="Active resource limit">
-              {agent.max_active_resources ?? 'System default'}
+            <Descriptions.Item label={t('agentDetail.activeResourceLimit')}>
+              {agent.max_active_resources ?? t('agents.systemDefault')}
             </Descriptions.Item>
-            <Descriptions.Item label="Agent ID">
+            <Descriptions.Item label={t('agentDetail.agentId')}>
               <Text code copyable>{agent.id}</Text>
             </Descriptions.Item>
           </Descriptions>
@@ -716,8 +718,8 @@ export default function AgentDetail() {
         <section aria-labelledby="agent-instance-access-heading">
           <SectionHeading
             id="agent-instance-access-heading"
-            title="Instance access"
-            description="Grant direct SQL and metadata access, managed database creation, or both for each registered instance."
+            title={t('agentDetail.accessTitle')}
+            description={t('agentDetail.accessDescription')}
             action={
               <Button
                 onClick={() => {
@@ -730,13 +732,13 @@ export default function AgentDetail() {
                   availableInstances.length === 0
                 }
               >
-                Add instance access
+                {t('agentDetail.addAccess')}
               </Button>
             }
           />
           {allRegisteredInstancesBound && !accessDraft && (
             <Text type="secondary">
-              All registered instances already have Agent access.
+              {t('agentDetail.allHaveAccess')}
             </Text>
           )}
           {accessDraft && (
@@ -750,8 +752,8 @@ export default function AgentDetail() {
             >
               <Title level={5} style={{ marginTop: 0 }}>
                 {accessDraftInstanceId
-                  ? 'Edit instance access'
-                  : 'New instance access'}
+                  ? t('agentDetail.editAccess')
+                  : t('agentDetail.newAccess')}
               </Title>
               <BindingEditor
                 mode={accessDraftInstanceId ? 'edit' : 'create'}
@@ -783,7 +785,7 @@ export default function AgentDetail() {
                   loading={busy}
                   onClick={() => void saveInstanceAccess()}
                 >
-                  Save instance access
+                  {t('agentDetail.saveAccess')}
                 </Button>
                 <Button
                   disabled={busy}
@@ -792,7 +794,7 @@ export default function AgentDetail() {
                     setAccessDraftInstanceId(null)
                   }}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
               </Space>
             </div>
@@ -807,29 +809,29 @@ export default function AgentDetail() {
               emptyText: (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="No instance access. Add an instance to grant only the capabilities this Agent needs."
+                  description={t('agentDetail.noAccess')}
                 />
               ),
             }}
             columns={[
               {
-                title: 'Instance',
+                title: t('instances.instance'),
                 dataIndex: 'instance_id',
                 render: (instanceId: string) =>
                   instanceNames[instanceId] ?? instanceId,
               },
               {
-                title: 'Permission',
+                title: t('agentDetail.permission'),
                 dataIndex: 'permission',
                 render: (value: string | null) =>
                   value === 'readonly'
-                    ? 'Read only'
+                    ? t('instanceDetail.readOnly')
                     : value === 'readwrite'
-                      ? 'Read and write'
+                      ? t('instanceDetail.readWrite')
                       : '—',
               },
               {
-                title: 'Capabilities',
+                title: t('agentDetail.capabilities'),
                 dataIndex: 'capabilities',
                 render: (values: string[]) => (
                   <Space wrap>
@@ -838,7 +840,7 @@ export default function AgentDetail() {
                 ),
               },
               {
-                title: 'State',
+                title: t('agentDetail.state'),
                 key: 'state',
                 render: (_: unknown, access: AgentInstanceAccess) => (
                   <Space wrap>
@@ -848,7 +850,7 @@ export default function AgentDetail() {
                           access.direct_enabled ? 'success' : 'default'
                         }
                       >
-                        Direct {access.direct_enabled ? 'enabled' : 'disabled'}
+                        {t('agentDetail.direct')} {access.direct_enabled ? t('common.enabled') : t('common.disabled')}
                       </Tag>
                     )}
                     {access.provisioning_binding_id && (
@@ -859,17 +861,17 @@ export default function AgentDetail() {
                             : 'default'
                         }
                       >
-                        Create{' '}
+                        {t('agentDetail.create')}{' '}
                         {access.capabilities.includes('db_instance:create')
-                          ? 'enabled'
-                          : 'disabled'}
+                          ? t('common.enabled')
+                          : t('common.disabled')}
                       </Tag>
                     )}
                   </Space>
                 ),
               },
               {
-                title: 'Actions',
+                title: t('instances.actions'),
                 key: 'actions',
                 render: (_: unknown, access: AgentInstanceAccess) => (
                   <Space>
@@ -891,7 +893,7 @@ export default function AgentDetail() {
                         setAccessDraftValid(false)
                       }}
                     >
-                      Edit
+                      {t('agentDetail.edit')}
                     </Button>
                     <Button
                       size="small"
@@ -900,7 +902,7 @@ export default function AgentDetail() {
                         setConfirmation({ kind: 'delete-access', access })
                       }
                     >
-                      Remove
+                      {t('agentDetail.remove')}
                     </Button>
                   </Space>
                 ),
@@ -914,8 +916,8 @@ export default function AgentDetail() {
         <section aria-labelledby="agent-resources-heading">
           <SectionHeading
             id="agent-resources-heading"
-            title="Resources"
-            description="Non-terminal databases created by this Agent through provisioning backends."
+            title={t('agentDetail.resourcesTitle')}
+            description={t('agentDetail.resourcesDescription')}
           />
           <Table
             rowKey="id"
@@ -927,15 +929,15 @@ export default function AgentDetail() {
               emptyText: (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="This Agent does not own any active database resources."
+                  description={t('agentDetail.noResources')}
                 />
               ),
             }}
             columns={[
-              { title: 'Name', dataIndex: 'name', render: (value) => value ?? '—' },
-              { title: 'Engine', dataIndex: 'engine' },
+              { title: t('instances.name'), dataIndex: 'name', render: (value) => value ?? '—' },
+              { title: t('instances.engine'), dataIndex: 'engine' },
               {
-                title: 'Status',
+                title: t('instances.status'),
                 dataIndex: 'status',
                 render: (status: string) => (
                   <Tag color={status === 'ready' ? 'success' : 'processing'}>
@@ -944,14 +946,14 @@ export default function AgentDetail() {
                 ),
               },
               {
-                title: 'Backend',
+                title: t('agentDetail.backend'),
                 dataIndex: 'backend_id',
                 render: (backendId: string) =>
                   backendNames[backendId] ?? backendId,
               },
-              { title: 'Client token', dataIndex: 'client_token' },
+              { title: t('agentDetail.clientToken'), dataIndex: 'client_token' },
               {
-                title: 'Created',
+                title: t('agents.created'),
                 dataIndex: 'created_at',
                 render: (value: string) => new Date(value).toLocaleString(),
               },
@@ -963,22 +965,22 @@ export default function AgentDetail() {
       <Modal
         title={
           confirmation?.kind === 'regenerate'
-            ? 'Regenerate Agent Token?'
+            ? t('agentDetail.regenerateTitle')
             : confirmation?.kind === 'revoke'
-              ? 'Revoke Agent Token?'
+              ? t('agentDetail.revokeTitle')
               : confirmation?.kind === 'status'
-                ? `${agent.status === 'active' ? 'Disable' : 'Enable'} Agent?`
-                : 'Remove access?'
+                ? t('agents.statusTitle', { action: agent.status === 'active' ? t('agents.disable') : t('agents.enable') })
+                : t('agentDetail.removeAccessTitle')
         }
         open={confirmation !== null}
         okText={
           confirmation?.kind === 'regenerate'
-            ? 'Confirm regenerate'
+            ? t('agentDetail.confirmRegenerate')
             : confirmation?.kind === 'revoke'
-              ? 'Confirm revoke'
+              ? t('agentDetail.confirmRevoke')
               : confirmation?.kind === 'status'
                 ? `Confirm ${agent.status === 'active' ? 'disable' : 'enable'}`
-                : 'Confirm remove'
+                : t('agentDetail.confirmRemove')
         }
         okButtonProps={{
           danger:
@@ -996,27 +998,25 @@ export default function AgentDetail() {
             <Alert
               type="warning"
               showIcon
-              message="The old Token becomes invalid immediately."
-              description="Update the intended MCP client with the new Token, then reconnect it."
+              message={t('agentDetail.tokenInvalidWarning')}
+              description={t('agentDetail.tokenUpdateDescription')}
             />
           )}
           {confirmation?.kind === 'revoke' && (
             <Alert
               type="warning"
               showIcon
-              message="The Agent will not authenticate until a Token is regenerated."
+              message={t('agentDetail.tokenRevokedWarning')}
             />
           )}
           {confirmation?.kind === 'status' && (
             <Text>
-              This changes whether the Agent can authenticate and start new
-              operations. Existing MCP sessions should reconnect afterward.
+              {t('agentDetail.statusChangeDescription')}
             </Text>
           )}
           {confirmation?.kind === 'delete-access' && (
             <Text>
-              This access will be removed. Existing MCP sessions should
-              reconnect to refresh their available tools.
+              {t('agentDetail.accessRemoveDescription')}
             </Text>
           )}
           {confirmation?.kind === 'delete-access' &&
@@ -1026,8 +1026,8 @@ export default function AgentDetail() {
                 type="warning"
                 showIcon
                 role="alert"
-                message="This access still owns active resources"
-                description={`The loaded resource list contains ${accessDeleteConflict.resourceCount} non-deleted resource${accessDeleteConflict.resourceCount === 1 ? '' : 's'} on this instance. Delete those resources before removing access, or disable managed database creation so no new resources can be created.`}
+                message={t('agentDetail.activeResourcesWarning')}
+                description={t('agentDetail.resourceConflict', { count: accessDeleteConflict.resourceCount })}
                 action={
                   <Button
                     size="small"
@@ -1036,7 +1036,7 @@ export default function AgentDetail() {
                       void disableManagedDatabaseCreation()
                     }
                   >
-                    Disable managed database creation
+                    {t('agentDetail.disableCreation')}
                   </Button>
                 }
               />

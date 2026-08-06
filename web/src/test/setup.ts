@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup } from '@testing-library/react'
-import { afterEach, vi } from 'vitest'
+import { afterEach, beforeEach, vi } from 'vitest'
+import { i18n } from '../i18n/i18n'
 
 if (typeof window !== 'undefined') {
   Object.defineProperty(window, 'matchMedia', {
@@ -21,8 +22,13 @@ if (typeof window !== 'undefined') {
   window.getComputedStyle = (element: Element) => getComputedStyle(element)
 }
 
-afterEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage('en-US')
+})
+
+afterEach(async () => {
   cleanup()
+  await i18n.changeLanguage('en-US')
   if (typeof localStorage !== 'undefined') {
     localStorage.clear()
     sessionStorage.clear()

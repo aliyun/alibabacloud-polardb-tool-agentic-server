@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Alert, Select, Space, Switch, Typography } from 'antd'
+import { useTranslation } from 'react-i18next'
 
 import type { InstanceCredential } from '../../api/credentials'
 import type {
@@ -60,6 +61,7 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
   mode = 'create',
   disabled = false,
 }: BindingEditorProps<T>) {
+  const { t } = useTranslation()
   const aggregate = 'direct_enabled' in value
   const directCapabilities = value.capabilities.filter(
     (capability) => capability !== 'db_instance:create',
@@ -77,22 +79,22 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
     : undefined
   let validationError: string | null = null
   if (!value.instance_id) {
-    validationError = 'Select a database instance.'
+    validationError = t('components.binding.selectInstanceError')
   } else if (
     value.capabilities.length === 0 &&
     !(aggregate && mode === 'edit')
   ) {
-    validationError = 'Select at least one capability.'
+    validationError = t('components.binding.selectCapabilityError')
   } else if (directAccessRequested && !selectedCredential) {
     validationError =
-      'Select an active direct-access credential for this instance.'
+      t('components.binding.selectCredentialError')
   } else if (
     directAccessRequested &&
     value.permission === 'readwrite' &&
     selectedCredential?.capability !== 'readwrite'
   ) {
     validationError =
-      'Read and write permission exceeds the selected credential capability.'
+      t('components.binding.permissionExceededError')
   }
   const valid = validationError === null
   const validityCallbackRef = useRef(onValidityChange)
@@ -168,16 +170,16 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
   }
 
   const permissionOptions: Array<{ value: Permission; label: string }> = [
-    { value: 'readonly', label: 'Read only' },
+    { value: 'readonly', label: t('components.binding.readOnly') },
     {
       value: 'readwrite',
-      label: 'Read and write',
+      label: t('components.binding.readWrite'),
     },
   ]
   if (selectedCredential?.capability !== 'readwrite') {
     permissionOptions[1] = {
       ...permissionOptions[1],
-      label: 'Read and write · credential does not allow this',
+      label: t('components.binding.readWriteUnavailable'),
     }
   }
   const selectedInstance = instances.find(
@@ -191,7 +193,7 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
       <div>
-        <Text strong>Instance</Text>
+        <Text strong>{t('components.binding.instance')}</Text>
         <InstancePicker
           instances={instances}
           value={value.instance_id}
@@ -199,7 +201,7 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
           getEligibility={(instance) =>
             instance.status === 'active' || instance.status === 'stopped'
               ? { eligible: true }
-              : { eligible: false, reason: 'not available for binding' }
+              : { eligible: false, reason: t('components.binding.unavailable') }
           }
           disabled={disabled || mode === 'edit'}
         />
@@ -208,16 +210,16 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
       {showDirectFields && (
         <>
           <div>
-            <Text strong>Credential</Text>
+            <Text strong>{t('components.binding.credential')}</Text>
             <Select
-              aria-label="Direct access credential"
+              aria-label={t('components.binding.credentialLabel')}
               value={value.credential_id || undefined}
               onChange={handleCredentialChange}
               disabled={disabled || !value.instance_id}
               placeholder={
                 value.instance_id
-                  ? 'Select an active direct-access credential'
-                  : 'Select an instance first'
+                  ? t('components.binding.selectCredential')
+                  : t('components.binding.selectInstanceFirst')
               }
               options={eligibleCredentials.map((credential) => ({
                 value: credential.id,
@@ -228,9 +230,9 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
           </div>
 
           <div>
-            <Text strong>Permission</Text>
+            <Text strong>{t('components.binding.permission')}</Text>
             <Select
-              aria-label="Binding permission"
+              aria-label={t('components.binding.permissionLabel')}
               value={value.permission ?? undefined}
               onChange={(permission) =>
                 update({
@@ -255,7 +257,7 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
       )}
 
       <div>
-        <Text strong>Capabilities</Text>
+        <Text strong>{t('components.binding.capabilities')}</Text>
         <CapabilityEditor
           permission={value.permission ?? undefined}
           value={value.capabilities}
@@ -283,14 +285,14 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
       {!aggregate && (
         <Space>
           <Switch
-            aria-label="Binding enabled"
+            aria-label={t('components.binding.enabledLabel')}
             checked={value.enabled}
             onChange={(enabled) =>
               onChange({ ...value, enabled } as T)
             }
             disabled={disabled}
           />
-          <Text>Binding enabled</Text>
+          <Text>{t('components.binding.enabled')}</Text>
         </Space>
       )}
 
@@ -299,7 +301,7 @@ export default function BindingEditor<T extends BindingValue = DirectBindingInpu
           type="error"
           showIcon
           role="alert"
-          message="Binding cannot be saved"
+          message={t('components.binding.cannotSave')}
           description={validationError}
         />
       )}

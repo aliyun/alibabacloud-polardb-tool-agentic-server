@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Table, Tag } from 'antd'
+import { useTranslation } from 'react-i18next'
 import api from '../../api/client'
 import PageContainer from '../../components/PageContainer'
 
@@ -14,6 +15,7 @@ interface AccessibleInstance {
 }
 
 export default function MyInstances() {
+  const { t } = useTranslation()
   const [instances, setInstances] = useState<AccessibleInstance[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -25,16 +27,16 @@ export default function MyInstances() {
   }, [])
 
   const columns = [
-    { title: 'Name', dataIndex: 'name', key: 'name' },
-    { title: 'Cluster ID', dataIndex: 'cluster_id', key: 'cluster_id' },
-    { title: 'Type', dataIndex: 'type', key: 'type', render: (t: string) => <Tag>{t}</Tag> },
-    { title: 'Access', dataIndex: 'access_type', key: 'access', render: (a: string) => <Tag color={a === 'personal' ? 'blue' : 'green'}>{a}</Tag> },
-    { title: 'Permission', dataIndex: 'permission', key: 'permission', render: (p: string) => <Tag>{p}</Tag> },
-    { title: 'Status', dataIndex: 'status', key: 'status', render: (s: string) => <Tag color={s === 'active' ? 'green' : 'orange'}>{s}</Tag> },
+    { title: t('myInstances.name'), dataIndex: 'name', key: 'name' },
+    { title: t('myInstances.clusterId'), dataIndex: 'cluster_id', key: 'cluster_id' },
+    { title: t('myInstances.type'), dataIndex: 'type', key: 'type', render: (value: string) => <Tag>{value}</Tag> },
+    { title: t('myInstances.access'), dataIndex: 'access_type', key: 'access', render: (a: string) => <Tag color={a === 'personal' ? 'blue' : 'green'}>{a}</Tag> },
+    { title: t('myInstances.permission'), dataIndex: 'permission', key: 'permission', render: (p: string) => <Tag>{p}</Tag> },
+    { title: t('myInstances.status'), dataIndex: 'status', key: 'status', render: (s: string) => <Tag color={s === 'active' ? 'green' : 'orange'}>{s}</Tag> },
   ]
 
   return (
-    <PageContainer title="My Instances" description="Instances accessible to your account">
+    <PageContainer title={t('myInstances.title')} description={t('myInstances.description')}>
       <Table dataSource={instances} columns={columns} rowKey="instance_id" loading={loading} pagination={false} />
     </PageContainer>
   )

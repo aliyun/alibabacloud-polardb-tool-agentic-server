@@ -8,14 +8,16 @@ import {
   Tag,
   Typography,
 } from 'antd'
+import { useTranslation } from 'react-i18next'
 
 import type { AgentTokenStatus } from '../../api/agents'
 import { buildMCPClientConfiguration } from './mcpConnection'
+import { formatDateTime } from '../../i18n/format'
 
 const { Text, Title } = Typography
 
 type CopyResult =
-  | { status: 'success'; message: 'JSON configuration copied' }
+  | { status: 'success'; message: string }
   | { status: 'error'; message: string }
   | null
 
@@ -33,11 +35,6 @@ export interface MCPConnectionPanelProps {
   onRevoke: () => void
 }
 
-function tokenStatusLabel(status: AgentTokenStatus | null): string {
-  if (!status) return 'Missing'
-  return `${status[0].toUpperCase()}${status.slice(1)}`
-}
-
 export default function MCPConnectionPanel({
   agentName,
   mcpUrl,
@@ -51,6 +48,7 @@ export default function MCPConnectionPanel({
   onRegenerate,
   onRevoke,
 }: MCPConnectionPanelProps) {
+  const { t, i18n } = useTranslation()
   const [copyResult, setCopyResult] = useState<CopyResult>(null)
   const copyDisabled =
     loading || !!error || tokenStatus !== 'active' || token === null
@@ -68,13 +66,12 @@ export default function MCPConnectionPanel({
       )
       setCopyResult({
         status: 'success',
-        message: 'JSON configuration copied',
+        message: t('components.mcpConnection.copied'),
       })
     } catch {
       setCopyResult({
         status: 'error',
-        message:
-          'Could not copy JSON configuration. Check browser clipboard permissions.',
+        message: t('components.mcpConnection.copyFailed'),
       })
     }
   }
@@ -83,11 +80,10 @@ export default function MCPConnectionPanel({
     <>
       <div>
         <Title id="agent-mcp-connection-heading" level={4} style={{ marginBlock: 0 }}>
-          MCP connection
+          {t('components.mcpConnection.title')}
         </Title>
         <Text type="secondary">
-          Connect an MCP client with this Agent identity and its authorized
-          resources.
+          {t('components.mcpConnection.description')}
         </Text>
       </div>
 
@@ -96,12 +92,12 @@ export default function MCPConnectionPanel({
         size="small"
         style={{ marginTop: 16 }}
       >
-        <Descriptions.Item label="MCP server URL">
+        <Descriptions.Item label={t('components.mcpConnection.serverUrl')}>
           <Text code copyable style={{ wordBreak: 'break-all' }}>
             {mcpUrl}
           </Text>
         </Descriptions.Item>
-        <Descriptions.Item label="Agent Token">
+        <Descriptions.Item label={t('components.mcpConnection.token')}>
           {loading ? (
             <Skeleton.Input active size="small" />
           ) : token ? (
@@ -109,10 +105,10 @@ export default function MCPConnectionPanel({
               {token}
             </Text>
           ) : (
-            <Text type="secondary">No active Token</Text>
+            <Text type="secondary">{t('components.mcpConnection.noToken')}</Text>
           )}
         </Descriptions.Item>
-        <Descriptions.Item label="Token status">
+        <Descriptions.Item label={t('components.mcpConnection.tokenStatus')}>
           <Tag
             color={
               tokenStatus === 'active'
@@ -122,14 +118,14 @@ export default function MCPConnectionPanel({
                   : 'default'
             }
           >
-            {tokenStatusLabel(tokenStatus)}
+            {t(`components.mcpConnection.${tokenStatus ?? 'missing'}`)}
           </Tag>
         </Descriptions.Item>
-        <Descriptions.Item label="Expires">
-          {expiresAt ? new Date(expiresAt).toLocaleString() : 'No expiration'}
+        <Descriptions.Item label={t('components.mcpConnection.expires')}>
+          {expiresAt ? formatDateTime(expiresAt, i18n.resolvedLanguage ?? i18n.language) : t('components.mcpConnection.noExpiration')}
         </Descriptions.Item>
-        <Descriptions.Item label="Last used">
-          {lastUsedAt ? new Date(lastUsedAt).toLocaleString() : 'Never'}
+        <Descriptions.Item label={t('components.mcpConnection.lastUsed')}>
+          {lastUsedAt ? formatDateTime(lastUsedAt, i18n.resolvedLanguage ?? i18n.language) : t('components.mcpConnection.never')}
         </Descriptions.Item>
       </Descriptions>
 
@@ -142,7 +138,7 @@ export default function MCPConnectionPanel({
           style={{ marginTop: 12 }}
           action={
             <Button size="small" onClick={onRetry}>
-              Retry
+              {t('common.retry')}
             </Button>
           }
         />
@@ -154,12 +150,12 @@ export default function MCPConnectionPanel({
           disabled={copyDisabled}
           onClick={() => void copyConfiguration()}
         >
-          Copy JSON configuration
+          {t('components.mcpConnection.copyConfiguration')}
         </Button>
-        <Button onClick={onRegenerate}>Regenerate Token</Button>
+        <Button onClick={onRegenerate}>{t('components.mcpConnection.regenerate')}</Button>
         {tokenStatus === 'active' && (
           <Button danger onClick={onRevoke}>
-            Revoke Token
+            {t('components.mcpConnection.revoke')}
           </Button>
         )}
       </Space>

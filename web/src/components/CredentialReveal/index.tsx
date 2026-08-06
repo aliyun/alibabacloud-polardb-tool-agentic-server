@@ -7,6 +7,7 @@ import {
   Space,
   Typography,
 } from 'antd'
+import { useTranslation } from 'react-i18next'
 
 import type {
   CredentialRevealRequest,
@@ -28,6 +29,7 @@ export default function CredentialReveal({
   reveal,
   disabled = false,
 }: CredentialRevealProps) {
+  const { t } = useTranslation()
   const mountedRef = useRef(true)
   const generationRef = useRef(0)
   const inFlightGenerationRef = useRef<number | null>(null)
@@ -97,7 +99,7 @@ export default function CredentialReveal({
       }
       clearPlaintext()
       setConfirmationOpen(false)
-      setError('Could not reveal credential. Try again or review the audit logs.')
+      setError(t('components.credentialReveal.loadFailed'))
     } finally {
       if (
         mountedRef.current &&
@@ -121,9 +123,9 @@ export default function CredentialReveal({
         throw new Error('Clipboard unavailable')
       }
       await navigator.clipboard.writeText(value)
-      setCopyStatus(`${label} copied`)
+      setCopyStatus(t('components.credentialReveal.copied', { label }))
     } catch {
-      setCopyStatus(`Could not copy ${label.toLowerCase()}`)
+      setCopyStatus(t('components.credentialReveal.copyFailed', { label: label.toLowerCase() }))
     }
   }
 
@@ -131,16 +133,16 @@ export default function CredentialReveal({
     <>
       <Space direction="vertical" size={8}>
         <Button onClick={beginReveal} disabled={disabled}>
-          Reveal credential
+          {t('components.credentialReveal.reveal')}
         </Button>
         {error && <Alert type="error" showIcon message={error} role="alert" />}
       </Space>
 
       <Modal
-        title="Reveal credential?"
+        title={t('components.credentialReveal.confirmTitle')}
         open={confirmationOpen}
-        okText="Confirm"
-        cancelText="Cancel"
+        okText={t('components.credentialReveal.confirm')}
+        cancelText={t('common.cancel')}
         confirmLoading={loading}
         cancelButtonProps={{ disabled: loading }}
         maskClosable={!loading}
@@ -155,13 +157,12 @@ export default function CredentialReveal({
         destroyOnHidden
       >
         <Text>
-          This security-sensitive action is audited. Keep the credential only
-          for the current task and close it when finished.
+          {t('components.credentialReveal.warning')}
         </Text>
       </Modal>
 
       <Modal
-        title="Revealed credential"
+        title={t('components.credentialReveal.revealedTitle')}
         open={revealedOpen}
         closable={false}
         maskClosable={false}
@@ -171,10 +172,10 @@ export default function CredentialReveal({
         footer={
           <Button
             type="primary"
-            aria-label="Close revealed credential"
+            aria-label={t('components.credentialReveal.closeLabel')}
             onClick={closeRevealed}
           >
-            Close
+            {t('components.credentialReveal.close')}
           </Button>
         }
       >
@@ -183,56 +184,56 @@ export default function CredentialReveal({
             <Alert
               type="warning"
               showIcon
-              message="Visible until this dialog closes"
+              message={t('components.credentialReveal.visibleWarning')}
             />
             <Descriptions column={1} size="small">
-              <Descriptions.Item label="Username">
+              <Descriptions.Item label={t('components.credentialReveal.username')}>
                 <Space wrap>
                   <Text code style={{ wordBreak: 'break-all' }}>
                     {revealed.username}
                   </Text>
                   <Button
                     size="small"
-                    aria-label="Copy username"
+                    aria-label={t('components.credentialReveal.copyLabel', { label: t('components.credentialReveal.username').toLowerCase() })}
                     onClick={() =>
-                      copySecret('Username', revealed.username)
+                      copySecret(t('components.credentialReveal.username'), revealed.username)
                     }
                   >
-                    Copy
+                    {t('components.credentialReveal.copy')}
                   </Button>
                 </Space>
               </Descriptions.Item>
-              <Descriptions.Item label="Password">
+              <Descriptions.Item label={t('components.credentialReveal.password')}>
                 <Space wrap>
                   <Text code style={{ wordBreak: 'break-all' }}>
                     {revealed.password}
                   </Text>
                   <Button
                     size="small"
-                    aria-label="Copy password"
+                    aria-label={t('components.credentialReveal.copyLabel', { label: t('components.credentialReveal.password').toLowerCase() })}
                     onClick={() =>
-                      copySecret('Password', revealed.password)
+                      copySecret(t('components.credentialReveal.password'), revealed.password)
                     }
                   >
-                    Copy
+                    {t('components.credentialReveal.copy')}
                   </Button>
                 </Space>
               </Descriptions.Item>
               {revealed.database_name && (
-                <Descriptions.Item label="Database">
+                <Descriptions.Item label={t('components.credentialReveal.database')}>
                   <Space wrap>
                     <Text code>{revealed.database_name}</Text>
                     <Button
                       size="small"
-                      aria-label="Copy database name"
+                      aria-label={t('components.credentialReveal.copyLabel', { label: t('components.credentialReveal.databaseName').toLowerCase() })}
                       onClick={() => {
                         const databaseName = revealed.database_name
                         if (databaseName) {
-                          void copySecret('Database name', databaseName)
+                          void copySecret(t('components.credentialReveal.databaseName'), databaseName)
                         }
                       }}
                     >
-                      Copy
+                      {t('components.credentialReveal.copy')}
                     </Button>
                   </Space>
                 </Descriptions.Item>

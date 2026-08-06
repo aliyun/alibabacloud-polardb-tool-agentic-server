@@ -25,7 +25,7 @@ kubectl create secret generic pas-bootstrap \
 ## 安装或升级
 
 ```bash
-PAS_VERSION=0.0.5
+PAS_VERSION=0.0.6
 helm lint deploy/helm/polardb-agentic-server
 helm upgrade --install pas \
   deploy/helm/polardb-agentic-server \
@@ -103,7 +103,7 @@ Release 维护者可通过镜像仓库中的 Kind 和 MySQL 镜像执行完整�
 测试：
 
 ```bash
-PAS_VERSION=0.0.5
+PAS_VERSION=0.0.6
 scripts/deploy/smoke-helm.sh \
   --image "polardb-agentic-server:local-v${PAS_VERSION}" \
   --mysql-image registry.example.com/library/mysql:8.0.44 \

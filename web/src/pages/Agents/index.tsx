@@ -15,6 +15,7 @@ import {
   Typography,
 } from 'antd'
 import { Link } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 
 import {
   createAgent,
@@ -25,6 +26,7 @@ import {
 } from '../../api/agents'
 import { getAPIErrorMessage } from '../../api/client'
 import PageContainer from '../../components/PageContainer'
+import { formatDateTime } from '../../i18n/format'
 
 const { Text, Title } = Typography
 
@@ -35,6 +37,7 @@ interface CreateAgentForm {
 }
 
 export default function Agents() {
+  const { t, i18n } = useTranslation()
   const [agents, setAgents] = useState<Agent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -53,11 +56,11 @@ export default function Agents() {
       const response = await listAgents()
       setAgents(response.data)
     } catch (requestError) {
-      setError(getAPIErrorMessage(requestError, 'Could not load Agents.'))
+      setError(getAPIErrorMessage(requestError, t('agents.loadFailed')))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     void loadAgents()
@@ -78,7 +81,7 @@ export default function Agents() {
       form.resetFields()
       await loadAgents()
     } catch (requestError) {
-      setError(getAPIErrorMessage(requestError, 'Could not create Agent.'))
+      setError(getAPIErrorMessage(requestError, t('agents.createFailed')))
     } finally {
       setCreateLoading(false)
     }
@@ -103,7 +106,7 @@ export default function Agents() {
       setReconnectNotice(true)
     } catch (requestError) {
       setError(
-        getAPIErrorMessage(requestError, 'Could not change Agent status.'),
+        getAPIErrorMessage(requestError, t('agents.statusFailed')),
       )
     } finally {
       setStatusLoading(false)
@@ -112,11 +115,11 @@ export default function Agents() {
 
   return (
     <PageContainer
-      title="Agents"
-      description="Issue dedicated MCP identities and manage their operational status."
+      title={t('agents.title')}
+      description={t('agents.description')}
       actions={
         <Button type="primary" onClick={() => setCreateOpen(true)}>
-          Create Agent
+          {t('agents.create')}
         </Button>
       }
     >
@@ -129,7 +132,7 @@ export default function Agents() {
             message={error}
             action={
               <Button size="small" onClick={() => void loadAgents()}>
-                Retry
+                {t('common.retry')}
               </Button>
             }
           />
@@ -140,8 +143,8 @@ export default function Agents() {
             showIcon
             closable
             role="status"
-            message="Reconnect the MCP client"
-            description="Existing MCP sessions may keep an older tool list. Reconnect after status or access changes."
+            message={t('agents.reconnect')}
+            description={t('agents.reconnectDescription')}
             onClose={() => setReconnectNotice(false)}
           />
         )}
@@ -155,11 +158,10 @@ export default function Agents() {
             }}
           >
             <Title id="create-agent-heading" level={4} style={{ marginTop: 0 }}>
-              Create Agent
+              {t('agents.create')}
             </Title>
             <Text type="secondary">
-              Create one identity for one Agent. Its initial Token is shown
-              after the identity is saved.
+              {t('agents.createDescription')}
             </Text>
             <Form
               form={form}
@@ -169,12 +171,12 @@ export default function Agents() {
             >
               <Form.Item
                 name="name"
-                label="Name"
+                label={t('agents.name')}
                 rules={[
                   {
                     required: true,
                     whitespace: true,
-                    message: 'Enter an Agent name.',
+                    message: t('agents.nameRequired'),
                   },
                   { max: 255 },
                 ]}
@@ -183,15 +185,15 @@ export default function Agents() {
               </Form.Item>
               <Form.Item
                 name="description"
-                label="Description"
+                label={t('agents.descriptionLabel')}
                 rules={[{ max: 4096 }]}
               >
                 <Input.TextArea rows={3} />
               </Form.Item>
               <Form.Item
                 name="max_active_resources"
-                label="Maximum active resources"
-                extra="Leave blank to use the system limit."
+                label={t('agents.maxResources')}
+                extra={t('agents.systemLimitHint')}
                 rules={[{ type: 'number', min: 1 }]}
               >
                 <InputNumber min={1} precision={0} style={{ width: '100%' }} />
@@ -202,7 +204,7 @@ export default function Agents() {
                   htmlType="submit"
                   loading={createLoading}
                 >
-                  Save Agent
+                  {t('agents.save')}
                 </Button>
                 <Button
                   disabled={createLoading}
@@ -211,7 +213,7 @@ export default function Agents() {
                     form.resetFields()
                   }}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </Button>
               </Space>
             </Form>
@@ -225,16 +227,15 @@ export default function Agents() {
             image={Empty.PRESENTED_IMAGE_SIMPLE}
             description={
               <Space direction="vertical" size={4}>
-                <Text strong>No Agents yet</Text>
+                <Text strong>{t('agents.empty')}</Text>
                 <Text type="secondary">
-                  Create an Agent to issue a dedicated MCP identity and grant
-                  narrowly scoped database access.
+                  {t('agents.emptyDescription')}
                 </Text>
               </Space>
             }
           >
             <Button type="primary" onClick={() => setCreateOpen(true)}>
-              Create Agent
+              {t('agents.create')}
             </Button>
           </Empty>
         ) : (
@@ -245,7 +246,7 @@ export default function Agents() {
             scroll={{ x: 760 }}
             columns={[
               {
-                title: 'Agent',
+                title: t('agents.agent'),
                 dataIndex: 'name',
                 render: (name: string, record: Agent) => (
                   <Space direction="vertical" size={0}>
@@ -257,39 +258,39 @@ export default function Agents() {
                 ),
               },
               {
-                title: 'Status',
+                title: t('agents.status'),
                 dataIndex: 'status',
                 width: 120,
                 render: (status: Agent['status']) => (
                   <Tag color={status === 'active' ? 'success' : 'default'}>
-                    {status === 'active' ? 'Active' : 'Disabled'}
+                    {status === 'active' ? t('agents.active') : t('agents.disabled')}
                   </Tag>
                 ),
               },
               {
-                title: 'Resource limit',
+                title: t('agents.resourceLimit'),
                 dataIndex: 'max_active_resources',
                 width: 150,
-                render: (value: number | null) => value ?? 'System default',
+                render: (value: number | null) => value ?? t('agents.systemDefault'),
               },
               {
-                title: 'Created',
+                title: t('agents.created'),
                 dataIndex: 'created_at',
                 width: 180,
-                render: (value: string) => new Date(value).toLocaleString(),
+                render: (value: string) => formatDateTime(value, i18n.resolvedLanguage ?? i18n.language),
               },
               {
-                title: 'Actions',
+                title: t('agents.actions'),
                 key: 'actions',
                 width: 130,
                 render: (_: unknown, record: Agent) => (
                   <Button
                     size="small"
                     danger={record.status === 'active'}
-                    aria-label={`${record.status === 'active' ? 'Disable' : 'Enable'} ${record.name}`}
+                    aria-label={`${record.status === 'active' ? t('agents.disable') : t('agents.enable')} ${record.name}`}
                     onClick={() => setStatusTarget(record)}
                   >
-                    {record.status === 'active' ? 'Disable' : 'Enable'}
+                    {record.status === 'active' ? t('agents.disable') : t('agents.enable')}
                   </Button>
                 ),
               },
@@ -299,9 +300,9 @@ export default function Agents() {
       </Space>
 
       <Modal
-        title={`${statusTarget?.status === 'active' ? 'Disable' : 'Enable'} Agent?`}
+        title={t('agents.statusTitle', { action: statusTarget?.status === 'active' ? t('agents.disable') : t('agents.enable') })}
         open={statusTarget !== null}
-        okText={`Confirm ${statusTarget?.status === 'active' ? 'disable' : 'enable'}`}
+        okText={t('agents.confirmStatus', { action: statusTarget?.status === 'active' ? t('agents.disable').toLowerCase() : t('agents.enable').toLowerCase() })}
         okButtonProps={{ danger: statusTarget?.status === 'active' }}
         confirmLoading={statusLoading}
         onOk={() => void handleStatusChange()}
@@ -313,29 +314,29 @@ export default function Agents() {
         <Space direction="vertical" size={12}>
           <Text>
             {statusTarget?.status === 'active'
-              ? 'The Agent will no longer authenticate or start new operations.'
-              : 'The Agent can authenticate again with its active Token.'}
+              ? t('agents.disableDescription')
+              : t('agents.enableDescription')}
           </Text>
           <Alert
             type="warning"
             showIcon
-            message="Existing MCP sessions may keep an older tool list. Reconnect the client after this change."
+            message={t('agents.sessionWarning')}
           />
         </Space>
       </Modal>
 
       <Modal
-        title="Agent created"
+        title={t('agents.createdTitle')}
         open={freshAgent !== null}
         closable={false}
         maskClosable={false}
         footer={
           <Button
             type="primary"
-            aria-label="Close token"
+            aria-label={t('agents.closeToken')}
             onClick={() => setFreshAgent(null)}
           >
-            Close
+            {t('agents.close')}
           </Button>
         }
         destroyOnHidden
@@ -345,12 +346,12 @@ export default function Agents() {
             <Alert
               type="warning"
               showIcon
-              message="Store this Token in the intended MCP client."
-              description="It is kept only in this page's memory and is cleared when this dialog closes."
+              message={t('agents.storeToken')}
+              description={t('agents.tokenMemory')}
             />
-            <Title level={5}>MCP Token</Title>
+            <Title level={5}>{t('agents.mcpToken')}</Title>
             <Descriptions column={1} size="small">
-              <Descriptions.Item label="Token">
+              <Descriptions.Item label={t('agents.token')}>
                 <Text code copyable style={{ wordBreak: 'break-all' }}>
                   {freshAgent.token}
                 </Text>

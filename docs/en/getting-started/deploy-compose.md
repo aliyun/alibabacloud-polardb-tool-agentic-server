@@ -30,7 +30,7 @@ to install the Compose plugin.
 Download and extract the release to deploy:
 
 ```bash
-PAS_VERSION=0.0.5
+PAS_VERSION=0.0.6
 wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
 tar -xzf "v${PAS_VERSION}.tar.gz"
 cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
@@ -71,7 +71,7 @@ docker pull "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSI
 ```
 
 You can also use the offline image archive from the
-[v0.0.5 Release](https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/releases/tag/v0.0.5).
+[v0.0.6 Release](https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/releases/tag/v0.0.6).
 
 ## Step 4: Migrate and start
 

@@ -4,7 +4,7 @@
 
 仓库提供一个部署 SKILL，用于用户明确要求的 PAS 单机部署。该 SKILL 在 Docker
 Compose 与源码模式中选择其一，先验证 Linux 目标机再执行变更，默认部署 PAS
-`0.0.5`。
+`0.0.6`。
 
 ## 范围与 Agent 发现
 
@@ -24,7 +24,7 @@ Codex 和 Cursor 可以发现该 Agent Skills 路径。Claude Code 使用
 默认 Release 设置如下：
 
 ```bash
-PAS_VERSION=0.0.5
+PAS_VERSION=0.0.6
 PAS_REF=v${PAS_VERSION}
 PAS_IMAGE=ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}
 ```
@@ -69,8 +69,8 @@ ssh user@linux-host \
   < "$SKILL_DIR/scripts/deploy-docker.sh"
 ```
 
-Docker 模式默认使用已发布的 `0.0.5` 镜像，镜像无法拉取时会失败。需要时应把
-`PAS_IMAGE` 设置为经过批准的完整镜像地址。源码模式使用固定的 `v0.0.5`
+Docker 模式默认使用已发布的 `0.0.6` 镜像，镜像无法拉取时会失败。需要时应把
+`PAS_IMAGE` 设置为经过批准的完整镜像地址。源码模式使用固定的 `v0.0.6`
 checkout 和冻结的 Python lock 构建；仅部署后端时设置 `SKIP_WEB=1`。
 
 ## 显式专家覆盖项

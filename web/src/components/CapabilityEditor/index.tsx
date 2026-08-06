@@ -1,4 +1,5 @@
 import { Checkbox, Flex, Typography } from 'antd'
+import { useTranslation } from 'react-i18next'
 
 import type {
   AgentInstanceAccessCapability,
@@ -13,25 +14,23 @@ const { Text } = Typography
 
 const CAPABILITIES: Array<{
   value: DirectBindingCapability
-  label: string
-  description: string
 }> = [
   {
     value: 'db_instance:list',
-    label: 'List bound instances',
-    description: 'See this instance in the Agent database inventory.',
   },
   {
     value: 'db_instance:describe',
-    label: 'View instance metadata',
-    description: 'Inspect connection metadata. Requires list access.',
   },
   {
     value: 'db_instance:credentials:read',
-    label: 'Reveal credentials',
-    description: 'Retrieve connection credentials. Requires metadata access.',
   },
 ]
+
+const CAPABILITY_KEYS = {
+  'db_instance:list': ['components.capabilities.list', 'components.capabilities.listDescription'],
+  'db_instance:describe': ['components.capabilities.metadata', 'components.capabilities.metadataDescription'],
+  'db_instance:credentials:read': ['components.capabilities.credentials', 'components.capabilities.credentialsDescription'],
+} as const
 
 const DEPENDENCIES: Record<
   DirectBindingCapability,
@@ -91,6 +90,7 @@ export default function CapabilityEditor<
   instance,
   provisioningBackend,
 }: CapabilityEditorProps<T>) {
+  const { t } = useTranslation()
   const selected = new Set<AgentInstanceAccessCapability>(value)
   const sqlProxyEnabled = SQL_CAPABILITIES.some((capability) =>
     selected.has(capability),
@@ -144,8 +144,9 @@ export default function CapabilityEditor<
   }
 
   return (
-    <Flex vertical gap={12} role="group" aria-label="Instance capabilities">
+    <Flex vertical gap={12} role="group" aria-label={t('components.capabilities.groupLabel')}>
       {CAPABILITIES.map((capability) => {
+        const [labelKey, descriptionKey] = CAPABILITY_KEYS[capability.value]
         const descriptionId = `capability-${capability.value.replace(/:/g, '-')}`
         return (
           <Flex vertical gap={2} key={capability.value}>
@@ -157,14 +158,14 @@ export default function CapabilityEditor<
                 handleToggle(capability.value, event.target.checked)
               }
             >
-              {capability.label}
+              {t(labelKey)}
             </Checkbox>
             <Text
               id={descriptionId}
               type="secondary"
               style={{ paddingInlineStart: 24 }}
             >
-              {capability.description}
+              {t(descriptionKey)}
             </Text>
           </Flex>
         )
@@ -179,16 +180,14 @@ export default function CapabilityEditor<
               handleSqlProxyToggle(event.target.checked)
             }
           >
-            Enable SQL over HTTP proxy
+            {t('components.capabilities.sqlProxy')}
           </Checkbox>
           <Text
             id="capability-sql-proxy"
             type="secondary"
             style={{ paddingInlineStart: 24 }}
           >
-            Enables run_sql, run_sql_transaction, and describe_schema
-            through the SQL over HTTP proxy. Accessible databases and
-            operations remain limited by the selected MySQL account.
+            {t('components.capabilities.sqlProxyDescription')}
           </Text>
         </Flex>
       )}
@@ -202,7 +201,7 @@ export default function CapabilityEditor<
               handleCreateToggle(event.target.checked)
             }
           >
-            Create managed databases
+            {t('components.capabilities.create')}
           </Checkbox>
           <Text
             id="capability-managed-database-create"
@@ -211,13 +210,12 @@ export default function CapabilityEditor<
           >
             {createAvailable ? (
               <>
-                Allows create_db_instance to provision an isolated database
-                and account on this multitenant instance.
+                {t('components.capabilities.createDescription')}
               </>
             ) : (
               <>
-                Configure a provisioning backend for this instance first.{' '}
-                <a href={`/instances/${instance.id}`}>Configure backend</a>
+                {t('components.capabilities.configureFirst')}{' '}
+                <a href={`/instances/${instance.id}`}>{t('components.capabilities.configureBackend')}</a>
               </>
             )}
           </Text>

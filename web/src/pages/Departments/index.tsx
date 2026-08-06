@@ -1,8 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Table, Button, Modal, Form, Input, InputNumber, Space, message, Popconfirm, Tag, Descriptions, Select } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
+import { useTranslation } from 'react-i18next'
 import api from '../../api/client'
 import PageContainer from '../../components/PageContainer'
+import { formatDateTime } from '../../i18n/format'
 
 interface DeptItem {
   id: string
@@ -30,6 +32,7 @@ interface TenantItem {
 }
 
 export default function Departments() {
+  const { t, i18n } = useTranslation()
   const [depts, setDepts] = useState<DeptItem[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
@@ -83,10 +86,10 @@ export default function Departments() {
   const handleSave = async (values: { name: string; description?: string; max_instances?: number | null }) => {
     if (editingDept) {
       await api.put(`/api/departments/${editingDept.id}`, values)
-      message.success('Department updated')
+      message.success(t('departments.updated'))
     } else {
       await api.post('/api/departments', values)
-      message.success('Department created')
+      message.success(t('departments.created'))
     }
     setModalOpen(false)
     setEditingDept(null)
@@ -97,11 +100,11 @@ export default function Departments() {
   const handleDelete = async (id: string) => {
     try {
       await api.delete(`/api/departments/${id}`)
-      message.success('Department deleted')
+      message.success(t('departments.deleted'))
       fetchDepts()
     } catch (err: unknown) {
       const error = err as { response?: { data?: { detail?: { message?: string } } } }
-      message.error(error.response?.data?.detail?.message || 'Failed to delete')
+      message.error(error.response?.data?.detail?.message || t('departments.deleteFailed'))
     }
   }
 
@@ -131,7 +134,7 @@ export default function Departments() {
           .map(({ id, name, cluster_id }) => ({ id, name, cluster_id })),
       )
     } catch {
-      message.error('Could not load registered multitenant instances')
+      message.error(t('departments.loadEligibleFailed'))
     } finally {
       setEligibleMtLoading(false)
     }
@@ -141,24 +144,24 @@ export default function Departments() {
     if (!mtModalDeptId) return
     try {
       await api.post(`/api/departments/${mtModalDeptId}/multitenant-instance`, values)
-      message.success('Multitenant instance bound')
+      message.success(t('departments.bound'))
       setMtModalOpen(false)
       mtForm.resetFields()
       fetchMtInstance(mtModalDeptId)
     } catch (err: unknown) {
       const error = err as { response?: { data?: { detail?: string } } }
-      message.error(error.response?.data?.detail || 'Bind failed')
+      message.error(error.response?.data?.detail || t('departments.bindFailed'))
     }
   }
 
   const handleUnbindMt = async (deptId: string, instanceId: string) => {
     try {
       await api.delete(`/api/departments/${deptId}/multitenant-instance/${instanceId}`)
-      message.success('Unbound')
+      message.success(t('departments.unbound'))
       setMtInstances(prev => ({ ...prev, [deptId]: null }))
       setTenants(prev => { const next = { ...prev }; delete next[instanceId]; return next })
     } catch {
-      message.error('Unbind failed')
+      message.error(t('departments.unbindFailed'))
     }
   }
 
@@ -166,36 +169,36 @@ export default function Departments() {
     if (!addUserInstanceId || !selectedUserId) return
     try {
       await api.post(`/api/instances/${addUserInstanceId}/tenants`, { user_id: selectedUserId })
-      message.success('User tenant created')
+      message.success(t('departments.tenantCreated'))
       setAddUserModalOpen(false)
       setSelectedUserId(null)
       const resp = await api.get(`/api/instances/${addUserInstanceId}/tenants`)
       setTenants(prev => ({ ...prev, [addUserInstanceId]: resp.data }))
     } catch (err: unknown) {
       const error = err as { response?: { data?: { detail?: string } } }
-      message.error(error.response?.data?.detail || 'Creation failed')
+      message.error(error.response?.data?.detail || t('departments.tenantCreationFailed'))
     }
   }
 
   const handleRetryTenant = async (instanceId: string, userId: string) => {
     try {
       await api.post(`/api/instances/${instanceId}/tenants/${userId}/retry`)
-      message.success('Retry succeeded')
+      message.success(t('departments.retrySucceeded'))
       const resp = await api.get(`/api/instances/${instanceId}/tenants`)
       setTenants(prev => ({ ...prev, [instanceId]: resp.data }))
     } catch {
-      message.error('Retry failed')
+      message.error(t('departments.retryFailed'))
     }
   }
 
   const handleDeleteTenant = async (instanceId: string, userId: string) => {
     try {
       await api.delete(`/api/instances/${instanceId}/tenants/${userId}`)
-      message.success('Deleted')
+      message.success(t('departments.tenantDeleted'))
       const resp = await api.get(`/api/instances/${instanceId}/tenants`)
       setTenants(prev => ({ ...prev, [instanceId]: resp.data }))
     } catch {
-      message.error('Delete failed')
+      message.error(t('departments.tenantDeleteFailed'))
     }
   }
 
@@ -212,24 +215,24 @@ export default function Departments() {
   }
 
   const tenantColumns = (instanceId: string) => [
-    { title: 'User', dataIndex: 'display_name', key: 'display_name', render: (v: string | null) => v || '-' },
-    { title: 'Tenant Name', dataIndex: 'tenant_name', key: 'tenant_name' },
+    { title: t('departments.user'), dataIndex: 'display_name', key: 'display_name', render: (v: string | null) => v || '-' },
+    { title: t('departments.tenantName'), dataIndex: 'tenant_name', key: 'tenant_name' },
     {
-      title: 'Status', dataIndex: 'provisioning_step', key: 'status',
+      title: t('departments.status'), dataIndex: 'provisioning_step', key: 'status',
       render: (step: string | null) => step
-        ? <Tag color="blue">Provisioning ({step})</Tag>
-        : <Tag color="green">Active</Tag>,
+        ? <Tag color="blue">{t('departments.provisioning', { step })}</Tag>
+        : <Tag color="green">{t('departments.active')}</Tag>,
     },
-    { title: 'Created At', dataIndex: 'created_at', key: 'created_at', render: (v: string | null) => v ? new Date(v).toLocaleString() : '-' },
+    { title: t('departments.createdAt'), dataIndex: 'created_at', key: 'created_at', render: (v: string | null) => v ? formatDateTime(v, i18n.resolvedLanguage ?? i18n.language) : '-' },
     {
-      title: 'Actions', key: 'actions',
+      title: t('departments.actions'), key: 'actions',
       render: (_: unknown, record: TenantItem) => (
         <Space>
           {record.provisioning_step && (
-            <Button size="small" onClick={() => handleRetryTenant(instanceId, record.user_id)}>Retry</Button>
+            <Button size="small" onClick={() => handleRetryTenant(instanceId, record.user_id)}>{t('common.retry')}</Button>
           )}
-          <Popconfirm title="Delete this tenant?" onConfirm={() => handleDeleteTenant(instanceId, record.user_id)}>
-            <Button size="small" danger>Delete</Button>
+          <Popconfirm title={t('departments.deleteTenantConfirm')} onConfirm={() => handleDeleteTenant(instanceId, record.user_id)}>
+            <Button size="small" danger>{t('departments.delete')}</Button>
           </Popconfirm>
         </Space>
       ),
@@ -241,9 +244,9 @@ export default function Departments() {
     if (!inst) {
       return (
         <div style={{ padding: 16 }}>
-          <p>No multitenant instance bound</p>
+          <p>{t('departments.noMultitenantInstance')}</p>
           <Button type="primary" onClick={() => void openBindMt(dept.id)}>
-            Bind Instance
+            {t('departments.bindInstance')}
           </Button>
         </div>
       )
@@ -251,22 +254,22 @@ export default function Departments() {
     const instTenants = tenants[inst.id] || []
     return (
       <div style={{ padding: 16 }}>
-        <Descriptions title="Multitenant Instance" bordered size="small" column={2} style={{ marginBottom: 16 }}>
-          <Descriptions.Item label="Name">{inst.name}</Descriptions.Item>
-          <Descriptions.Item label="Cluster ID">{inst.cluster_id}</Descriptions.Item>
-          <Descriptions.Item label="Host">{inst.host}:{inst.port}</Descriptions.Item>
-          <Descriptions.Item label="Status"><Tag color="green">{inst.status}</Tag></Descriptions.Item>
-          <Descriptions.Item label="Permission">
+        <Descriptions title={t('departments.instanceDetails')} bordered size="small" column={2} style={{ marginBottom: 16 }}>
+          <Descriptions.Item label={t('departments.name')}>{inst.name}</Descriptions.Item>
+          <Descriptions.Item label={t('departments.clusterId')}>{inst.cluster_id}</Descriptions.Item>
+          <Descriptions.Item label={t('departments.host')}>{inst.host}:{inst.port}</Descriptions.Item>
+          <Descriptions.Item label={t('departments.status')}><Tag color="green">{inst.status}</Tag></Descriptions.Item>
+          <Descriptions.Item label={t('departments.permission')}>
             <Tag color={inst.default_permission === 'readwrite' ? 'green' : 'orange'}>
-              {inst.default_permission === 'readwrite' ? 'Read/Write' : 'Read Only'}
+              {inst.default_permission === 'readwrite' ? t('departments.readWrite') : t('departments.readOnly')}
             </Tag>
           </Descriptions.Item>
         </Descriptions>
         <Space style={{ marginBottom: 8 }}>
-          <Popconfirm title="Unbind this instance?" onConfirm={() => handleUnbindMt(dept.id, inst.id)}>
-            <Button danger size="small">Unbind</Button>
+          <Popconfirm title={t('departments.unbindConfirm')} onConfirm={() => handleUnbindMt(dept.id, inst.id)}>
+            <Button danger size="small">{t('departments.unbind')}</Button>
           </Popconfirm>
-          <Button size="small" type="primary" onClick={() => openAddUser(inst.id)}>Add User</Button>
+          <Button size="small" type="primary" onClick={() => openAddUser(inst.id)}>{t('departments.addUser')}</Button>
         </Space>
         <Table dataSource={instTenants} columns={tenantColumns(inst.id)} rowKey="user_id" pagination={false} size="small" />
       </div>
@@ -274,17 +277,17 @@ export default function Departments() {
   }
 
   const columns = [
-    { title: 'Name', dataIndex: 'name', key: 'name' },
-    { title: 'Description', dataIndex: 'description', key: 'description' },
-    { title: 'Max Instances', dataIndex: 'max_instances', key: 'max_instances', render: (v: number | null) => v ?? 'Unlimited' },
+    { title: t('departments.name'), dataIndex: 'name', key: 'name' },
+    { title: t('departments.descriptionLabel'), dataIndex: 'description', key: 'description' },
+    { title: t('departments.maxInstances'), dataIndex: 'max_instances', key: 'max_instances', render: (v: number | null) => v ?? t('departments.unlimited') },
     {
-      title: 'Actions',
+      title: t('departments.actions'),
       key: 'actions',
       render: (_: unknown, record: DeptItem) => (
         <Space>
-          <Button size="small" onClick={() => { setEditingDept(record); form.setFieldsValue(record); setModalOpen(true) }}>Edit</Button>
-          <Popconfirm title="Delete this department?" onConfirm={() => handleDelete(record.id)}>
-            <Button size="small" danger>Delete</Button>
+          <Button size="small" onClick={() => { setEditingDept(record); form.setFieldsValue(record); setModalOpen(true) }}>{t('departments.edit')}</Button>
+          <Popconfirm title={t('departments.deleteDepartmentConfirm')} onConfirm={() => handleDelete(record.id)}>
+            <Button size="small" danger>{t('departments.delete')}</Button>
           </Popconfirm>
         </Space>
       ),
@@ -293,11 +296,11 @@ export default function Departments() {
 
   return (
     <PageContainer
-      title="Departments"
-      description="Manage departments and multitenant instances"
+      title={t('departments.title')}
+      description={t('departments.description')}
       actions={
         <Button type="primary" icon={<PlusOutlined />} onClick={() => { setEditingDept(null); form.resetFields(); setModalOpen(true) }}>
-          New Department
+          {t('departments.newDepartment')}
         </Button>
       }
     >
@@ -309,42 +312,42 @@ export default function Departments() {
         pagination={false}
         expandable={{ expandedRowRender }}
       />
-      <Modal title={editingDept ? 'Edit Department' : 'New Department'} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()}>
+      <Modal title={editingDept ? t('departments.editDepartment') : t('departments.newDepartment')} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()}>
         <Form form={form} onFinish={handleSave} layout="vertical">
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}>
+          <Form.Item name="name" label={t('departments.name')} rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="description" label="Description">
+          <Form.Item name="description" label={t('departments.descriptionLabel')}>
             <Input.TextArea />
           </Form.Item>
-          <Form.Item name="max_instances" label="Max Instances (leave empty for unlimited)">
+          <Form.Item name="max_instances" label={t('departments.maxInstancesHint')}>
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>
-      <Modal title="Bind Multitenant Instance" open={mtModalOpen} onCancel={() => setMtModalOpen(false)} onOk={() => mtForm.submit()}>
+      <Modal title={t('departments.bindTitle')} open={mtModalOpen} onCancel={() => setMtModalOpen(false)} onOk={() => mtForm.submit()}>
         <Form form={mtForm} onFinish={handleBindMt} layout="vertical">
-          <Form.Item name="instance_id" label="Multitenant Instance" rules={[{ required: true }]}>
+          <Form.Item name="instance_id" label={t('departments.multitenantInstance')} rules={[{ required: true }]}>
             <Select
               loading={eligibleMtLoading}
-              placeholder="Select a registered multitenant instance"
+              placeholder={t('departments.selectMultitenantInstance')}
               options={eligibleMtInstances.map(instance => ({
                 value: instance.id,
                 label: `${instance.name} (${instance.cluster_id})`,
               }))}
               notFoundContent={
                 eligibleMtLoading
-                  ? 'Loading...'
-                  : 'No active registered multitenant instances'
+                  ? t('departments.loading')
+                  : t('departments.noEligibleInstances')
               }
             />
           </Form.Item>
         </Form>
       </Modal>
-      <Modal title="Add User" open={addUserModalOpen} onCancel={() => setAddUserModalOpen(false)} onOk={handleAddUser} okButtonProps={{ disabled: !selectedUserId }}>
+      <Modal title={t('departments.addUser')} open={addUserModalOpen} onCancel={() => setAddUserModalOpen(false)} onOk={handleAddUser} okButtonProps={{ disabled: !selectedUserId }}>
         <Select
           showSearch
-          placeholder="Select user"
+          placeholder={t('departments.selectUser')}
           style={{ width: '100%' }}
           value={selectedUserId}
           onChange={setSelectedUserId}

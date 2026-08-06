@@ -44,14 +44,14 @@ Supply non-secret inputs as environment variables:
 | `POLARDB_PORT` | no | `3306` |
 | `PAS_DB_NAME` | no | `pas_meta` |
 | `PAS_HOME` | no | `/data/polar-mcp` |
-| `PAS_VERSION` | no | `0.0.5` |
+| `PAS_VERSION` | no | `0.0.6` |
 | `PAS_REF` | no | `v${PAS_VERSION}` |
 | `PAS_REPO` | no | official GitHub repository |
 | `PAS_UPDATE_REPO` | no | `1` |
 
 For the secret, prefer `POLARDB_PASSWORD_FILE=/path/to/mode-0600-file`. An interactive terminal prompt is the fallback. `POLARDB_PASSWORD` is supported for non-interactive automation but must not be placed in a command line or agent conversation.
 
-The default path fetches and checks out the immutable `v0.0.5` release in detached-HEAD mode. An existing checkout must be clean and its `origin` must match `PAS_REPO`. Set `PAS_UPDATE_REPO=0` only for a deliberately pre-positioned PAS checkout; this expert override keeps the current commit but still verifies PAS project markers.
+The default path fetches and checks out the immutable `v0.0.6` release in detached-HEAD mode. An existing checkout must be clean and its `origin` must match `PAS_REPO`. Set `PAS_UPDATE_REPO=0` only for a deliberately pre-positioned PAS checkout; this expert override keeps the current commit but still verifies PAS project markers.
 
 ## Required workflow
 
@@ -86,7 +86,7 @@ Resolve this skill's directory first; script paths below are relative to that di
 ## Mode-specific result
 
 - Docker packages the web console, API, and MCP endpoint on `${PAS_PORT:-18760}`. From `$PAS_HOME`, inspect the generated Compose project with `docker compose --env-file .secrets/pas-compose.env -f deploy/compose/compose.external-mysql.yaml ps`.
-- Docker pulls the `0.0.5` image by default and fails closed if it is unavailable. Use an approved fully qualified `PAS_IMAGE`, or explicitly set `PAS_ALLOW_LOCAL_BUILD=1` to build the same pinned checkout locally.
+- Docker pulls the `0.0.6` image by default and fails closed if it is unavailable. Use an approved fully qualified `PAS_IMAGE`, or explicitly set `PAS_ALLOW_LOCAL_BUILD=1` to build the same pinned checkout locally.
 - Source serves backend/MCP on `18760` and the optional web console on `18761`. Inspect `$PAS_HOME/run/backend.out` and `$PAS_HOME/run/web.out`.
 - The bootstrap-token file is mode `0600` and is created only while PAS is in `SETUP` mode.
 - Restrict any inbound console or MCP ports to required sources rather than opening them globally.

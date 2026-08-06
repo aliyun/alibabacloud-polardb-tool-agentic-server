@@ -1,7 +1,7 @@
 name: polardb-agentic
 
 x-pas-image: &pas-image
-  image: ${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.5}
+  image: ${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.6}
   environment: &pas-environment
     PAS_DATABASE_URL: ${PAS_DATABASE_URL:?set PAS_DATABASE_URL}
     PAS_ENCRYPTION_KEY: ${PAS_ENCRYPTION_KEY:?set PAS_ENCRYPTION_KEY}

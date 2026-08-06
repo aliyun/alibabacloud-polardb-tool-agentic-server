@@ -6,6 +6,7 @@ import {
   useState,
 } from 'react'
 import { useParams } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import {
   Alert,
   Button,
@@ -94,6 +95,7 @@ function statusColor(status: string) {
 }
 
 export default function InstanceDetail() {
+  const { t } = useTranslation()
   const { id = '' } = useParams<{ id: string }>()
   const scopeRef = useRef<RouteScope>({
     instanceId: id,
@@ -157,14 +159,14 @@ export default function InstanceDetail() {
         setError(
           getAPIErrorMessage(
             requestError,
-            'Could not load instance administration.',
+            t('instanceDetail.loadFailed'),
           ),
         )
       } finally {
         if (isCurrent(scope)) setLoading(false)
       }
     },
-    [isCurrent],
+    [isCurrent, t],
   )
 
   useLayoutEffect(() => {
@@ -244,13 +246,13 @@ export default function InstanceDetail() {
       if (!isCurrent(scope)) return
       setInstance(response.data)
       setInstanceFormOpen(false)
-      setNotice('Instance details updated.')
+      setNotice(t('instanceDetail.updated'))
     } catch (requestError) {
       if (!isCurrent(scope)) return
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not update the instance.',
+          t('instanceDetail.updateFailed'),
         ),
       )
     } finally {
@@ -287,7 +289,7 @@ export default function InstanceDetail() {
           status: 'error',
           message: getAPIErrorMessage(
             requestError,
-            'Connection test failed.',
+            t('instanceDetail.connectionFailed'),
           ),
         })
       }
@@ -360,12 +362,12 @@ export default function InstanceDetail() {
       setCredentialTestResult(null)
       credentialForm.resetFields()
       setNotice(
-        'Credential saved. Plaintext was sent once and is not retained in this page.',
+        t('instanceDetail.credentialSaved'),
       )
     } catch (requestError) {
       if (!isCurrent(scope)) return
       setError(
-        getAPIErrorMessage(requestError, 'Could not create the credential.'),
+        getAPIErrorMessage(requestError, t('instanceDetail.credentialCreateFailed')),
       )
     } finally {
       if (isCurrent(scope)) setBusy(false)
@@ -421,7 +423,7 @@ export default function InstanceDetail() {
           status: 'error',
           message: getAPIErrorMessage(
             requestError,
-            'Connection test failed.',
+            t('instanceDetail.connectionFailed'),
           ),
         })
       }
@@ -456,15 +458,15 @@ export default function InstanceDetail() {
       setBackendFormOpen(false)
       setNotice(
         currentBackend
-          ? 'Provisioning backend configuration updated.'
-          : 'Provisioning backend activated after connectivity validation.',
+          ? t('instanceDetail.backendUpdated')
+          : t('instanceDetail.backendActivated'),
       )
     } catch (requestError) {
       if (!isCurrent(scope)) return
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not save the provisioning backend. Check the credential and connection settings.',
+          t('instanceDetail.backendSaveFailed'),
         ),
       )
     } finally {
@@ -487,27 +489,27 @@ export default function InstanceDetail() {
             item.id === response.data.id ? response.data : item,
           ),
         )
-        setNotice('Credential revoked. Existing bindings may need attention.')
+        setNotice(t('instanceDetail.credentialRevoked'))
       } else if (action.kind === 'drain') {
         const response = await drainProvisioningBackend(action.backend.id)
         if (!isCurrent(scope)) return
         setBackend(response.data)
         setNotice(
-          'Backend is draining. New resources will not be placed here.',
+          t('instanceDetail.backendDraining'),
         )
       } else {
         const response = await disableProvisioningBackend(action.backend.id)
         if (!isCurrent(scope)) return
         setBackend(response.data)
         setNotice(
-          'Backend disabled. Forward provisioning is stopped; cleanup and recovery remain available.',
+          t('instanceDetail.backendDisabled'),
         )
       }
       setConfirmation(null)
     } catch (requestError) {
       if (!isCurrent(scope)) return
       setError(
-        getAPIErrorMessage(requestError, 'Could not complete this operation.'),
+        getAPIErrorMessage(requestError, t('instanceDetail.operationFailed')),
       )
     } finally {
       if (isCurrent(scope)) setBusy(false)
@@ -526,13 +528,13 @@ export default function InstanceDetail() {
       })
       if (!isCurrent(scope)) return
       setBackend(response.data)
-      setNotice('Backend reactivated after validation.')
+      setNotice(t('instanceDetail.backendReactivated'))
     } catch (requestError) {
       if (!isCurrent(scope)) return
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not reactivate the backend. Resolve health or credential errors first.',
+          t('instanceDetail.reactivateFailed'),
         ),
       )
     } finally {
@@ -542,7 +544,7 @@ export default function InstanceDetail() {
 
   if (loading) {
     return (
-      <PageContainer title="Instance" description="Loading administration data">
+      <PageContainer title={t('instances.instance')} description={t('instanceDetail.loading')}>
         <Skeleton active paragraph={{ rows: 9 }} />
       </PageContainer>
     )
@@ -550,12 +552,12 @@ export default function InstanceDetail() {
 
   if (!instance) {
     return (
-      <PageContainer title="Instance" description="Administration unavailable">
+      <PageContainer title={t('instances.instance')} description={t('instanceDetail.unavailable')}>
         <Alert
           type="error"
           showIcon
           role="alert"
-          message={error ?? 'Instance not found.'}
+          message={error ?? t('instanceDetail.notFound')}
           action={
             <Button
               size="small"
@@ -566,7 +568,7 @@ export default function InstanceDetail() {
                 void load(scope)
               }}
             >
-              Retry
+              {t('common.retry')}
             </Button>
           }
         />
@@ -581,7 +583,7 @@ export default function InstanceDetail() {
   return (
     <PageContainer
       title={instance.name}
-      description={`Physical instance ${instance.cluster_id}`}
+      description={`${t('instanceDetail.physicalInstance')} ${instance.cluster_id}`}
     >
       <Space direction="vertical" size={28} style={{ width: '100%' }}>
         {error && (
@@ -605,46 +607,46 @@ export default function InstanceDetail() {
             wrap
           >
             <Title id="instance-overview-heading" level={4}>
-              Physical instance
+              {t('instanceDetail.physicalInstance')}
             </Title>
             {instance.allocation_mode === 'registered' && (
-              <Button onClick={openInstanceForm}>Edit Instance</Button>
+              <Button onClick={openInstanceForm}>{t('instanceDetail.editInstance')}</Button>
             )}
           </Space>
           <Descriptions bordered column={{ xs: 1, sm: 2 }} size="small">
-            <Descriptions.Item label="Engine">
+            <Descriptions.Item label={t('instances.engine')}>
               <Tag>{instance.engine}</Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Topology">
+            <Descriptions.Item label={t('instances.topology')}>
               <Tag>{instance.topology}</Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Allocation mode">
+            <Descriptions.Item label={t('instances.allocationMode')}>
               <Tag>{instance.allocation_mode}</Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Status">
+            <Descriptions.Item label={t('instances.status')}>
               <Tag color={statusColor(instance.status)}>{instance.status}</Tag>
             </Descriptions.Item>
-            <Descriptions.Item label="Usage" span={2}>
-              {instance.usage || 'Not specified'}
+            <Descriptions.Item label={t('instances.usage')} span={2}>
+              {instance.usage || t('instances.notSpecified')}
             </Descriptions.Item>
-            <Descriptions.Item label="Region">
-              {instance.region || 'Not set'}
+            <Descriptions.Item label={t('instances.region')}>
+              {instance.region || t('instanceDetail.notSet')}
             </Descriptions.Item>
-            <Descriptions.Item label="Endpoint">
+            <Descriptions.Item label={t('instances.endpoint')}>
               {instance.host
                 ? `${instance.host}:${instance.port ?? 'default'}`
-                : 'Not set'}
+                : t('instanceDetail.notSet')}
             </Descriptions.Item>
-            <Descriptions.Item label="Bindings">
-              {instance.binding_counts.users} users ·{' '}
-              {instance.binding_counts.departments} departments ·{' '}
-              {instance.binding_counts.agents} agents
+            <Descriptions.Item label={t('instances.bindings')}>
+              {t('instances.usersCount', { count: instance.binding_counts.users })} ·{' '}
+              {t('instances.departmentsCount', { count: instance.binding_counts.departments })} ·{' '}
+              {t('instances.agentsCount', { count: instance.binding_counts.agents })}
             </Descriptions.Item>
           </Descriptions>
         </section>
 
         <Modal
-          title="Edit Instance"
+          title={t('instanceDetail.editInstance')}
           open={instanceFormOpen}
           onCancel={() => {
             if (!busy) setInstanceFormOpen(false)
@@ -655,8 +657,8 @@ export default function InstanceDetail() {
           <Alert
             type="info"
             showIcon
-            message="Identity and credentials are managed separately"
-            description="Cluster ID, engine, topology, and allocation mode cannot be changed. Editing the endpoint does not change database credentials."
+            message={t('instanceDetail.identityCredentialsSeparate')}
+            description={t('instanceDetail.identityCredentialsDescription')}
             style={{ marginBottom: 16 }}
           />
           <Form
@@ -684,12 +686,12 @@ export default function InstanceDetail() {
                 columnGap: 16,
               }}
             >
-              <Form.Item name="cluster_id" label="Cluster ID">
+              <Form.Item name="cluster_id" label={t('instances.clusterId')}>
                 <Input disabled />
               </Form.Item>
               <Form.Item
                 name="name"
-                label="Instance name"
+                label={t('instanceDetail.instanceName')}
                 rules={[
                   { required: true, whitespace: true },
                   { max: 255 },
@@ -699,7 +701,7 @@ export default function InstanceDetail() {
               </Form.Item>
               <Form.Item
                 name="region"
-                label="Region"
+                label={t('instances.region')}
                 rules={[
                   ...(instance.region
                     ? [{ required: true, whitespace: true }]
@@ -711,7 +713,7 @@ export default function InstanceDetail() {
               </Form.Item>
               <Form.Item
                 name="port"
-                label="Port"
+                label={t('instances.port')}
                 rules={[
                   { required: true, type: 'number', min: 1, max: 65535 },
                 ]}
@@ -726,7 +728,7 @@ export default function InstanceDetail() {
             </div>
             <Form.Item
               name="host"
-              label="Host"
+              label={t('instances.host')}
               rules={[
                 { required: true, whitespace: true },
                 { max: 255 },
@@ -738,7 +740,7 @@ export default function InstanceDetail() {
               <>
                 <Form.Item
                   name="test_credential_id"
-                  label="Test with credential"
+                  label={t('instanceDetail.testWithCredential')}
                   rules={[{ required: true }]}
                 >
                   <Select
@@ -755,7 +757,7 @@ export default function InstanceDetail() {
                   loading={endpointTestLoading}
                   onClick={() => void handleEndpointTest()}
                 >
-                  Test Connection
+                  {t('instances.testConnection')}
                 </Button>
                 {endpointTestResult && (
                   <Alert
@@ -772,7 +774,7 @@ export default function InstanceDetail() {
                     }
                     message={
                       endpointTestResult.status === 'success'
-                        ? 'Connection succeeded'
+                        ? t('instances.connectionSucceeded')
                         : endpointTestResult.message
                     }
                     style={{ marginTop: 12, marginBottom: 16 }}
@@ -782,20 +784,20 @@ export default function InstanceDetail() {
             )}
             <Form.Item
               name="usage"
-              label="Usage"
+              label={t('instances.usage')}
               rules={[{ max: 1024 }]}
             >
               <Input.TextArea rows={3} showCount maxLength={1024} />
             </Form.Item>
             <Space>
               <Button type="primary" htmlType="submit" loading={busy}>
-                Save Instance
+                {t('instances.save')}
               </Button>
               <Button
                 disabled={busy}
                 onClick={() => setInstanceFormOpen(false)}
               >
-                Cancel
+                {t('common.cancel')}
               </Button>
             </Space>
           </Form>
@@ -809,11 +811,10 @@ export default function InstanceDetail() {
           >
             <div>
               <Title id="credentials-heading" level={4}>
-                Credentials
+                {t('instanceDetail.credentialsTitle')}
               </Title>
               <Text type="secondary">
-                Direct-access and provisioning credentials are separate.
-                Secrets are revealed only through the audited workflow.
+                {t('instanceDetail.credentialsDescription')}
               </Text>
             </div>
             <Button
@@ -826,7 +827,7 @@ export default function InstanceDetail() {
                 setCredentialFormOpen(true)
               }}
             >
-              Add Credential
+              {t('instanceDetail.addCredential')}
             </Button>
           </Space>
 
@@ -840,7 +841,7 @@ export default function InstanceDetail() {
               }}
             >
               <Title level={5}>
-                {editingCredential ? 'Edit credential' : 'Add credential'}
+                {editingCredential ? t('instanceDetail.editCredential') : t('instanceDetail.addCredential')}
               </Title>
               <Form
                 form={credentialForm}
@@ -856,12 +857,12 @@ export default function InstanceDetail() {
               >
                 <Form.Item
                   name="name"
-                  label="Credential name"
+                  label={t('instanceDetail.credentialName')}
                   rules={[{ required: true, whitespace: true }, { max: 255 }]}
                 >
                   <Input autoComplete="off" />
                 </Form.Item>
-                <Form.Item name="purpose" label="Purpose" rules={[{ required: true }]}>
+                <Form.Item name="purpose" label={t('instanceDetail.purpose')} rules={[{ required: true }]}>
                   <Select
                     disabled={!!editingCredential}
                     onChange={(purpose) => {
@@ -876,12 +877,12 @@ export default function InstanceDetail() {
                       })
                     }}
                     options={[
-                      { value: 'direct_access', label: 'Direct access' },
+                      { value: 'direct_access', label: t('instanceDetail.directAccess') },
                       ...(canProvision
                         ? [
                             {
                               value: 'provisioning_admin',
-                              label: 'Provisioning administrator',
+                              label: t('instanceDetail.provisioningAdmin'),
                             },
                           ]
                         : []),
@@ -890,26 +891,26 @@ export default function InstanceDetail() {
                 </Form.Item>
                 <Form.Item
                   name="capability"
-                  label="Capability"
+                  label={t('instanceDetail.capability')}
                   rules={[{ required: true }]}
                 >
                   <Select
                     options={
                       credentialPurpose === 'provisioning_admin'
-                        ? [{ value: 'admin', label: 'Administrator' }]
+                        ? [{ value: 'admin', label: t('instanceDetail.administrator') }]
                         : [
-                            { value: 'readonly', label: 'Read only' },
-                            { value: 'readwrite', label: 'Read and write' },
+                            { value: 'readonly', label: t('instanceDetail.readOnly') },
+                            { value: 'readwrite', label: t('instanceDetail.readWrite') },
                           ]
                     }
                   />
                 </Form.Item>
                 <Form.Item
                   name="username"
-                  label="Username"
+                  label={t('instances.username')}
                   extra={
                     editingCredential
-                      ? 'Leave blank to keep the current username.'
+                      ? t('instanceDetail.keepUsername')
                       : undefined
                   }
                   rules={[
@@ -921,10 +922,10 @@ export default function InstanceDetail() {
                 </Form.Item>
                 <Form.Item
                   name="password"
-                  label="Password"
+                  label={t('instances.password')}
                   extra={
                     editingCredential
-                      ? 'Leave blank to keep the current password.'
+                      ? t('instanceDetail.keepPassword')
                       : undefined
                   }
                   rules={[
@@ -938,7 +939,7 @@ export default function InstanceDetail() {
                   <>
                     <Form.Item
                       name="include_database"
-                      label="Scope to a database"
+                      label={t('instanceDetail.scopeDatabase')}
                       valuePropName="checked"
                     >
                       <Switch />
@@ -953,7 +954,7 @@ export default function InstanceDetail() {
                         getFieldValue('include_database') ? (
                           <Form.Item
                             name="database_name"
-                            label="Database name"
+                            label={t('instanceDetail.databaseName')}
                             rules={[
                               { required: true, whitespace: true },
                               { max: 255 },
@@ -971,10 +972,10 @@ export default function InstanceDetail() {
                     loading={credentialTestLoading}
                     onClick={() => void handleCredentialTest()}
                   >
-                    Test Connection
+                    {t('instances.testConnection')}
                   </Button>
                   <Button type="primary" htmlType="submit" loading={busy}>
-                    Save Credential
+                    {t('instanceDetail.saveCredential')}
                   </Button>
                   <Button
                     disabled={busy}
@@ -986,7 +987,7 @@ export default function InstanceDetail() {
                       credentialForm.resetFields()
                     }}
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </Button>
                 </Space>
                 {credentialTestResult && (
@@ -1004,7 +1005,7 @@ export default function InstanceDetail() {
                     }
                     message={
                       credentialTestResult.status === 'success'
-                        ? 'Connection succeeded'
+                        ? t('instances.connectionSucceeded')
                         : credentialTestResult.message
                     }
                     style={{ marginTop: 12 }}
@@ -1017,7 +1018,7 @@ export default function InstanceDetail() {
           {credentials.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="Add a credential before granting direct access or configuring provisioning."
+              description={t('instanceDetail.addCredentialFirst')}
             />
           ) : (
             <Table
@@ -1027,31 +1028,31 @@ export default function InstanceDetail() {
               scroll={{ x: 880 }}
               style={{ marginTop: 16 }}
               columns={[
-                { title: 'Name', dataIndex: 'name' },
+                { title: t('instances.name'), dataIndex: 'name' },
                 {
-                  title: 'Purpose',
+                  title: t('instanceDetail.purpose'),
                   dataIndex: 'purpose',
                   render: (value: string) => <Tag>{value}</Tag>,
                 },
                 {
-                  title: 'Capability',
+                  title: t('instanceDetail.capability'),
                   dataIndex: 'capability',
                   render: (value: string) => <Tag>{value}</Tag>,
                 },
                 {
-                  title: 'Database',
+                  title: t('auditLogs.database'),
                   dataIndex: 'database_name',
-                  render: (value: string | null) => value || 'All databases',
+                  render: (value: string | null) => value || t('instanceDetail.allDatabases'),
                 },
                 {
-                  title: 'Status',
+                  title: t('instances.status'),
                   dataIndex: 'status',
                   render: (value: string) => (
                     <Tag color={statusColor(value)}>{value}</Tag>
                   ),
                 },
                 {
-                  title: 'Actions',
+                  title: t('instances.actions'),
                   render: (_: unknown, item: InstanceCredential) => (
                     <Space align="start" wrap>
                       <CredentialReveal
@@ -1086,12 +1087,12 @@ export default function InstanceDetail() {
                           setCredentialFormOpen(true)
                         }}
                       >
-                        Edit
+                        {t('instanceDetail.edit')}
                       </Button>
                       <Button
                         danger
                         disabled={item.status !== 'active'}
-                        aria-label={`Revoke ${item.name}`}
+                        aria-label={`${t('instanceDetail.revoke')} ${item.name}`}
                         onClick={() =>
                           setConfirmation({
                             kind: 'revoke',
@@ -1099,7 +1100,7 @@ export default function InstanceDetail() {
                           })
                         }
                       >
-                        Revoke
+                        {t('instanceDetail.revoke')}
                       </Button>
                     </Space>
                   ),
@@ -1117,12 +1118,10 @@ export default function InstanceDetail() {
           >
             <div>
               <Title id="backend-heading" level={4}>
-                Provisioning Backend
+                {t('instanceDetail.provisioningBackend')}
               </Title>
               <Text type="secondary">
-                Controls dynamic database creation on this multi-tenant
-                physical instance. Draining blocks new placement; disabling
-                reserves the backend for cleanup and recovery.
+                {t('instanceDetail.provisioningBackendDescription')}
               </Text>
             </div>
             {canProvision && (
@@ -1133,7 +1132,7 @@ export default function InstanceDetail() {
                 }
                 onClick={openBackendForm}
               >
-                {backend ? 'Edit Backend' : 'Create Backend'}
+                {backend ? t('instanceDetail.editBackend') : t('instanceDetail.createBackend')}
               </Button>
             )}
           </Space>
@@ -1142,14 +1141,14 @@ export default function InstanceDetail() {
             <Alert
               type="info"
               showIcon
-              message="Provisioning is available only for PolarDB for MySQL multi-tenant instances."
+              message={t('instanceDetail.backendEligibility')}
               style={{ marginTop: 16 }}
             />
           ) : activeProvisioningCredentials.length === 0 ? (
             <Alert
               type="warning"
               showIcon
-              message="Add an active provisioning-administrator credential before configuring a backend."
+              message={t('instanceDetail.adminCredentialRequired')}
               style={{ marginTop: 16 }}
             />
           ) : null}
@@ -1164,7 +1163,7 @@ export default function InstanceDetail() {
               }}
             >
               <Title level={5}>
-                {backend ? 'Edit backend' : 'Create backend'}
+                {backend ? t('instanceDetail.editBackend') : t('instanceDetail.createBackend')}
               </Title>
               <Form
                 form={backendForm}
@@ -1177,7 +1176,7 @@ export default function InstanceDetail() {
                 </Form.Item>
                 <Form.Item
                   name="admin_credential_id"
-                  label="Provisioning credential"
+                  label={t('instanceDetail.provisioningCredential')}
                   rules={[{ required: true }]}
                 >
                   <Select
@@ -1187,12 +1186,12 @@ export default function InstanceDetail() {
                     }))}
                   />
                 </Form.Item>
-                <Form.Item name="priority" label="Priority" rules={[{ required: true }]}>
+                <Form.Item name="priority" label={t('instanceDetail.priority')} rules={[{ required: true }]}>
                   <InputNumber precision={0} style={{ width: '100%' }} />
                 </Form.Item>
                 <Form.Item
                   name="max_active_resources"
-                  label="Maximum active resources"
+                  label={t('instanceDetail.maxResources')}
                   rules={[{ required: true, type: 'number', min: 1 }]}
                 >
                   <InputNumber min={1} precision={0} style={{ width: '100%' }} />
@@ -1200,14 +1199,14 @@ export default function InstanceDetail() {
                 <Space size={16} wrap style={{ width: '100%' }}>
                   <Form.Item
                     name="resource_min_cpu"
-                    label="Minimum CPU"
+                    label={t('instanceDetail.minCpu')}
                     rules={[{ required: true, type: 'number', min: 0 }]}
                   >
                     <InputNumber min={0} precision={0} />
                   </Form.Item>
                   <Form.Item
                     name="resource_max_cpu"
-                    label="Maximum CPU"
+                    label={t('instanceDetail.maxCpu')}
                     dependencies={['resource_min_cpu']}
                     rules={[
                       { required: true, type: 'number', min: 1 },
@@ -1221,7 +1220,7 @@ export default function InstanceDetail() {
                           }
                           return Promise.reject(
                             new Error(
-                              'Maximum CPU must be at least minimum CPU.',
+                              t('instanceDetail.cpuValidation'),
                             ),
                           )
                         },
@@ -1232,7 +1231,7 @@ export default function InstanceDetail() {
                   </Form.Item>
                   <Form.Item
                     name="ddl_concurrency"
-                    label="DDL concurrency"
+                    label={t('instanceDetail.ddlConcurrency')}
                     rules={[{ required: true, type: 'number', min: 1 }]}
                   >
                     <InputNumber min={1} precision={0} />
@@ -1240,13 +1239,13 @@ export default function InstanceDetail() {
                 </Space>
                 <Space>
                   <Button type="primary" htmlType="submit" loading={busy}>
-                    Save Backend
+                    {t('instanceDetail.saveBackend')}
                   </Button>
                   <Button
                     disabled={busy}
                     onClick={() => setBackendFormOpen(false)}
                   >
-                    Cancel
+                    {t('common.cancel')}
                   </Button>
                 </Space>
               </Form>
@@ -1256,10 +1255,10 @@ export default function InstanceDetail() {
           {backend && (
             <div style={{ marginTop: 16 }}>
               <Descriptions bordered column={{ xs: 1, sm: 2 }} size="small">
-                <Descriptions.Item label="Status">
+                <Descriptions.Item label={t('instances.status')}>
                   <Tag color={statusColor(backend.status)}>{backend.status}</Tag>
                 </Descriptions.Item>
-                <Descriptions.Item label="Provisioning health">
+                <Descriptions.Item label={t('instanceDetail.provisioningHealth')}>
                   <Space wrap>
                     <Tag
                       color={
@@ -1267,8 +1266,8 @@ export default function InstanceDetail() {
                       }
                     >
                       {instance.health?.healthy
-                        ? 'Healthy'
-                        : 'Unhealthy'}
+                        ? t('instances.healthy')
+                        : t('instances.unhealthy')}
                     </Tag>
                     {instance.health?.error_code && (
                       <Text type="secondary">
@@ -1277,42 +1276,42 @@ export default function InstanceDetail() {
                     )}
                   </Space>
                 </Descriptions.Item>
-                <Descriptions.Item label="Configuration revision">
+                <Descriptions.Item label={t('instanceDetail.configurationRevision')}>
                   {backend.config_revision}
                 </Descriptions.Item>
-                <Descriptions.Item label="Priority">
+                <Descriptions.Item label={t('instanceDetail.priority')}>
                   {backend.priority}
                 </Descriptions.Item>
-                <Descriptions.Item label="Capacity">
-                  {backend.max_active_resources} active resources
+                <Descriptions.Item label={t('instanceDetail.capacity')}>
+                  {backend.max_active_resources} {t('instanceDetail.activeResources')}
                 </Descriptions.Item>
-                <Descriptions.Item label="CPU range">
+                <Descriptions.Item label={t('instanceDetail.cpuRange')}>
                   {backend.resource_min_cpu}–{backend.resource_max_cpu}
                 </Descriptions.Item>
-                <Descriptions.Item label="DDL concurrency">
+                <Descriptions.Item label={t('instanceDetail.ddlConcurrency')}>
                   {backend.ddl_concurrency}
                 </Descriptions.Item>
               </Descriptions>
               <Space wrap style={{ marginTop: 12 }}>
                 {backend.status === 'active' && (
                   <Button
-                    aria-label="Drain backend"
+                    aria-label={t('instanceDetail.drainBackend')}
                     onClick={() =>
                       setConfirmation({ kind: 'drain', backend })
                     }
                   >
-                    Drain
+                    {t('instanceDetail.drain')}
                   </Button>
                 )}
                 {backend.status !== 'disabled' && (
                   <Button
                     danger
-                    aria-label="Disable backend"
+                    aria-label={t('instanceDetail.disableBackend')}
                     onClick={() =>
                       setConfirmation({ kind: 'disable', backend })
                     }
                   >
-                    Disable
+                    {t('instanceDetail.disable')}
                   </Button>
                 )}
                 {backend.status !== 'active' && (
@@ -1321,7 +1320,7 @@ export default function InstanceDetail() {
                     loading={busy}
                     onClick={() => void reactivateBackend()}
                   >
-                    Reactivate Backend
+                    {t('instanceDetail.reactivate')}
                   </Button>
                 )}
               </Space>
@@ -1335,16 +1334,16 @@ export default function InstanceDetail() {
           confirmation?.kind === 'revoke'
             ? `Revoke ${confirmation.credential.name}?`
             : confirmation?.kind === 'drain'
-              ? 'Drain provisioning backend?'
-              : 'Disable provisioning backend?'
+              ? t('instanceDetail.drainTitle')
+              : t('instanceDetail.disableTitle')
         }
         open={!!confirmation}
         okText={
           confirmation?.kind === 'revoke'
-            ? 'Confirm Revoke'
+            ? t('instanceDetail.confirmRevoke')
             : confirmation?.kind === 'drain'
-              ? 'Confirm Drain'
-              : 'Confirm Disable'
+              ? t('instanceDetail.confirmDrain')
+              : t('instanceDetail.confirmDisable')
         }
         okButtonProps={{
           danger:
@@ -1359,18 +1358,15 @@ export default function InstanceDetail() {
       >
         {confirmation?.kind === 'revoke' ? (
           <Text>
-            The secret can no longer be revealed or used for new access.
-            Review bindings that reference this credential.
+            {t('instanceDetail.revokeDescription')}
           </Text>
         ) : confirmation?.kind === 'drain' ? (
           <Text>
-            Draining stops new resource placement. Existing claimed work and
-            resources continue on this backend.
+            {t('instanceDetail.drainDescription')}
           </Text>
         ) : (
           <Text>
-            Disabling stops forward provisioning and leaves this backend
-            available for cleanup and recovery only.
+            {t('instanceDetail.disableDescription')}
           </Text>
         )}
       </Modal>

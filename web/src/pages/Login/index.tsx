@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Form, Input, Button, message } from 'antd'
 import { UserOutlined, LockOutlined, ApiOutlined, CloudOutlined, TeamOutlined, ThunderboltOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
+import LanguageSwitcher from '../../components/LanguageSwitcher'
 import './Login.css'
 
 interface LoginProps {
@@ -9,6 +11,7 @@ interface LoginProps {
 }
 
 export default function Login({ onLogin }: LoginProps) {
+  const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
@@ -18,7 +21,7 @@ export default function Login({ onLogin }: LoginProps) {
       await onLogin(values.username, values.password)
       navigate('/dashboard')
     } catch {
-      message.error('Invalid username or password')
+      message.error(t('auth.invalidCredentials'))
     } finally {
       setLoading(false)
     }
@@ -26,13 +29,14 @@ export default function Login({ onLogin }: LoginProps) {
 
   return (
     <div className="login-page">
+      <div className="login-language"><LanguageSwitcher /></div>
       {/* Brand Panel */}
       <div className="login-brand">
         <div className="login-brand-content">
           <h1 className="login-brand-title">alibabacloud polardb tool agentic server</h1>
           <p className="login-brand-subtitle">
-            The open-source MCP gateway for PolarDB MySQL.<br />
-            AI-native database access with enterprise security.
+            {t('auth.brandLineOne')}<br />
+            {t('auth.brandLineTwo')}
           </p>
 
           <div className="login-features">
@@ -40,29 +44,29 @@ export default function Login({ onLogin }: LoginProps) {
               <span className="login-feature-icon">
                 <ApiOutlined style={{ color: '#5ac8fa' }} />
               </span>
-              <div className="login-feature-title">MCP Protocol</div>
-              <div className="login-feature-desc">AI-native database access via Model Context Protocol</div>
+              <div className="login-feature-title">{t('auth.protocolTitle')}</div>
+              <div className="login-feature-desc">{t('auth.protocolDescription')}</div>
             </div>
             <div className="login-feature-card">
               <span className="login-feature-icon">
                 <CloudOutlined style={{ color: '#34c759' }} />
               </span>
-              <div className="login-feature-title">Auto Provisioning</div>
-              <div className="login-feature-desc">Zero-touch instance management and scaling</div>
+              <div className="login-feature-title">{t('auth.provisioningTitle')}</div>
+              <div className="login-feature-desc">{t('auth.provisioningDescription')}</div>
             </div>
             <div className="login-feature-card">
               <span className="login-feature-icon">
                 <TeamOutlined style={{ color: '#af52de' }} />
               </span>
-              <div className="login-feature-title">Multi-Tenant</div>
-              <div className="login-feature-desc">Secure isolation per user with role-based access</div>
+              <div className="login-feature-title">{t('auth.multitenantTitle')}</div>
+              <div className="login-feature-desc">{t('auth.multitenantDescription')}</div>
             </div>
             <div className="login-feature-card">
               <span className="login-feature-icon">
                 <ThunderboltOutlined style={{ color: '#ff9f0a' }} />
               </span>
-              <div className="login-feature-title">SQL Gateway</div>
-              <div className="login-feature-desc">Execute queries with guardrails and audit trails</div>
+              <div className="login-feature-title">{t('auth.sqlGatewayTitle')}</div>
+              <div className="login-feature-desc">{t('auth.sqlGatewayDescription')}</div>
             </div>
           </div>
 
@@ -73,22 +77,22 @@ export default function Login({ onLogin }: LoginProps) {
       {/* Form Panel */}
       <div className="login-form-panel">
         <div className="login-form-header">
-          <h2 className="login-form-title">Welcome back</h2>
-          <p className="login-form-desc">Sign in to manage your PolarDB instances</p>
+          <h2 className="login-form-title">{t('auth.welcomeTitle')}</h2>
+          <p className="login-form-desc">{t('auth.welcomeDescription')}</p>
         </div>
 
         <Form onFinish={handleSubmit} layout="vertical" size="large" requiredMark={false}>
-          <Form.Item name="username" rules={[{ required: true, message: 'Please enter your username' }]}>
+          <Form.Item name="username" rules={[{ required: true, message: t('auth.usernameRequired') }]}>
             <Input
               prefix={<UserOutlined />}
-              placeholder="Username"
+              placeholder={t('auth.username')}
               autoFocus
             />
           </Form.Item>
-          <Form.Item name="password" rules={[{ required: true, message: 'Please enter your password' }]}>
+          <Form.Item name="password" rules={[{ required: true, message: t('auth.passwordRequired') }]}>
             <Input.Password
               prefix={<LockOutlined />}
-              placeholder="Password"
+              placeholder={t('auth.password')}
             />
           </Form.Item>
           <Form.Item>
@@ -99,13 +103,13 @@ export default function Login({ onLogin }: LoginProps) {
               block
               className="login-submit-btn"
             >
-              Sign In
+              {t('auth.signIn')}
             </Button>
           </Form.Item>
         </Form>
 
         <div className="login-footer">
-          alibabacloud polardb tool agentic server - Open Source MCP Gateway
+          alibabacloud polardb tool agentic server - {t('auth.footer')}
         </div>
       </div>
     </div>

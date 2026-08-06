@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Table, Tag, Drawer, Descriptions, Typography } from 'antd'
 import { Highlight, themes } from 'prism-react-renderer'
+import { useTranslation } from 'react-i18next'
 import api from '../../api/client'
 import PageContainer from '../../components/PageContainer'
+import { formatDateTime } from '../../i18n/format'
 
 interface AuditLogItem {
   id: string
@@ -50,6 +52,7 @@ function SqlHighlight({ code }: { code: string }) {
 }
 
 export default function AuditLogs() {
+  const { t, i18n } = useTranslation()
   const [logs, setLogs] = useState<AuditLogItem[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -70,29 +73,29 @@ export default function AuditLogs() {
   useEffect(() => { void fetchLogs() }, [fetchLogs])
 
   const columns = [
-    { title: 'User', dataIndex: 'user_name', key: 'user', render: (v: string | null) => v || '-' },
-    { title: 'SQL Type', dataIndex: 'sql_type', key: 'sql_type', render: (t: string | null) => t ? <Tag color={sqlTypeColor(t)}>{t}</Tag> : '-' },
-    { title: 'SQL', dataIndex: 'sql_text', key: 'sql', width: 300, ellipsis: true, render: (s: string | null) => s ? <Typography.Text code style={{ fontSize: 12 }}>{s.length > 80 ? s.slice(0, 80) + '...' : s}</Typography.Text> : '-' },
-    { title: 'Instance', dataIndex: 'instance_name', key: 'instance', render: (v: string | null) => v || '-' },
-    { title: 'Database', dataIndex: 'db_name', key: 'db', render: (v: string | null) => v || '-' },
-    { title: 'Status', dataIndex: 'status', key: 'status', render: (s: string) => <Tag color={s === 'success' ? 'green' : s === 'blocked' ? 'red' : 'orange'}>{s}</Tag> },
-    { title: 'Duration', dataIndex: 'duration_ms', key: 'duration', render: (ms: number | null) => ms !== null ? `${ms}ms` : '-' },
-    { title: 'Rows', dataIndex: 'row_count', key: 'rows', render: (r: number | null) => r !== null ? r : '-' },
-    { title: 'Time', dataIndex: 'created_at', key: 'time', render: (t: string) => t ? new Date(t).toLocaleString() : '-' },
+    { title: t('auditLogs.user'), dataIndex: 'user_name', key: 'user', render: (v: string | null) => v || '-' },
+    { title: t('auditLogs.sqlType'), dataIndex: 'sql_type', key: 'sql_type', render: (value: string | null) => value ? <Tag color={sqlTypeColor(value)}>{value}</Tag> : '-' },
+    { title: t('auditLogs.sql'), dataIndex: 'sql_text', key: 'sql', width: 300, ellipsis: true, render: (s: string | null) => s ? <Typography.Text code style={{ fontSize: 12 }}>{s.length > 80 ? s.slice(0, 80) + '...' : s}</Typography.Text> : '-' },
+    { title: t('auditLogs.instance'), dataIndex: 'instance_name', key: 'instance', render: (v: string | null) => v || '-' },
+    { title: t('auditLogs.database'), dataIndex: 'db_name', key: 'db', render: (v: string | null) => v || '-' },
+    { title: t('auditLogs.status'), dataIndex: 'status', key: 'status', render: (s: string) => <Tag color={s === 'success' ? 'green' : s === 'blocked' ? 'red' : 'orange'}>{s}</Tag> },
+    { title: t('auditLogs.duration'), dataIndex: 'duration_ms', key: 'duration', render: (ms: number | null) => ms !== null ? `${ms}ms` : '-' },
+    { title: t('auditLogs.rows'), dataIndex: 'row_count', key: 'rows', render: (r: number | null) => r !== null ? r : '-' },
+    { title: t('auditLogs.time'), dataIndex: 'created_at', key: 'time', render: (value: string) => value ? formatDateTime(value, i18n.resolvedLanguage ?? i18n.language) : '-' },
   ]
 
   return (
-    <PageContainer title="Audit Logs" description="SQL execution audit trail">
+    <PageContainer title={t('auditLogs.title')} description={t('auditLogs.description')}>
       <Table
         dataSource={logs}
         columns={columns}
         rowKey="id"
         loading={loading}
-        pagination={{ total, pageSize: 50, current: page, onChange: setPage, showTotal: (t) => `${t} records` }}
+        pagination={{ total, pageSize: 50, current: page, onChange: setPage, showTotal: (count) => t('auditLogs.records', { count }) }}
         onRow={(record) => ({ onClick: () => setSelected(record), style: { cursor: 'pointer' } })}
       />
       <Drawer
-        title="Audit Log Detail"
+        title={t('auditLogs.detail')}
         placement="right"
         width={640}
         open={!!selected}
@@ -102,22 +105,22 @@ export default function AuditLogs() {
           <>
             {selected.sql_text && (
               <div style={{ marginBottom: 24 }}>
-                <Typography.Title level={5}>SQL</Typography.Title>
+                <Typography.Title level={5}>{t('auditLogs.sql')}</Typography.Title>
                 <SqlHighlight code={selected.sql_text} />
               </div>
             )}
             <Descriptions column={1} bordered size="small">
-              <Descriptions.Item label="User">{selected.user_name || selected.user_id}</Descriptions.Item>
-              <Descriptions.Item label="Instance">{selected.instance_name || selected.instance_id || '-'}</Descriptions.Item>
-              <Descriptions.Item label="Database">{selected.db_name || '-'}</Descriptions.Item>
-              <Descriptions.Item label="SQL Type">{selected.sql_type || '-'}</Descriptions.Item>
-              <Descriptions.Item label="Action">{selected.action}</Descriptions.Item>
-              <Descriptions.Item label="Status"><Tag color={selected.status === 'success' ? 'green' : selected.status === 'blocked' ? 'red' : 'orange'}>{selected.status}</Tag></Descriptions.Item>
-              <Descriptions.Item label="Duration">{selected.duration_ms !== null ? `${selected.duration_ms}ms` : '-'}</Descriptions.Item>
-              <Descriptions.Item label="Rows">{selected.row_count !== null ? selected.row_count : '-'}</Descriptions.Item>
-              {selected.error_message && <Descriptions.Item label="Error">{selected.error_message}</Descriptions.Item>}
-              {selected.client_info && <Descriptions.Item label="Client Info">{selected.client_info}</Descriptions.Item>}
-              <Descriptions.Item label="Time">{new Date(selected.created_at).toLocaleString()}</Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.user')}>{selected.user_name || selected.user_id}</Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.instance')}>{selected.instance_name || selected.instance_id || '-'}</Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.database')}>{selected.db_name || '-'}</Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.sqlType')}>{selected.sql_type || '-'}</Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.action')}>{selected.action}</Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.status')}><Tag color={selected.status === 'success' ? 'green' : selected.status === 'blocked' ? 'red' : 'orange'}>{selected.status}</Tag></Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.duration')}>{selected.duration_ms !== null ? `${selected.duration_ms}ms` : '-'}</Descriptions.Item>
+              <Descriptions.Item label={t('auditLogs.rows')}>{selected.row_count !== null ? selected.row_count : '-'}</Descriptions.Item>
+              {selected.error_message && <Descriptions.Item label={t('auditLogs.error')}>{selected.error_message}</Descriptions.Item>}
+              {selected.client_info && <Descriptions.Item label={t('auditLogs.clientInfo')}>{selected.client_info}</Descriptions.Item>}
+              <Descriptions.Item label={t('auditLogs.time')}>{formatDateTime(selected.created_at, i18n.resolvedLanguage ?? i18n.language)}</Descriptions.Item>
             </Descriptions>
           </>
         )}

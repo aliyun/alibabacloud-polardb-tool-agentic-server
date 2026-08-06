@@ -1,7 +1,15 @@
 .setup-shell {
+  position: relative;
   min-height: 100vh;
   padding: 40px;
   background: var(--surface-secondary);
+}
+
+.setup-language {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  z-index: 2;
 }
 
 .setup-ownership {

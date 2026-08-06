@@ -49,14 +49,98 @@ TEXT_VERSIONS = (
         ),
     ),
     TextVersion(
+        "Canonical deployment skill default",
+        ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(
+            r"(?m)^\| `PAS_VERSION` \| no \| `(\d+\.\d+\.\d+)` \|$"
+        ),
+    ),
+    TextVersion(
+        "Canonical deployment skill checkout",
+        ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"immutable `v(\d+\.\d+\.\d+)` release"),
+    ),
+    TextVersion(
+        "Canonical deployment skill image",
+        ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"pulls the `(\d+\.\d+\.\d+)` image by default"),
+    ),
+    TextVersion(
+        "Claude deployment skill default",
+        ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(
+            r"(?m)^\| `PAS_VERSION` \| no \| `(\d+\.\d+\.\d+)` \|$"
+        ),
+    ),
+    TextVersion(
+        "Claude deployment skill checkout",
+        ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"immutable `v(\d+\.\d+\.\d+)` release"),
+    ),
+    TextVersion(
+        "Claude deployment skill image",
+        ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"pulls the `(\d+\.\d+\.\d+)` image by default"),
+    ),
+    TextVersion(
+        "English root deployment skill release",
+        "README.md",
+        re.compile(r"pins PAS to release `(\d+\.\d+\.\d+)`"),
+    ),
+    TextVersion(
+        "Chinese root deployment skill release",
+        "README_zh-CN.md",
+        re.compile(r"固定到 Release `(\d+\.\d+\.\d+)`"),
+    ),
+    TextVersion(
+        "English documentation index deployment skill release",
+        "docs/en/README.md",
+        re.compile(r"workflows pinned to PAS (\d+\.\d+\.\d+)\."),
+    ),
+    TextVersion(
+        "Chinese documentation index deployment skill release",
+        "docs/zh-cn/README.md",
+        re.compile(r"固定到 PAS\n  (\d+\.\d+\.\d+)。"),
+    ),
+    TextVersion(
         "English agent-assisted deployment guide",
         "docs/en/deployment/agent-assisted-deployment.md",
         re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
     ),
     TextVersion(
+        "English agent-assisted deployment introduction",
+        "docs/en/deployment/agent-assisted-deployment.md",
+        re.compile(r"defaults to PAS `(\d+\.\d+\.\d+)`"),
+    ),
+    TextVersion(
+        "English agent-assisted deployment image",
+        "docs/en/deployment/agent-assisted-deployment.md",
+        re.compile(r"published `(\d+\.\d+\.\d+)` image"),
+    ),
+    TextVersion(
+        "English agent-assisted deployment checkout",
+        "docs/en/deployment/agent-assisted-deployment.md",
+        re.compile(r"pinned `v(\d+\.\d+\.\d+)` checkout"),
+    ),
+    TextVersion(
         "Chinese agent-assisted deployment guide",
         "docs/zh-cn/deployment/agent-assisted-deployment.md",
         re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "Chinese agent-assisted deployment introduction",
+        "docs/zh-cn/deployment/agent-assisted-deployment.md",
+        re.compile(r"默认部署 PAS\n`(\d+\.\d+\.\d+)`"),
+    ),
+    TextVersion(
+        "Chinese agent-assisted deployment image",
+        "docs/zh-cn/deployment/agent-assisted-deployment.md",
+        re.compile(r"已发布的 `(\d+\.\d+\.\d+)` 镜像"),
+    ),
+    TextVersion(
+        "Chinese agent-assisted deployment checkout",
+        "docs/zh-cn/deployment/agent-assisted-deployment.md",
+        re.compile(r"固定的 `v(\d+\.\d+\.\d+)`\ncheckout"),
     ),
     TextVersion(
         "Runtime",
@@ -133,9 +217,29 @@ TEXT_VERSIONS = (
         re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
     ),
     TextVersion(
+        "English Compose guide release link label",
+        "docs/en/getting-started/deploy-compose.md",
+        re.compile(r"\[v(\d+\.\d+\.\d+) Release\]"),
+    ),
+    TextVersion(
+        "English Compose guide release link target",
+        "docs/en/getting-started/deploy-compose.md",
+        re.compile(r"/releases/tag/v(\d+\.\d+\.\d+)\)"),
+    ),
+    TextVersion(
         "Chinese Compose guide",
         "docs/zh-cn/getting-started/deploy-compose.md",
         re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "Chinese Compose guide release link label",
+        "docs/zh-cn/getting-started/deploy-compose.md",
+        re.compile(r"\[v(\d+\.\d+\.\d+) Release\]"),
+    ),
+    TextVersion(
+        "Chinese Compose guide release link target",
+        "docs/zh-cn/getting-started/deploy-compose.md",
+        re.compile(r"/releases/tag/v(\d+\.\d+\.\d+)\)"),
     ),
     TextVersion(
         "English prerequisites",

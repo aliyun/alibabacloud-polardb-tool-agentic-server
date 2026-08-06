@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Button, Skeleton } from 'antd'
+import { useTranslation } from 'react-i18next'
 import { useAuth } from './hooks/useAuth'
 import { discoverSystemState } from './api/configuration'
 import AppLayout from './components/Layout'
@@ -29,7 +30,13 @@ function PageLoading() {
   )
 }
 
-function ReadyRoutes() {
+interface ReadyRoutesProps {
+  setupDestination?: '/dashboard' | '/settings/configuration'
+}
+
+function ReadyRoutes({
+  setupDestination = '/settings/configuration',
+}: ReadyRoutesProps) {
   const { user, loading, login, logout, authMode } = useAuth()
 
   return (
@@ -37,7 +44,7 @@ function ReadyRoutes() {
       <Route path="/login" element={<Login onLogin={login} />} />
       <Route
         path="/setup"
-        element={<Navigate to="/settings/configuration" replace />}
+        element={<Navigate to={setupDestination} replace />}
       />
       <Route
         element={
@@ -72,8 +79,10 @@ function ReadyRoutes() {
 }
 
 function App() {
+  const { t } = useTranslation()
   const [systemState, setSystemState] = useState<'SETUP' | 'READY' | 'ERROR'>()
   const [discoveryAttempt, setDiscoveryAttempt] = useState(0)
+  const [completedSetup, setCompletedSetup] = useState(false)
 
   useEffect(() => {
     discoverSystemState()
@@ -91,11 +100,8 @@ function App() {
             role="alert"
             style={{ maxWidth: 640, margin: '14vh auto', padding: 32, textAlign: 'center' }}
           >
-            <h1>Cannot determine server state</h1>
-            <p>
-              The Web console could not reach the server readiness endpoint. Confirm that the
-              backend is running, then try again.
-            </p>
+            <h1>{t('app.serverStateTitle')}</h1>
+            <p>{t('app.serverStateDescription')}</p>
             <Button
               type="primary"
               onClick={() => {
@@ -103,16 +109,28 @@ function App() {
                 setDiscoveryAttempt((attempt) => attempt + 1)
               }}
             >
-              Retry
+              {t('common.retry')}
             </Button>
           </main>
         ) : systemState === 'SETUP' ? (
           <Routes>
-            <Route path="/setup" element={<Setup />} />
+            <Route
+              path="/setup"
+              element={(
+                <Setup
+                  onEnterConsole={() => {
+                    setCompletedSetup(true)
+                    setSystemState('READY')
+                  }}
+                />
+              )}
+            />
             <Route path="*" element={<Navigate to="/setup" replace />} />
           </Routes>
         ) : (
-          <ReadyRoutes />
+          <ReadyRoutes
+            setupDestination={completedSetup ? '/dashboard' : undefined}
+          />
         )}
       </Suspense>
     </BrowserRouter>

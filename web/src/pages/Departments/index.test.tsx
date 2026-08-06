@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import api from '../../api/client'
 import Departments from './index'
+import { createTestI18n } from '../../i18n/i18n'
+import LocaleProvider from '../../i18n/LocaleProvider'
 
 vi.mock('../../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../api/client')>()
@@ -103,5 +105,16 @@ describe('Departments page', () => {
         { instance_id: 'instance-mt' },
       ),
     )
+  })
+
+  it('renders department management in Simplified Chinese', async () => {
+    render(
+      <LocaleProvider i18nInstance={createTestI18n('zh-CN')}>
+        <Departments />
+      </LocaleProvider>,
+    )
+
+    expect(await screen.findByRole('heading', { name: '部门' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /新建部门/ })).toBeInTheDocument()
   })
 })

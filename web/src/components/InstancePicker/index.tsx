@@ -1,4 +1,5 @@
 import { Select } from 'antd'
+import { useTranslation } from 'react-i18next'
 
 import type { InstanceSummary } from '../../api/instanceAccess'
 
@@ -25,9 +26,10 @@ export default function InstancePicker({
   getEligibility,
   disabled = false,
   loading = false,
-  placeholder = 'Select a database instance',
-  ariaLabel = 'Database instance',
+  placeholder,
+  ariaLabel,
 }: InstancePickerProps) {
+  const { t } = useTranslation()
   const options = instances.map((instance) => {
     const eligibility = getEligibility?.(instance) ?? { eligible: true }
     const context = [
@@ -49,7 +51,7 @@ export default function InstancePicker({
 
   return (
     <Select
-      aria-label={ariaLabel}
+      aria-label={ariaLabel ?? t('components.instancePicker.label')}
       value={value || undefined}
       onChange={onChange}
       options={options}
@@ -57,7 +59,7 @@ export default function InstancePicker({
       showSearch
       disabled={disabled}
       loading={loading}
-      placeholder={placeholder}
+      placeholder={placeholder ?? t('components.instancePicker.placeholder')}
       style={{ width: '100%' }}
     />
   )

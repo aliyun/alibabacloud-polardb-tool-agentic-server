@@ -15,6 +15,7 @@ import {
   Typography,
 } from 'antd'
 import { EditOutlined } from '@ant-design/icons'
+import { useTranslation } from 'react-i18next'
 import api, { getAPIErrorMessage } from '../../api/client'
 import {
   listInstanceCredentials,
@@ -59,6 +60,7 @@ interface AccessDraft {
 }
 
 export default function Users() {
+  const { t } = useTranslation()
   const [users, setUsers] = useState<UserItem[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -140,11 +142,11 @@ export default function Users() {
         role: values.role,
         provisioning_mode: values.provisioning_mode,
       })
-      message.success('User updated')
+      message.success(t('users.updated'))
       setEditTarget(null)
       fetchUsers()
     } catch (error: unknown) {
-      message.error(getAPIErrorMessage(error, 'Failed to update user'))
+      message.error(getAPIErrorMessage(error, t('users.updateFailed')))
     } finally {
       setEditLoading(false)
     }
@@ -153,10 +155,10 @@ export default function Users() {
   const toggleStatus = (user: UserItem) => {
     const action = user.status === 'active' ? 'disable' : 'enable'
     Modal.confirm({
-      title: `${action === 'disable' ? 'Disable' : 'Enable'} user ${user.display_name}?`,
+      title: t('users.statusTitle', { action: action === 'disable' ? t('users.disable') : t('users.enable'), name: user.display_name }),
       onOk: async () => {
         await api.put(`/api/users/${user.id}/${action}`)
-        message.success(`User ${action}d`)
+        message.success(t('users.statusChanged', { action: action === 'disable' ? t('users.disable') : t('users.enable') }))
         fetchUsers()
       },
     })
@@ -167,11 +169,11 @@ export default function Users() {
     setResetLoading(true)
     try {
       await api.put(`/api/users/${resetTarget.id}/reset-password`, values)
-      message.success(`Password reset for ${resetTarget.display_name}`)
+      message.success(t('users.passwordReset', { name: resetTarget.display_name }))
       setResetTarget(null)
       resetForm.resetFields()
     } catch (error: unknown) {
-      message.error(getAPIErrorMessage(error, 'Failed to reset password'))
+      message.error(getAPIErrorMessage(error, t('users.passwordResetFailed')))
     } finally {
       setResetLoading(false)
     }
@@ -286,7 +288,7 @@ export default function Users() {
             ...current,
             [instanceId]: getAPIErrorMessage(
               requestError,
-              'Could not load access for this instance.',
+              t('users.accessLoadFailed'),
             ),
           }))
         }
@@ -303,7 +305,7 @@ export default function Users() {
         }
       }
     },
-    [accessRows, accessTarget, applyAccessDraft],
+    [accessRows, accessTarget, applyAccessDraft, t],
   )
 
   const openAccess = async (user: UserItem) => {
@@ -349,7 +351,7 @@ export default function Users() {
       setAccessError(
         getAPIErrorMessage(
           requestError,
-          'Could not load instance access for this user.',
+          t('users.userAccessLoadFailed'),
         ),
       )
     } finally {
@@ -398,7 +400,7 @@ export default function Users() {
       }))
       if (accessSelectedRef.current === targetId) {
         setAccessNotice(
-          'Instance access updated. The user may need to reconnect the MCP client to refresh the available tool list.',
+          t('users.accessUpdated'),
         )
       }
     } catch (requestError) {
@@ -412,7 +414,7 @@ export default function Users() {
         setAccessError(
           getAPIErrorMessage(
             requestError,
-            'Could not update instance access. Review the credential capability and selected grants.',
+            t('users.accessUpdateFailed'),
           ),
         )
       }
@@ -455,15 +457,15 @@ export default function Users() {
   )
 
   const columns = [
-    { title: 'Name', dataIndex: 'display_name', key: 'name' },
-    { title: 'Email', dataIndex: 'email', key: 'email' },
-    { title: 'Role', dataIndex: 'role', key: 'role', render: (role: string) => <Tag color={role === 'admin' ? 'red' : 'blue'}>{role}</Tag> },
+    { title: t('users.name'), dataIndex: 'display_name', key: 'name' },
+    { title: t('users.email'), dataIndex: 'email', key: 'email' },
+    { title: t('users.role'), dataIndex: 'role', key: 'role', render: (role: string) => <Tag color={role === 'admin' ? 'red' : 'blue'}>{role}</Tag> },
     {
-      title: 'Departments',
+      title: t('users.departments'),
       key: 'departments',
       render: (_: unknown, record: UserItem) => (
         <Space>
-          {record.departments.length === 0 && <Tag>None</Tag>}
+          {record.departments.length === 0 && <Tag>{t('users.none')}</Tag>}
           {record.departments.map((d) => (
             <Tag key={d.id} color={d.is_primary ? 'green' : 'default'}>{d.name}</Tag>
           ))}
@@ -471,38 +473,38 @@ export default function Users() {
       ),
     },
     {
-      title: 'Provisioning',
+      title: t('users.provisioning'),
       dataIndex: 'provisioning_mode',
       key: 'provisioning_mode',
       render: (v: string | null) => <Tag>{v ?? 'dedicated'}</Tag>,
     },
     {
-      title: 'Status',
+      title: t('users.status'),
       dataIndex: 'status',
       key: 'status',
       render: (status: string) => <Tag color={status === 'active' ? 'green' : 'red'}>{status}</Tag>,
     },
     {
-      title: 'Actions',
+      title: t('users.actions'),
       key: 'actions',
       render: (_: unknown, record: UserItem) => (
         <Space>
           <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
-            Edit
+            {t('users.edit')}
           </Button>
           <Button
             size="small"
-            aria-label={`Instance access for ${record.display_name}`}
+            aria-label={t('users.accessFor', { name: record.display_name })}
             onClick={() => void openAccess(record)}
           >
-            Instance Access
+            {t('users.instanceAccess')}
           </Button>
           <Button size="small" onClick={() => toggleStatus(record)}>
-            {record.status === 'active' ? 'Disable' : 'Enable'}
+            {record.status === 'active' ? t('users.disable') : t('users.enable')}
           </Button>
           {authMode === 'builtin' && (
             <Button size="small" onClick={() => setResetTarget(record)}>
-              Reset Password
+              {t('users.resetPassword')}
             </Button>
           )}
         </Space>
@@ -512,9 +514,9 @@ export default function Users() {
 
   return (
     <PageContainer
-      title="Users"
-      description="Manage user accounts and permissions"
-      actions={<Input.Search placeholder="Search users" onSearch={setSearch} allowClear style={{ width: 280 }} />}
+      title={t('users.title')}
+      description={t('users.description')}
+      actions={<Input.Search placeholder={t('users.search')} onSearch={setSearch} allowClear style={{ width: 280 }} />}
     >
       <Table
         dataSource={users}
@@ -545,15 +547,13 @@ export default function Users() {
                 level={4}
                 style={{ marginTop: 0 }}
               >
-                Instance access: {accessTarget.display_name}
+                {t('users.accessTitle', { name: accessTarget.display_name })}
               </Title>
               <Text type="secondary">
-                SQL access is provisioned by the existing workflow and is
-                shown read-only. Metadata and credential retrieval are
-                explicit administrator grants.
+                {t('users.accessDescription')}
               </Text>
             </div>
-            <Button onClick={closeAccess}>Close Instance Access</Button>
+            <Button onClick={closeAccess}>{t('users.closeAccess')}</Button>
           </Space>
 
           {accessError && (
@@ -583,8 +583,8 @@ export default function Users() {
             <Alert
               type="info"
               showIcon
-              message="No eligible instances"
-              description="Register a physical instance or provision a user-owned instance before granting access."
+              message={t('users.noEligible')}
+              description={t('users.noEligibleDescription')}
               style={{ marginTop: 16 }}
             />
           ) : (
@@ -597,7 +597,7 @@ export default function Users() {
                 marginTop: 20,
               }}
             >
-              <div aria-label="Eligible instances">
+              <div aria-label={t('users.eligibleInstances')}>
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>
                   {accessInstances.map((instance) => {
                     const row = accessRows[instance.id]
@@ -627,7 +627,7 @@ export default function Users() {
                             }
                           >
                             {instance.allocation_mode} ·{' '}
-                            {row?.origin ?? 'not granted'}
+                            {row?.origin ?? t('users.notGranted')}
                           </Text>
                         </Space>
                       </Button>
@@ -658,29 +658,29 @@ export default function Users() {
                     </div>
 
                     <div>
-                      <Text strong>Existing SQL access</Text>
+                      <Text strong>{t('users.existingSql')}</Text>
                       <div style={{ marginTop: 6 }}>
                         {sqlCapabilities.length > 0 ? (
                           <Space wrap>
                             {sqlCapabilities.map((capability) => (
                               <Tag key={capability}>
                                 {capability === 'sql:read'
-                                  ? 'SQL read'
-                                  : 'SQL write'}
+                                  ? t('users.sqlRead')
+                                  : t('users.sqlWrite')}
                               </Tag>
                             ))}
                             <Tag>{selectedAccess?.permission}</Tag>
                           </Space>
                         ) : (
                           <Text type="secondary">
-                            No SQL capability is currently provisioned.
+                            {t('users.noSql')}
                           </Text>
                         )}
                       </div>
                     </div>
 
                     <div>
-                      <Text strong>Instance Tool capabilities</Text>
+                      <Text strong>{t('users.toolCapabilities')}</Text>
                       <div style={{ marginTop: 10 }}>
                         <CapabilityEditor
                           value={accessDraft.capabilities}
@@ -697,11 +697,11 @@ export default function Users() {
                     </div>
 
                     <label>
-                      <Text strong>Direct-access credential</Text>
+                      <Text strong>{t('users.directCredential')}</Text>
                       <Select
-                        aria-label="Direct-access credential"
+                        aria-label={t('users.directCredential')}
                         value={accessDraft.credential_id || undefined}
-                        placeholder="Select a credential"
+                        placeholder={t('users.selectCredential')}
                         disabled={selectedBusy}
                         options={selectedCredentials.map((credential) => ({
                           value: credential.id,
@@ -729,18 +729,18 @@ export default function Users() {
                     </label>
 
                     <label>
-                      <Text strong>Requested SQL permission ceiling</Text>
+                      <Text strong>{t('users.permissionCeiling')}</Text>
                       <Select
-                        aria-label="Requested SQL permission ceiling"
+                        aria-label={t('users.permissionCeiling')}
                         value={accessDraft.permission}
                         disabled={
                           selectedBusy || sqlCapabilities.length > 0
                         }
                         options={[
-                          { value: 'readonly', label: 'Read only' },
+                          { value: 'readonly', label: t('users.readOnly') },
                           {
                             value: 'readwrite',
-                            label: 'Read and write',
+                            label: t('users.readWrite'),
                             disabled:
                               selectedCredential?.capability !== 'readwrite',
                           },
@@ -754,15 +754,14 @@ export default function Users() {
                       />
                       {sqlCapabilities.length > 0 && (
                         <Text type="secondary">
-                          Existing SQL permission is managed by provisioning
-                          and cannot be changed here.
+                          {t('users.sqlManaged')}
                         </Text>
                       )}
                     </label>
 
                     <Space>
                       <Switch
-                        aria-label="Instance access enabled"
+                        aria-label={t('users.accessEnabledLabel')}
                         checked={accessDraft.enabled}
                         disabled={selectedBusy}
                         onChange={(enabled) =>
@@ -771,15 +770,15 @@ export default function Users() {
                           )
                         }
                       />
-                      <Text>Access enabled</Text>
+                      <Text>{t('users.accessEnabled')}</Text>
                     </Space>
 
                     {selectedCredentials.length === 0 && (
                       <Alert
                         type="warning"
                         showIcon
-                        message="No active direct-access credential"
-                        description="Create one on the instance page before saving Tool access."
+                        message={t('users.noCredential')}
+                        description={t('users.noCredentialDescription')}
                       />
                     )}
 
@@ -793,7 +792,7 @@ export default function Users() {
                         }
                         onClick={() => void saveAccess()}
                       >
-                        Save Instance Access
+                        {t('users.saveAccess')}
                       </Button>
                     </div>
                   </Space>
@@ -805,56 +804,56 @@ export default function Users() {
       )}
 
       <Modal
-        title={`Edit User: ${editTarget?.display_name ?? ''}`}
+        title={t('users.editTitle', { name: editTarget?.display_name ?? '' })}
         open={!!editTarget}
         onCancel={() => setEditTarget(null)}
         onOk={() => editForm.submit()}
         confirmLoading={editLoading}
       >
         <Form form={editForm} layout="vertical" onFinish={handleEdit}>
-          <Form.Item name="department_ids" label="Departments">
+          <Form.Item name="department_ids" label={t('users.departments')}>
             <Select
               mode="multiple"
-              placeholder="Select departments"
+              placeholder={t('users.selectDepartments')}
               options={departments.map(d => ({ label: d.name, value: d.id }))}
             />
           </Form.Item>
-          <Form.Item name="role" label="Role">
+          <Form.Item name="role" label={t('users.role')}>
             <Select options={[
-              { label: 'Member', value: 'member' },
-              { label: 'Admin', value: 'admin' },
+              { label: t('users.member'), value: 'member' },
+              { label: t('users.admin'), value: 'admin' },
             ]} />
           </Form.Item>
-          <Form.Item name="provisioning_mode" label="Provisioning Mode">
+          <Form.Item name="provisioning_mode" label={t('users.provisioningMode')}>
             <Select options={[
-              { label: 'Dedicated', value: 'dedicated' },
-              { label: 'Multitenant', value: 'multitenant' },
+              { label: t('users.dedicated'), value: 'dedicated' },
+              { label: t('users.multitenant'), value: 'multitenant' },
             ]} />
           </Form.Item>
         </Form>
       </Modal>
 
       <Modal
-        title={`Reset Password: ${resetTarget?.display_name ?? ''}`}
+        title={t('users.resetTitle', { name: resetTarget?.display_name ?? '' })}
         open={!!resetTarget}
         onCancel={() => { setResetTarget(null); resetForm.resetFields() }}
         onOk={() => resetForm.submit()}
         confirmLoading={resetLoading}
       >
         <Form form={resetForm} layout="vertical" onFinish={handleResetPassword}>
-          <Form.Item name="new_password" label="New Password" rules={[{ required: true, min: 8, message: 'At least 8 characters' }]}>
+          <Form.Item name="new_password" label={t('users.newPassword')} rules={[{ required: true, min: 8, message: t('users.passwordMinimum') }]}>
             <Input.Password />
           </Form.Item>
           <Form.Item
             name="confirm_password"
-            label="Confirm Password"
+            label={t('users.confirmPassword')}
             dependencies={['new_password']}
             rules={[
               { required: true },
               ({ getFieldValue }) => ({
                 validator(_, value) {
                   if (!value || getFieldValue('new_password') === value) return Promise.resolve()
-                  return Promise.reject(new Error('Passwords do not match'))
+                  return Promise.reject(new Error(t('users.passwordsMismatch')))
                 },
               }),
             ]}

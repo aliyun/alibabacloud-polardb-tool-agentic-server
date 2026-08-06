@@ -14,9 +14,11 @@ import {
   LogoutOutlined,
 } from '@ant-design/icons'
 import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import type { UserInfo } from '../../hooks/useAuth'
 import api, { getAPIErrorMessage } from '../../api/client'
 import Logo from './Logo'
+import LanguageSwitcher from '../LanguageSwitcher'
 import './Layout.css'
 
 const { Header, Sider, Content } = AntLayout
@@ -28,6 +30,7 @@ interface LayoutProps {
 }
 
 export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
+  const { t } = useTranslation()
   const navigate = useNavigate()
   const location = useLocation()
   const isAdmin = user.role === 'admin'
@@ -40,26 +43,26 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
   const [pwdForm] = Form.useForm()
 
   const menuItems = [
-    { key: '/dashboard', icon: <DashboardOutlined />, label: 'Dashboard' },
+    { key: '/dashboard', icon: <DashboardOutlined />, label: t('layout.dashboard') },
     ...(isAdmin
       ? [
-          { key: '/users', icon: <TeamOutlined />, label: 'Users' },
-          { key: '/departments', icon: <ApartmentOutlined />, label: 'Departments' },
-          { key: '/instances', icon: <DatabaseOutlined />, label: 'Instances' },
-          { key: '/agents', icon: <RobotOutlined />, label: 'Agents' },
+          { key: '/users', icon: <TeamOutlined />, label: t('layout.users') },
+          { key: '/departments', icon: <ApartmentOutlined />, label: t('layout.departments') },
+          { key: '/instances', icon: <DatabaseOutlined />, label: t('layout.instances') },
+          { key: '/agents', icon: <RobotOutlined />, label: t('layout.agents') },
         ]
       : []),
-    { key: '/my-instances', icon: <CloudServerOutlined />, label: 'My Instances' },
+    { key: '/my-instances', icon: <CloudServerOutlined />, label: t('layout.myInstances') },
     ...(isAdmin
       ? [
-          { key: '/audit-logs', icon: <FileTextOutlined />, label: 'Audit Logs' },
+          { key: '/audit-logs', icon: <FileTextOutlined />, label: t('layout.auditLogs') },
           {
             key: '/settings/configuration',
             icon: <SettingOutlined />,
-            label: 'Configuration',
+            label: t('layout.configuration'),
           },
-          { key: '/settings', icon: <SettingOutlined />, label: 'Settings' },
-          { key: '/pool', icon: <CloudOutlined />, label: 'Pool' },
+          { key: '/settings', icon: <SettingOutlined />, label: t('layout.settings') },
+          { key: '/pool', icon: <CloudOutlined />, label: t('layout.pool') },
         ]
       : []),
   ]
@@ -68,12 +71,12 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
     setPwdLoading(true)
     try {
       await api.post('/auth/change-password', values)
-      message.success('Password changed successfully')
+      message.success(t('layout.passwordChanged'))
       setPwdModalOpen(false)
       pwdForm.resetFields()
     } catch (error: unknown) {
       message.error(
-        getAPIErrorMessage(error, 'Failed to change password'),
+        getAPIErrorMessage(error, t('layout.passwordChangeFailed')),
       )
     } finally {
       setPwdLoading(false)
@@ -82,9 +85,9 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
 
   const userMenuItems = [
     ...(authMode === 'builtin'
-      ? [{ key: 'change-password', icon: <LockOutlined />, label: 'Change Password' }]
+      ? [{ key: 'change-password', icon: <LockOutlined />, label: t('layout.changePassword') }]
       : []),
-    { key: 'logout', icon: <LogoutOutlined />, label: 'Logout' },
+    { key: 'logout', icon: <LogoutOutlined />, label: t('layout.logout') },
   ]
 
   // Get user initials for avatar
@@ -113,6 +116,7 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
       </Sider>
       <AntLayout>
         <Header className="app-header">
+          <LanguageSwitcher />
           <Dropdown
             menu={{
               items: userMenuItems,
@@ -136,29 +140,29 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
       </AntLayout>
 
       <Modal
-        title="Change Password"
+        title={t('layout.changePassword')}
         open={pwdModalOpen}
         onCancel={() => { setPwdModalOpen(false); pwdForm.resetFields() }}
         onOk={() => pwdForm.submit()}
         confirmLoading={pwdLoading}
       >
         <Form form={pwdForm} layout="vertical" onFinish={handleChangePassword}>
-          <Form.Item name="current_password" label="Current Password" rules={[{ required: true }]}>
+          <Form.Item name="current_password" label={t('layout.currentPassword')} rules={[{ required: true }]}>
             <Input.Password />
           </Form.Item>
-          <Form.Item name="new_password" label="New Password" rules={[{ required: true, min: 8, message: 'At least 8 characters' }]}>
+          <Form.Item name="new_password" label={t('layout.newPassword')} rules={[{ required: true, min: 8, message: t('layout.passwordMinimum') }]}>
             <Input.Password />
           </Form.Item>
           <Form.Item
             name="confirm_password"
-            label="Confirm Password"
+            label={t('layout.confirmPassword')}
             dependencies={['new_password']}
             rules={[
               { required: true },
               ({ getFieldValue }) => ({
                 validator(_, value) {
                   if (!value || getFieldValue('new_password') === value) return Promise.resolve()
-                  return Promise.reject(new Error('Passwords do not match'))
+                  return Promise.reject(new Error(t('layout.passwordsMismatch')))
                 },
               }),
             ]}

@@ -4,12 +4,16 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+CURRENT_VERSION = tomllib.loads(
+    (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+)["project"]["version"]
 CANONICAL_ROOT = ROOT / ".agents" / "skills"
 CLAUDE_ROOT = ROOT / ".claude" / "skills"
 CURSOR_ROOT = ROOT / ".cursor" / "skills"
@@ -118,7 +122,7 @@ def test_deployment_scripts_enforce_reviewed_safety_invariants() -> None:
     for text in (source, docker):
         assert "umask 077" in text
         assert "--validate-only" in text
-        assert 'PAS_VERSION="${PAS_VERSION:-0.0.5}"' in text
+        assert f'PAS_VERSION="${{PAS_VERSION:-{CURRENT_VERSION}}}"' in text
         assert 'PAS_REF="${PAS_REF:-v${PAS_VERSION}}"' in text
         assert 'fetch --depth 1 origin "$PAS_REF"' in text
         assert "checkout --detach FETCH_HEAD" in text

@@ -3,9 +3,17 @@
    ================================================ */
 
 .login-page {
+  position: relative;
   display: flex;
   min-height: 100vh;
   background: var(--surface-secondary);
+}
+
+.login-language {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  z-index: 2;
 }
 
 /* ---- Brand Panel (Left) ---- */

@@ -11,6 +11,8 @@ import {
   type ConfigResponse,
 } from '../../api/configuration'
 import Setup from './index'
+import { createTestI18n } from '../../i18n/i18n'
+import LocaleProvider from '../../i18n/LocaleProvider'
 
 vi.mock('../../hooks/useAuth', () => ({
   useAuth: () => ({
@@ -145,6 +147,19 @@ it('routes setup mode to a standalone ownership screen', async () => {
   expect(screen.getByLabelText(/bootstrap token/i)).toHaveAttribute('type', 'password')
   expect(screen.queryByText(/dashboard/i)).not.toBeInTheDocument()
   await waitFor(() => expect(window.location.pathname).toBe('/setup'))
+})
+
+it('renders the ownership screen and language control in Chinese', () => {
+  render(
+    <LocaleProvider i18nInstance={createTestI18n('zh-CN')}>
+      <MemoryRouter>
+        <Setup />
+      </MemoryRouter>
+    </LocaleProvider>,
+  )
+
+  expect(screen.getByRole('heading', { name: '接管此安装' })).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: '切换语言' })).toBeInTheDocument()
 })
 
 it('does not route to login when setup discovery fails', async () => {
@@ -400,6 +415,33 @@ it('offers dashboard navigation when discovery reports READY', async () => {
       name: /dashboard destination/i,
     }),
   ).toBeInTheDocument()
+})
+
+it('enters the dashboard after setup becomes READY', async () => {
+  const user = userEvent.setup()
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin()],
+    }),
+  )
+
+  render(<App />)
+  await screen.findByRole('heading', { name: /claim this installation/i })
+  await claimInstallation(user)
+
+  await user.click(
+    screen.getByRole('button', {
+      name: /enter administration console/i,
+    }),
+  )
+
+  await waitFor(() =>
+    expect(window.location.pathname).toBe('/dashboard'),
+  )
+  expect(
+    screen.queryByRole('heading', { name: /claim this installation/i }),
+  ).not.toBeInTheDocument()
 })
 
 it('redirects READY setup visits to authenticated configuration', async () => {

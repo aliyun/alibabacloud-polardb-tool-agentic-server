@@ -1,7 +1,7 @@
 {
   "name": "alibabacloud-polardb-tool-agentic-server-web",
   "private": true,
-  "version": "0.0.5",
+  "version": "0.0.6",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -15,9 +15,11 @@
   "dependencies": {
     "antd": "^5.20.0",
     "axios": "^1.7.0",
+    "i18next": "^26.3.6",
     "prism-react-renderer": "^2.4.1",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
+    "react-i18next": "^17.0.11",
     "react-router-dom": "^7.18.0"
   },
   "devDependencies": {

@@ -13,6 +13,7 @@ import {
   SettingOutlined,
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
+import { useTranslation } from 'react-i18next'
 import { getDashboardStats, type DashboardStats } from '../../api/dashboard'
 import './Dashboard.css'
 
@@ -21,13 +22,14 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const navigate = useNavigate()
+  const { t } = useTranslation()
 
   useEffect(() => {
     getDashboardStats()
       .then(setStats)
-      .catch(() => setError('Could not load dashboard statistics.'))
+      .catch(() => setError(t('dashboard.loadFailed')))
       .finally(() => setLoading(false))
-  }, [])
+  }, [t])
 
   if (loading) {
     return (
@@ -41,12 +43,12 @@ export default function Dashboard() {
   }
 
   const statCards = [
-    { icon: <TeamOutlined />, color: 'blue', value: stats?.total_users ?? 0, label: 'Total Users' },
-    { icon: <DatabaseOutlined />, color: 'purple', value: stats?.total_instances ?? 0, label: 'Instances' },
-    { icon: <CheckCircleOutlined />, color: 'green', value: stats?.active_instances ?? 0, label: 'Active' },
-    { icon: <CloudOutlined />, color: 'cyan', value: stats?.pool_available ?? 0, label: 'Pool Available' },
-    { icon: <ApartmentOutlined />, color: 'orange', value: stats?.departments ?? 0, label: 'Departments' },
-    { icon: <FileTextOutlined />, color: 'red', value: stats?.queries_today ?? 0, label: 'Queries Today' },
+    { icon: <TeamOutlined />, color: 'blue', value: stats?.total_users ?? 0, label: t('dashboard.totalUsers') },
+    { icon: <DatabaseOutlined />, color: 'purple', value: stats?.total_instances ?? 0, label: t('dashboard.instances') },
+    { icon: <CheckCircleOutlined />, color: 'green', value: stats?.active_instances ?? 0, label: t('dashboard.active') },
+    { icon: <CloudOutlined />, color: 'cyan', value: stats?.pool_available ?? 0, label: t('dashboard.poolAvailable') },
+    { icon: <ApartmentOutlined />, color: 'orange', value: stats?.departments ?? 0, label: t('dashboard.departments') },
+    { icon: <FileTextOutlined />, color: 'red', value: stats?.queries_today ?? 0, label: t('dashboard.queriesToday') },
   ]
 
   const quickActions = [
@@ -54,32 +56,32 @@ export default function Dashboard() {
       icon: <PlusOutlined />,
       iconBg: 'rgba(0, 113, 227, 0.1)',
       iconColor: '#0071e3',
-      title: 'Register Instance',
-      desc: 'Add a new PolarDB cluster to manage',
+      title: t('dashboard.registerInstance'),
+      desc: t('dashboard.registerInstanceDescription'),
       path: '/instances',
     },
     {
       icon: <UserAddOutlined />,
       iconBg: 'rgba(52, 199, 89, 0.1)',
       iconColor: '#34c759',
-      title: 'Manage Users',
-      desc: 'Add users and assign permissions',
+      title: t('dashboard.manageUsers'),
+      desc: t('dashboard.manageUsersDescription'),
       path: '/users',
     },
     {
       icon: <SearchOutlined />,
       iconBg: 'rgba(175, 82, 222, 0.1)',
       iconColor: '#af52de',
-      title: 'View Audit Logs',
-      desc: 'Review system activity and SQL queries',
+      title: t('dashboard.viewAuditLogs'),
+      desc: t('dashboard.viewAuditLogsDescription'),
       path: '/audit-logs',
     },
     {
       icon: <SettingOutlined />,
       iconBg: 'rgba(255, 159, 10, 0.1)',
       iconColor: '#ff9f0a',
-      title: 'System Settings',
-      desc: 'Configure pool, quotas, and provisioning',
+      title: t('dashboard.systemSettings'),
+      desc: t('dashboard.systemSettingsDescription'),
       path: '/settings',
     },
   ]
@@ -87,9 +89,9 @@ export default function Dashboard() {
   return (
     <div className="page-enter">
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', letterSpacing: '-0.02em' }}>Dashboard</h2>
+        <h2 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', letterSpacing: '-0.02em' }}>{t('dashboard.title')}</h2>
         <p style={{ fontSize: 14, color: 'var(--text-secondary)', margin: 0 }}>
-          Overview of your PolarDB Agentic environment
+          {t('dashboard.description')}
         </p>
       </div>
 
@@ -107,7 +109,7 @@ export default function Dashboard() {
       </div>
 
       {/* Quick Actions */}
-      <h3 className="dashboard-section-title">Quick Actions</h3>
+      <h3 className="dashboard-section-title">{t('dashboard.quickActions')}</h3>
       <div className="quick-actions">
         {quickActions.map((action) => (
           <div

@@ -1,5 +1,7 @@
 import { Alert, Checkbox, Form, Input, InputNumber, Select, Space, Typography } from 'antd'
+import { useTranslation } from 'react-i18next'
 import type { ConfigModule, JSONSchemaProperty } from '../../api/configuration'
+import { schemaFieldLabel } from '../../i18n/schema'
 
 interface Props {
   module: ConfigModule
@@ -34,6 +36,7 @@ export default function ConfigModuleForm({
   onValuesChange,
   formId = `config-form-${module.name}`,
 }: Props) {
+  const { t } = useTranslation()
   const [form] = Form.useForm()
   const properties = module.schema.properties ?? {}
   const required = new Set(module.schema.required ?? [])
@@ -62,7 +65,7 @@ export default function ConfigModuleForm({
       onFinish={(values) => onSubmit(trimStrings(values))}
       onValuesChange={onValuesChange}
       requiredMark="optional"
-      aria-label={`${module.name} configuration`}
+      aria-label={t('components.configuration.formLabel', { module: module.name })}
     >
       {docs.length > 0 && (
         <Alert
@@ -86,22 +89,27 @@ export default function ConfigModuleForm({
         />
       )}
       {Object.entries(properties).map(([name, schema]) => {
-        const label = schema.title ?? name.replace(/_/g, ' ')
+        const label = schemaFieldLabel(
+          t,
+          module.name,
+          name,
+          schema.title ?? name.replace(/_/g, ' '),
+        )
         const configured = secretFields.has(name) && storedValues[name] != null
         const rules = [
           ...(required.has(name) && !configured
-            ? [{ required: true, message: `${label} is required` }]
+            ? [{ required: true, message: t('components.configuration.required', { label }) }]
             : []),
           ...(schema.minLength !== undefined
             ? [{
                 min: schema.minLength,
-                message: `${label} must be at least ${schema.minLength} characters`,
+                message: t('components.configuration.minLength', { label, count: schema.minLength }),
               }]
             : []),
           ...(schema.maxLength !== undefined
             ? [{
                 max: schema.maxLength,
-                message: `${label} must be at most ${schema.maxLength} characters`,
+                message: t('components.configuration.maxLength', { label, count: schema.maxLength }),
               }]
             : []),
         ]
@@ -126,7 +134,7 @@ export default function ConfigModuleForm({
           control = (
             <Input.Password
               autoComplete="new-password"
-              placeholder={configured ? 'Configured — leave blank to keep' : 'Enter secret'}
+              placeholder={configured ? t('components.configuration.configuredPlaceholder') : t('components.configuration.secretPlaceholder')}
             />
           )
         } else {
@@ -143,7 +151,7 @@ export default function ConfigModuleForm({
               secretFields.has(name) ? (
                 <Space size={6}>
                   <Typography.Text type="secondary">
-                    {configured ? 'A secret is configured. Its value is never returned.' : 'Stored encrypted after save.'}
+                    {configured ? t('components.configuration.configuredSecret') : t('components.configuration.encryptedSecret')}
                   </Typography.Text>
                 </Space>
               ) : (
@@ -156,7 +164,7 @@ export default function ConfigModuleForm({
         )
       })}
       {Object.keys(properties).length === 0 && (
-        <Alert type="info" showIcon message="This module uses its safe defaults and has no editable fields." />
+        <Alert type="info" showIcon message={t('components.configuration.noFields')} />
       )}
     </Form>
   )

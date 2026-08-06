@@ -56,7 +56,7 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 
 - [Agent 辅助的单机部署](deployment/agent-assisted-deployment.md)：显式调用
   Codex、Claude Code、Cursor 和兼容 Agent Skills 的工作流，并固定到 PAS
-  0.0.5。
+  0.0.6。
 - [生产部署前提](deployment/prerequisites.md)：支持的平台、元数据库、根密钥
   管理、可写目录与镜像仓库访问要求。
 - [Docker Compose](deployment/docker-compose.md)：使用固定 MySQL、一次性迁移、

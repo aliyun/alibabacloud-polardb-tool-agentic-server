@@ -16,6 +16,18 @@ Password changes and resets invalidate affected sessions according to the
 active token-security policy. Never place bootstrap tokens or passwords in a
 URL or configuration repository.
 
+## Web console language
+
+The Web console supports English (`en-US`) and Simplified Chinese (`zh-CN`).
+On the first visit it follows the browser language and falls back to English
+when the language is unsupported. Use the language switcher on the login,
+setup, or authenticated console screen to override that choice. An explicit
+choice is stored in the browser and takes precedence on later visits.
+
+Changing the display language affects only frontend labels, messages, Ant
+Design components, and locale-aware date or number formatting. API payloads,
+identifiers, SQL, and backend diagnostic details are not translated.
+
 ## Optional SSO
 
 The `user_sso` module can remain `SKIPPED`. When enabled, configure an HTTPS

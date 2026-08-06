@@ -1,4 +1,5 @@
 import { Select } from 'antd'
+import { useTranslation } from 'react-i18next'
 
 import type { ProvisioningBackend } from '../../api/provisioningBackends'
 
@@ -12,8 +13,6 @@ export interface BackendSelectorProps {
   loading?: boolean
 }
 
-const INELIGIBLE_REASON = 'Not accepting new resources'
-
 export default function BackendSelector({
   backends,
   instanceNames = {},
@@ -23,11 +22,12 @@ export default function BackendSelector({
   disabled = false,
   loading = false,
 }: BackendSelectorProps) {
+  const { t } = useTranslation()
   const options = backends.map((backend) => {
     const active = backend.status === 'active'
     const name =
-      instanceNames[backend.instance_id] ?? `Instance ${backend.instance_id}`
-    const eligibility = active ? 'Accepting new resources' : INELIGIBLE_REASON
+      instanceNames[backend.instance_id] ?? t('components.backendSelector.instanceFallback', { id: backend.instance_id })
+    const eligibility = active ? t('components.backendSelector.accepting') : t('components.backendSelector.notAccepting')
 
     return {
       value: backend.id,
@@ -38,7 +38,7 @@ export default function BackendSelector({
 
   return (
     <Select
-      aria-label="Provisioning backend"
+      aria-label={t('components.backendSelector.label')}
       value={value || undefined}
       onChange={onChange}
       options={options}
@@ -46,7 +46,7 @@ export default function BackendSelector({
       showSearch
       disabled={disabled}
       loading={loading}
-      placeholder="Select a provisioning backend"
+      placeholder={t('components.backendSelector.placeholder')}
       style={{ width: '100%' }}
     />
   )

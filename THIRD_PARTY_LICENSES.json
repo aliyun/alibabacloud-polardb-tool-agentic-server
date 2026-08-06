@@ -1501,6 +1501,12 @@
     },
     {
       "ecosystem": "npm",
+      "name": "html-parse-stringify",
+      "version": "4.0.1",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "npm",
       "name": "http-proxy-agent",
       "version": "7.0.2",
       "license": "MIT"
@@ -1509,6 +1515,12 @@
       "ecosystem": "npm",
       "name": "https-proxy-agent",
       "version": "7.0.6",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "i18next",
+      "version": "26.3.6",
       "license": "MIT"
     },
     {
@@ -2065,6 +2077,12 @@
     },
     {
       "ecosystem": "npm",
+      "name": "react-i18next",
+      "version": "17.0.11",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "npm",
       "name": "react-is",
       "version": "17.0.2",
       "license": "MIT"
@@ -2332,6 +2350,12 @@
       "name": "uri-js",
       "version": "4.4.1",
       "license": "BSD-2-Clause"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "use-sync-external-store",
+      "version": "1.6.0",
+      "license": "MIT"
     },
     {
       "ecosystem": "npm",

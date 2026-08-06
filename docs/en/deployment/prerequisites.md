@@ -50,7 +50,7 @@ verified digest instead.
 Verify an image after mirroring:
 
 ```bash
-PAS_VERSION=0.0.5
+PAS_VERSION=0.0.6
 docker buildx imagetools inspect \
   "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}"
 ```
