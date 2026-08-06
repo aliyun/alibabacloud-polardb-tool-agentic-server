@@ -1,15 +1,32 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPORT = ROOT / "scripts/public-release/export.sh"
 REHEARSE = ROOT / "scripts/public-release/rehearse.sh"
 AUDIT = ROOT / "scripts/public-release/audit-refs.sh"
+
+
+def test_public_npm_lockfile_uses_public_package_sources() -> None:
+    lock = json.loads(
+        (ROOT / "web" / "package-lock.json").read_text(encoding="utf-8")
+    )
+
+    private_sources = {
+        package: resolved
+        for package, metadata in lock["packages"].items()
+        if (resolved := metadata.get("resolved"))
+        and urlparse(resolved).hostname != "registry.npmjs.org"
+    }
+
+    assert private_sources == {}
 
 
 def _write(path: Path, content: str) -> None:
