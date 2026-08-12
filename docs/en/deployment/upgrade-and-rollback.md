@@ -13,6 +13,13 @@ Never start new application Pods before the migration succeeds.
 4. Record the current image digest, Chart values, database revision, and
    configuration version.
 5. Verify the new checksums, attestations, SBOM, and image digest.
+6. Run `pas database check` with the candidate binary, the original metadata
+   database, and its original root key before starting application replicas.
+
+The check fails closed with `DATABASE_ENCRYPTION_KEY_MISMATCH` when the key
+cannot decrypt persisted configuration. Do not generate a replacement key or
+delete the database to make an upgrade proceed. Restore the matched recovery
+set first.
 
 ## Compose
 
@@ -21,6 +28,7 @@ Set `PAS_IMAGE` to the new immutable digest, then run:
 ```bash
 docker compose pull
 docker compose run --rm migrate database migrate
+docker compose run --rm migrate database check
 docker compose up -d --no-deps server
 curl --fail http://127.0.0.1:18760/readyz
 ```

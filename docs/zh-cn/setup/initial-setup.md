@@ -27,10 +27,20 @@
 ```bash
 uv sync --extra dev
 
+mkdir -p data
+if [ -s data/polardb_agentic.db ] && [ ! -f data/pas-root-key ]; then
+  echo '已有 PAS 数据库需要原始 data/pas-root-key' >&2
+  exit 1
+fi
+if [ ! -f data/pas-root-key ]; then
+  (umask 077; python3 -c \
+    'import base64, os; print(base64.b64encode(os.urandom(32)).decode())' \
+    > data/pas-root-key)
+fi
+chmod 600 data/pas-root-key
+
 export PAS_DATABASE_URL='sqlite+aiosqlite:///data/polardb_agentic.db'
-export PAS_ENCRYPTION_KEY="$(
-  python3 -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())'
-)"
+export PAS_ENCRYPTION_KEY="file:$PWD/data/pas-root-key"
 
 uv run pas database migrate
 uv run pas database check
@@ -40,7 +50,11 @@ uv run pas serve
 Docker 和 Kubernetes 生产部署应使用持久化 MySQL 或 PostgreSQL 元数据库。
 启动或滚动发布应用副本之前，将 `pas database migrate` 作为部署迁移步骤执行。
 `pas database check` 是只读操作，用于确认数据库已经位于当前应用要求的唯一
-Alembic head。
+Alembic head，且当前根密钥可以解密已持久化的模块配置。
+
+生成密钥前的保护是有意设计。非空数据库存在但原始密钥文件缺失时，必须停止并
+恢复该密钥。生成另一个密钥不能恢复数据库，反而会使加密配置、凭证、Agent
+Token 和共享 JWT 签名密钥无法读取。
 
 数据库兼容性由 Alembic revision 决定，而不是应用版本号。`pas serve` 会执行
 同样的只读检查；数据库未初始化、版本落后、版本高于应用、存在多个 head 或
@@ -68,6 +82,11 @@ token 的明文。
 
 打开 setup UI，输入后端打印的 token，然后创建首个管理员。管理员密码至少
 需要 12 个字符。
+
+从源码 checkout 运行后端时，应按仓库 README 构建控制台或启动前端开发服务。
+`/setup` 是浏览器 SPA 路由；普通的
+`curl http://127.0.0.1:18760/setup` 会按设计返回 404。检查 HTML 时请使用浏览器
+或 `curl -H 'Accept: text/html'`，服务就绪检查使用 `/readyz`。
 
 UI 会先执行只读 dry run，再通过独立的 **Activate module** 操作保存、验证并
 激活已检查的配置。后端状态变为 `READY` 后，使用

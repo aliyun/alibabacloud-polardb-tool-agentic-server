@@ -13,8 +13,9 @@ pas database migrate
 ```
 
 `check` 是只读操作，仅当数据库 revision 与 PAS 内置的唯一 Alembic head
-一致时成功。`migrate` 执行 `alembic upgrade head`。启动或升级应用副本前只
-执行一次，生产元数据库必须先备份。
+一致，且当前根密钥可以解密已持久化的模块配置时成功。`migrate` 执行
+`alembic upgrade head`。启动或升级应用副本前只执行一次，生产元数据库必须
+先备份。
 
 数据库检查使用以下稳定错误码：
 
@@ -23,6 +24,8 @@ pas database migrate
 - `DATABASE_SCHEMA_TOO_NEW`
 - `DATABASE_MIGRATION_HEAD_INVALID`
 - `DATABASE_UNAVAILABLE`
+- `DATABASE_ENCRYPTION_KEY_MISMATCH`
+- `DATABASE_CONFIGURATION_INCOMPATIBLE`
 
 错误信息不会包含密码或完整数据库 URL。PAS 不会在 `serve` 时自动降级或迁移。
 
@@ -32,8 +35,8 @@ pas database migrate
 pas serve
 ```
 
-服务会在配置、JWT 密钥和后台 Worker 初始化前执行相同的只读 Schema 检查。
-Schema 为空或落后时，必须显式执行 `pas database migrate`。
+服务会在配置、JWT 密钥和后台 Worker 初始化前执行相同的只读 Schema 与根密钥
+兼容性检查。Schema 为空或落后时，必须显式执行 `pas database migrate`。
 
 ## 引导式配置
 

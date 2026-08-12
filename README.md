@@ -37,19 +37,32 @@ persistent logical database resources.
 ```bash
 uv sync --extra dev
 
-export PAS_DATABASE_URL='sqlite+aiosqlite:///data/polardb_agentic.db'
-export PAS_ENCRYPTION_KEY="$(
-  python3 -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())'
-)"
+mkdir -p data
+if [ -s data/polardb_agentic.db ] && [ ! -f data/pas-root-key ]; then
+  echo 'Existing PAS database requires its original data/pas-root-key' >&2
+  exit 1
+fi
+if [ ! -f data/pas-root-key ]; then
+  (umask 077; python3 -c \
+    'import base64, os; print(base64.b64encode(os.urandom(32)).decode())' \
+    > data/pas-root-key)
+fi
+chmod 600 data/pas-root-key
 
-uv run alembic upgrade head
-uv run python -m server
+export PAS_DATABASE_URL='sqlite+aiosqlite:///data/polardb_agentic.db'
+export PAS_ENCRYPTION_KEY="file:$PWD/data/pas-root-key"
+
+uv run pas database migrate
+uv run pas database check
+uv run pas serve
 ```
 
 The backend listens on `http://localhost:18760`. `PAS_DATABASE_URL` and
 `PAS_ENCRYPTION_KEY` are the only server bootstrap settings. In production,
 provide the root key through a Kubernetes Secret or restricted mounted file,
 back it up separately, and use a durable MySQL or PostgreSQL metadata database.
+Never generate a replacement key for an existing database. The database check
+fails closed when the configured key cannot decrypt persisted configuration.
 
 ### Start the web console
 

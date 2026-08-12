@@ -9,10 +9,21 @@
 运行 `pas database check`。重启前解决
 `DATABASE_SCHEMA_NOT_INITIALIZED`、`DATABASE_SCHEMA_OUTDATED`、
 `DATABASE_SCHEMA_TOO_NEW`、`DATABASE_MIGRATION_HEAD_INVALID` 或
-`DATABASE_UNAVAILABLE`。不要绕过门禁，也不要让每个副本都执行迁移。
+`DATABASE_UNAVAILABLE`、`DATABASE_ENCRYPTION_KEY_MISMATCH` 或
+`DATABASE_CONFIGURATION_INCOMPATIBLE`。不要绕过门禁，也不要让每个副本都
+执行迁移。
 
 解密失败时，确认所有 Pod 使用同一个原始 `PAS_ENCRYPTION_KEY`。不要在生产
 数据库上试用替换密钥。
+
+## 就绪检查正常但 setup UI 无法打开
+
+`/readyz` 是机器就绪端点，`/setup` 是浏览器 SPA 路由；普通 curl 未发送
+`Accept: text/html` 时会按设计收到 404。如果浏览器 HTML 能加载，但
+`/assets/...` 请求为 404，请使用
+`lsof -nP -iTCP:18760 -sTCP:LISTEN` 检查残留 PAS 进程。从已经删除的 worktree
+启动的进程可能仍在内存中返回旧 HTML，但对应 hash 静态文件已经不存在。停止该
+残留进程，再从当前 checkout 重启 PAS；不要重建元数据库或根密钥。
 
 ## Pod 未就绪
 

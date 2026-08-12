@@ -441,10 +441,10 @@ def _handle_serve(_args: argparse.Namespace) -> Any:
 
 
 def _handle_database_check(_args: argparse.Namespace) -> None:
-    from server.db.schema import check_database_schema
+    from server.db.schema import check_database_compatibility
 
-    revision = asyncio.run(check_database_schema())
-    print(f"Database schema is current: {revision}")
+    revision = asyncio.run(check_database_compatibility())
+    print(f"Database schema and encryption key are compatible: {revision}")
 
 
 def _handle_database_migrate(_args: argparse.Namespace) -> None:

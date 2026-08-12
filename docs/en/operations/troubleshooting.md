@@ -8,12 +8,24 @@ Start with the narrowest failed boundary and retain sanitized evidence.
 
 Run `pas database check`. Resolve `DATABASE_SCHEMA_NOT_INITIALIZED`,
 `DATABASE_SCHEMA_OUTDATED`, `DATABASE_SCHEMA_TOO_NEW`,
-`DATABASE_MIGRATION_HEAD_INVALID`, or `DATABASE_UNAVAILABLE` before restarting.
-Do not bypass the gate or allow every replica to migrate.
+`DATABASE_MIGRATION_HEAD_INVALID`, `DATABASE_UNAVAILABLE`,
+`DATABASE_ENCRYPTION_KEY_MISMATCH`, or
+`DATABASE_CONFIGURATION_INCOMPATIBLE` before restarting. Do not bypass the
+gate or allow every replica to migrate.
 
 For decryption failures, confirm every Pod uses the same original
 `PAS_ENCRYPTION_KEY`. Do not experiment with replacement keys against the
 production database.
+
+## Readiness works but the setup UI does not
+
+`/readyz` is the machine readiness endpoint. `/setup` is a browser SPA route;
+a plain curl request intentionally receives 404 unless it sends
+`Accept: text/html`. If browser HTML loads but an `/assets/...` request is 404,
+check `lsof -nP -iTCP:18760 -sTCP:LISTEN` for a stale PAS process. A process
+started from a deleted worktree can keep an old HTML document in memory while
+its hashed asset files no longer exist. Stop that stale process and restart PAS
+from the current checkout; do not recreate the metadata database or root key.
 
 ## Pod is not ready
 

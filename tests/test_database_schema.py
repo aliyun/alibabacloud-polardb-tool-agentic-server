@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from server.configuration.bootstrap import initialize_configuration
+from server.configuration.repository import ConfigRepository
+from server.core.config_crypto import ConfigCrypto
 
 
 def _database_url(path: Path) -> str:
@@ -23,6 +28,19 @@ def _stamp(path: Path, revision: str) -> None:
             "INSERT INTO alembic_version(version_num) VALUES (?)",
             (revision,),
         )
+
+
+async def _initialize_configuration(
+    database_url: str, root_key: bytes
+) -> None:
+    engine = create_async_engine(database_url)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        await initialize_configuration(
+            ConfigRepository(factory), ConfigCrypto(root_key)
+        )
+    finally:
+        await engine.dispose()
 
 
 def test_required_schema_head_rejects_multiple_heads(monkeypatch) -> None:
@@ -178,3 +196,62 @@ def test_migrate_database_preserves_populated_pre_head_data(
     assert asyncio.run(check_database_schema(database_url)) == (
         required_schema_head()
     )
+
+
+def test_database_compatibility_accepts_matching_root_key(
+    tmp_path: Path,
+) -> None:
+    from server.db.schema import (
+        check_database_compatibility,
+        migrate_database,
+        required_schema_head,
+    )
+
+    root_key = b"a" * 32
+    database_url = _database_url(tmp_path / "compatible.db")
+    migrate_database(database_url)
+    asyncio.run(_initialize_configuration(database_url, root_key))
+
+    assert asyncio.run(
+        check_database_compatibility(database_url, root_key)
+    ) == required_schema_head()
+
+
+def test_database_compatibility_rejects_mismatched_root_key(
+    tmp_path: Path,
+) -> None:
+    from server.db.schema import (
+        DatabaseSchemaError,
+        check_database_compatibility,
+        migrate_database,
+    )
+
+    database_url = _database_url(tmp_path / "mismatched.db")
+    migrate_database(database_url)
+    asyncio.run(_initialize_configuration(database_url, b"a" * 32))
+
+    with pytest.raises(DatabaseSchemaError) as captured:
+        asyncio.run(
+            check_database_compatibility(database_url, b"b" * 32)
+        )
+
+    assert captured.value.code == "DATABASE_ENCRYPTION_KEY_MISMATCH"
+    assert "b" * 32 not in str(captured.value)
+    assert captured.value.__cause__ is None
+
+
+def test_database_compatibility_accepts_migrated_uninitialized_database(
+    tmp_path: Path,
+) -> None:
+    from server.db.schema import (
+        check_database_compatibility,
+        migrate_database,
+        required_schema_head,
+    )
+
+    database_url = _database_url(tmp_path / "uninitialized.db")
+    migrate_database(database_url)
+
+    assert asyncio.run(
+        check_database_compatibility(database_url, b"c" * 32)
+    ) == required_schema_head()

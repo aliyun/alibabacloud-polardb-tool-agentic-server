@@ -11,6 +11,11 @@
 3. 单独备份完全相同的 `PAS_ENCRYPTION_KEY`。
 4. 记录当前镜像 digest、Chart values、数据库 revision 和配置版本。
 5. 验证新版本校验和、attestation、SBOM 和镜像 digest。
+6. 启动应用副本前，使用候选二进制、原元数据库和原根密钥执行
+   `pas database check`。
+
+密钥无法解密存量配置时，检查会以 `DATABASE_ENCRYPTION_KEY_MISMATCH` fail
+closed。不要生成替代密钥或删除数据库来强行继续升级；必须先恢复匹配的恢复集。
 
 ## Compose
 
@@ -19,6 +24,7 @@
 ```bash
 docker compose pull
 docker compose run --rm migrate database migrate
+docker compose run --rm migrate database check
 docker compose up -d --no-deps server
 curl --fail http://127.0.0.1:18760/readyz
 ```

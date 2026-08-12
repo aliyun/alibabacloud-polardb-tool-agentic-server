@@ -38,13 +38,13 @@ def test_database_check_handler_prints_current_revision(
         return "abc123"
 
     monkeypatch.setattr(
-        "server.db.schema.check_database_schema",
+        "server.db.schema.check_database_compatibility",
         current,
     )
 
     assert main(["database", "check"]) == 0
     assert capsys.readouterr().out == (
-        "Database schema is current: abc123\n"
+        "Database schema and encryption key are compatible: abc123\n"
     )
 
 

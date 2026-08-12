@@ -33,19 +33,32 @@
 ```bash
 uv sync --extra dev
 
-export PAS_DATABASE_URL='sqlite+aiosqlite:///data/polardb_agentic.db'
-export PAS_ENCRYPTION_KEY="$(
-  python3 -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())'
-)"
+mkdir -p data
+if [ -s data/polardb_agentic.db ] && [ ! -f data/pas-root-key ]; then
+  echo '已有 PAS 数据库需要原始 data/pas-root-key' >&2
+  exit 1
+fi
+if [ ! -f data/pas-root-key ]; then
+  (umask 077; python3 -c \
+    'import base64, os; print(base64.b64encode(os.urandom(32)).decode())' \
+    > data/pas-root-key)
+fi
+chmod 600 data/pas-root-key
 
-uv run alembic upgrade head
-uv run python -m server
+export PAS_DATABASE_URL='sqlite+aiosqlite:///data/polardb_agentic.db'
+export PAS_ENCRYPTION_KEY="file:$PWD/data/pas-root-key"
+
+uv run pas database migrate
+uv run pas database check
+uv run pas serve
 ```
 
 后端监听 `http://localhost:18760`。`PAS_DATABASE_URL` 和
 `PAS_ENCRYPTION_KEY` 是服务仅有的两个启动配置。生产环境应通过 Kubernetes
 Secret 或权限受限的挂载文件提供并独立备份根密钥，同时使用持久化的 MySQL
 或 PostgreSQL 元数据库。
+不要为已有数据库生成替代密钥。配置的密钥无法解密存量配置时，数据库检查会
+fail closed。
 
 ### 启动 Web 控制台
 

@@ -14,9 +14,10 @@ pas database migrate
 ```
 
 `check` is read-only. It succeeds only when the database revision equals the
-single Alembic head bundled with PAS. `migrate` runs `alembic upgrade head`.
-Run it once before starting or upgrading application replicas and back up
-production metadata first.
+single Alembic head bundled with PAS and the configured root key can decrypt
+persisted module configuration. `migrate` runs `alembic upgrade head`. Run it
+once before starting or upgrading application replicas and back up production
+metadata first.
 
 Database failures use stable codes:
 
@@ -25,6 +26,8 @@ Database failures use stable codes:
 - `DATABASE_SCHEMA_TOO_NEW`
 - `DATABASE_MIGRATION_HEAD_INVALID`
 - `DATABASE_UNAVAILABLE`
+- `DATABASE_ENCRYPTION_KEY_MISMATCH`
+- `DATABASE_CONFIGURATION_INCOMPATIBLE`
 
 Messages never include the password or full database URL. PAS does not
 automatically downgrade or migrate during `serve`.
@@ -35,9 +38,9 @@ automatically downgrade or migrate during `serve`.
 pas serve
 ```
 
-Startup performs the same read-only schema check before configuration, JWT
-keys, or background workers initialize. Use `pas database migrate` explicitly
-when the schema is empty or behind.
+Startup performs the same read-only schema and root-key compatibility check
+before configuration, JWT keys, or background workers initialize. Use
+`pas database migrate` explicitly when the schema is empty or behind.
 
 ## Guided configuration
 

@@ -19,6 +19,8 @@ from server.db.schema import DatabaseSchemaError
         "DATABASE_SCHEMA_TOO_NEW",
         "DATABASE_MIGRATION_HEAD_INVALID",
         "DATABASE_UNAVAILABLE",
+        "DATABASE_ENCRYPTION_KEY_MISMATCH",
+        "DATABASE_CONFIGURATION_INCOMPATIBLE",
     ],
 )
 async def test_lifespan_stops_before_configuration_initialization(
@@ -44,7 +46,7 @@ async def test_lifespan_stops_before_configuration_initialization(
         )
     )
     monkeypatch.setattr(
-        "server.app.check_database_schema",
+        "server.app.check_database_compatibility",
         reject_schema,
         raising=False,
     )

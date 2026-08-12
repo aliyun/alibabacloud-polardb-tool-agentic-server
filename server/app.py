@@ -17,7 +17,7 @@ from server.auth.router import router as auth_router
 from server.config import get_config
 from server.config import TenantProvisioningConfig
 from server.db.engine import get_engine, get_session_factory
-from server.db.schema import check_database_schema
+from server.db.schema import check_database_compatibility
 from server.logging import normalize_request_id, setup_logging, trace_id_var
 from server.mcp.server import router as mcp_router
 from server.mcp.agent_openapi import router as agent_openapi_router
@@ -288,7 +288,7 @@ async def lifespan(app: FastAPI):
     setup_logging(setup_config.server.log_level, setup_config.logging)
     logger.info("alibabacloud polardb tool agentic server starting", extra={"action": "startup"})
 
-    await check_database_schema()
+    await check_database_compatibility()
     get_engine()
     session_factory = get_session_factory()
     app.state.session_factory = session_factory

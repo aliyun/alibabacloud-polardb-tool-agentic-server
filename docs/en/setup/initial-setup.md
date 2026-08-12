@@ -31,10 +31,20 @@ For a local SQLite test:
 ```bash
 uv sync --extra dev
 
+mkdir -p data
+if [ -s data/polardb_agentic.db ] && [ ! -f data/pas-root-key ]; then
+  echo 'Existing PAS database requires its original data/pas-root-key' >&2
+  exit 1
+fi
+if [ ! -f data/pas-root-key ]; then
+  (umask 077; python3 -c \
+    'import base64, os; print(base64.b64encode(os.urandom(32)).decode())' \
+    > data/pas-root-key)
+fi
+chmod 600 data/pas-root-key
+
 export PAS_DATABASE_URL='sqlite+aiosqlite:///data/polardb_agentic.db'
-export PAS_ENCRYPTION_KEY="$(
-  python3 -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())'
-)"
+export PAS_ENCRYPTION_KEY="file:$PWD/data/pas-root-key"
 
 uv run pas database migrate
 uv run pas database check
@@ -45,7 +55,13 @@ Use a persistent MySQL or PostgreSQL metadata database in Docker and
 Kubernetes. Run `pas database migrate` as a deployment migration step before
 starting or rolling out application replicas. `pas database check` is
 read-only and reports whether the database is at the single Alembic head
-required by this application.
+required by this application and the configured root key can decrypt persisted
+module configuration.
+
+The guard before key generation is intentional. If a non-empty database exists
+without its original key file, stop and restore that key. Generating another
+key does not recover the database and makes encrypted configuration,
+credentials, Agent Tokens, and shared JWT signing keys unreadable.
 
 The application version does not determine database compatibility. Alembic
 revision state does. `pas serve` performs the same read-only check and refuses
@@ -75,6 +91,12 @@ token again. The server cannot recover or display the current plaintext token.
 
 Open the setup UI, enter the token printed by the backend, and create the first
 administrator. The administrator password must contain at least 12 characters.
+
+When running the backend from a source checkout, build the console or run its
+development server as described in the repository README. `/setup` is a browser
+SPA route. A plain `curl http://127.0.0.1:18760/setup` intentionally returns
+404; use a browser or `curl -H 'Accept: text/html'` when checking the HTML.
+Use `/readyz` for service readiness.
 
 The UI runs a read-only dry run first. A separate **Activate module** action
 saves, validates, and activates the checked configuration. When the backend
