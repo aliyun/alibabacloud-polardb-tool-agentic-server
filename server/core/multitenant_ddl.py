@@ -9,6 +9,12 @@ from server.models import (
     InstanceCredential,
     ProvisioningBackend,
 )
+from server.core.permission_template_service import (
+    CompiledPermissionSnapshot,
+    PermissionScope,
+    legacy_permission_snapshot,
+    permission_snapshot_from_json,
+)
 
 _TENANT_RE = re.compile(r"^[A-Za-z0-9_]{1,10}$")
 _RESOURCE_CONFIG_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
@@ -70,14 +76,31 @@ def build_create_database_sql(database_name: str) -> str:
     return f"CREATE DATABASE `{database_name}`"
 
 
-def build_grant_sql(tenant_name: str, account_name: str) -> str:
+def build_grant_sql(
+    tenant_name: str,
+    account_name: str,
+    snapshot: CompiledPermissionSnapshot | None = None,
+) -> str:
     tenant_name = _validate(tenant_name, _TENANT_RE, "tenant name")
     account_name = _validate(account_name, _ACCOUNT_RE, "account name")
     if account_name.rsplit("@", 1)[1] != tenant_name:
         raise InvalidDatabaseIdentifier("Account does not belong to tenant")
+    resolved = snapshot or legacy_permission_snapshot(
+        PermissionScope.MULTITENANT
+    )
+    if resolved.scope is not PermissionScope.MULTITENANT:
+        raise ValueError("Multitenant grant requires tenant permission scope")
+    privileges = (
+        "ALL PRIVILEGES"
+        if resolved.legacy_all_privileges
+        else ", ".join(privilege.value for privilege in resolved.privileges)
+    )
+    if not privileges:
+        raise ValueError("Multitenant grant requires at least one privilege")
+    grant_option = " WITH GRANT OPTION" if resolved.grant_option else ""
     return (
-        f"GRANT ALL PRIVILEGES ON `%@{tenant_name}`.* "
-        f"TO '{account_name}'@'%' WITH GRANT OPTION"
+        f"GRANT {privileges} ON `%@{tenant_name}`.* "
+        f"TO '{account_name}'@'%'{grant_option}"
     )
 
 
@@ -89,6 +112,11 @@ def build_show_grants_sql(account_name: str) -> str:
 def build_lock_user_sql(account_name: str) -> str:
     account_name = _validate(account_name, _ACCOUNT_RE, "account name")
     return f"ALTER USER '{account_name}'@'%' ACCOUNT LOCK"
+
+
+def build_unlock_user_sql(account_name: str) -> str:
+    account_name = _validate(account_name, _ACCOUNT_RE, "account name")
+    return f"ALTER USER '{account_name}'@'%' ACCOUNT UNLOCK"
 
 
 def build_kill_connection_sql(connection_id: int) -> str:
@@ -253,15 +281,21 @@ class MultitenantDDLAdapter:
         )
 
     async def grant_privileges(self, resource: DBInstanceResource) -> None:
+        snapshot = (
+            permission_snapshot_from_json(resource.permission_snapshot_json)
+            if resource.permission_snapshot_json is not None
+            else legacy_permission_snapshot(PermissionScope.MULTITENANT)
+        )
         sql = build_grant_sql(
             _validate(resource.tenant_name, _TENANT_RE, "tenant name"),
             self._account_name,
+            snapshot,
         )
         await self._execute(sql)
         if not await self.verify_grants(resource):
             raise DDLVerificationError("Tenant grant could not be verified")
 
-    async def prepare_cleanup(self, resource: DBInstanceResource) -> None:
+    async def lock_account(self, resource: DBInstanceResource) -> None:
         del resource
         account = self._account_name
         try:
@@ -270,6 +304,14 @@ class MultitenantDDLAdapter:
             if mysql_error_code(error) != 1396:
                 raise
 
+    async def unlock_account(self, resource: DBInstanceResource) -> None:
+        del resource
+        account = self._account_name
+        await self._execute(build_unlock_user_sql(account))
+
+    async def terminate_sessions(self, resource: DBInstanceResource) -> None:
+        del resource
+        account = self._account_name
         query = (
             "SELECT ID FROM information_schema.PROCESSLIST "
             "WHERE USER = %s AND ID <> CONNECTION_ID()"
@@ -283,8 +325,19 @@ class MultitenantDDLAdapter:
             except Exception as error:
                 if mysql_error_code(error) != 1094:
                     raise
-        remaining = await self._fetchall(query, (account,))
-        if remaining:
+    async def verify_disconnected(self, resource: DBInstanceResource) -> bool:
+        del resource
+        query = (
+            "SELECT ID FROM information_schema.PROCESSLIST "
+            "WHERE USER = %s AND ID <> CONNECTION_ID()"
+        )
+        remaining = await self._fetchall(query, (self._account_name,))
+        return not remaining
+
+    async def prepare_cleanup(self, resource: DBInstanceResource) -> None:
+        await self.lock_account(resource)
+        await self.terminate_sessions(resource)
+        if not await self.verify_disconnected(resource):
             raise ActiveTenantSessionsError(
                 "Tenant sessions remain after connection termination"
             )
@@ -347,17 +400,47 @@ class MultitenantDDLAdapter:
         tenant = _validate(resource.tenant_name, _TENANT_RE, "tenant name")
         account = self._account_name
         rows = await self._fetchall(build_show_grants_sql(account))
+        snapshot = (
+            permission_snapshot_from_json(resource.permission_snapshot_json)
+            if resource.permission_snapshot_json is not None
+            else legacy_permission_snapshot(PermissionScope.MULTITENANT)
+        )
+        expected_privileges = (
+            {"ALL PRIVILEGES"}
+            if snapshot.legacy_all_privileges
+            else {privilege.value for privilege in snapshot.privileges}
+        )
         scope = f"ON `%@{tenant}`.*"
         quoted_users = {
             f"TO `{account}`@`%`",
             f"TO '{account}'@'%'",
         }
-        return any(
-            row
-            and scope in str(row[0])
-            and any(user in str(row[0]) for user in quoted_users)
-            for row in rows
-        )
+        for row in rows:
+            if not row:
+                continue
+            grant = str(row[0])
+            if scope not in grant or not any(
+                user in grant for user in quoted_users
+            ):
+                continue
+            try:
+                privilege_text = grant.split("GRANT ", 1)[1].split(
+                    " ON ", 1
+                )[0]
+            except IndexError:
+                continue
+            actual_privileges = {
+                privilege.strip().upper()
+                for privilege in privilege_text.split(",")
+                if privilege.strip()
+            }
+            has_grant_option = " WITH GRANT OPTION" in grant.upper()
+            if (
+                actual_privileges == expected_privileges
+                and has_grant_option == snapshot.grant_option
+            ):
+                return True
+        return False
 
     async def _drop_and_verify_absent(
         self,

@@ -2,13 +2,13 @@
 
 [English](../../en/getting-started/configure.md) | **简体中文**
 
-完成 Owner 认领后，进入控制台配置阿里云凭证与购买规格。本页覆盖运行资源池
-所需的最小配置。
+完成 Owner 认领后，进入控制台配置阿里云凭证与服务运行策略。本页覆盖自动供给池
+能够购买集群前所需的服务级配置。
 
 ## 打开配置页
 
-以管理员登录后，打开 `/settings/configuration`。可选模块可分步配置，每次
-修改先生成草稿，验证通过后再激活。
+以管理员登录后，打开**服务配置**（`/settings/configuration`）。可选模块可分步
+配置，每次修改先生成草稿，验证通过后再激活。
 
 <p align="center">
   <img src="images/configuration-modules.png" alt="配置模块列表" width="820">
@@ -28,14 +28,16 @@
   <img src="images/configure-aliyun-access.png" alt="aliyun_access 配置表单" width="820">
 </p>
 
-## 配置 agentic_db_purchase
+## 检查服务运行策略
 
-设置创建集群时使用的购买规格（引擎版本、节点规格、代理、Serverless 弹性与
-存储等）。试用可先采用默认值，后续按需调整。
+打开**服务运行策略**并启用自动供给 Worker。Worker 未运行时，资源池向导会链接到
+`/settings/configuration?module=runtime_policy`。固定 `CreateDBCluster` 参数不在
+这里配置；服务端内置的 `agentic-dedicated-mysql` profile 是唯一来源。
 
-## 配置 resource_pool
+## 创建自动供给池
 
-设置网络位置与资源池参数：
+资源池配置不是服务配置模块。打开 **Pool**，创建**自动供给池（AgenticDB
+Dedicated）**并填写网络位置和容量：
 
 - `region_id` 与 `zone_id` 为必填项。
 - `vpc_id` 与 `vswitch_id` 均为必填项。PAS 无法自动识别承载自身的 ECS、
@@ -43,15 +45,20 @@
 - 请填写 PAS 可达的 VPC，并选择该 VPC、目标可用区中的 VSwitch。通常应与
   PAS 部署在同一 VPC；如果使用不同 VPC，必须先通过云企业网、VPC 对等连接
   等方式打通网络。
-- `security_ip_list` 应允许 PAS 访问数据库，不能保留默认的 `127.0.0.1`。
+- 使用表单根据地域生成的 VPC 控制台链接，手工复制 VPC 和 VSwitch 标识。该设计
+  不要求额外的 RAM 网络资源枚举权限。
+- 配置目标容量、成员硬上限、购买预算、权限 Revision、回收策略和冷却时间。
+  只有自动供给 Worker、阿里云身份、内部购买 profile 和默认权限版本都就绪后，
+  PAS 才会向目标容量准备实例。
 
-<p align="center">
-  <img src="images/configure-resource-pool.png" alt="resource_pool 配置表单" width="820">
-</p>
+控制台可以列出多个自动供给池。在 Agent 详情页绑定一个
+主池和可选的有序回退池。
 
 ## 深入阅读
 
 模块依赖、声明式 apply、导出与热加载等细节，请参阅
 [引导式模块化配置](../configuration/guided-configuration.md)。
+资源池字段、就绪阻塞原因、路由和冷创建详见
+[自动供给池](../database-instances/dedicated-hot-pools.md)。
 
 下一步：[功能使用②：注册数据库实例](./register-instance.md)。

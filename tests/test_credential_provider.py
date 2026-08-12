@@ -1,250 +1,694 @@
 from __future__ import annotations
 
-import base64
-import os
-import time
+import asyncio
+import tomllib
+from dataclasses import dataclass
+from concurrent.futures import Future, ThreadPoolExecutor
+from pathlib import Path
+from threading import Event
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-
-from server import config as config_module
-from server.config import AppConfig, reset_config
-from server.models import Base
+from server.aliyun import credential_provider
 from server.aliyun.credential_provider import (
-    AliyunCredentials,
     AssumeRoleProvider,
     DirectAKProvider,
+    ECSRamRoleProvider,
     build_credential_provider,
 )
+from server.aliyun.managed_credentials import (
+    ManagedCredentialsProvider,
+    TemporaryCredentialExpired,
+)
+from server.config import AliyunConfig
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture(autouse=True)
-def clean():
-    reset_config()
-    yield
-    reset_config()
+ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.fixture
-async def engine():
-    e = create_async_engine("sqlite+aiosqlite:///:memory:")
-    async with e.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield e
-    await e.dispose()
+@dataclass
+class FakeCredentials:
+    expiration: int | None
+    provider_name: str = "fake"
+    access_key_id: str = "temporary-ak"
+    access_key_secret: str = "temporary-secret"
+    security_token: str = "temporary-token"
+
+    def get_expiration(self) -> int | None:
+        return self.expiration
+
+    def get_provider_name(self) -> str:
+        return self.provider_name
+
+    def get_access_key_id(self) -> str:
+        return self.access_key_id
+
+    def get_access_key_secret(self) -> str:
+        return self.access_key_secret
+
+    def get_security_token(self) -> str:
+        return self.security_token
 
 
-@pytest.fixture
-async def session(engine):
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with factory() as s:
-        yield s
+class FakeProvider:
+    def __init__(self, credentials: FakeCredentials | None = None) -> None:
+        self.credentials = credentials or FakeCredentials(expiration=None)
+
+    def get_credentials(self) -> FakeCredentials:
+        return self.credentials
+
+    async def get_credentials_async(self) -> FakeCredentials:
+        return self.credentials
+
+    def get_provider_name(self) -> str:
+        return self.credentials.provider_name
 
 
-@pytest.fixture
-def encryption_key():
-    """Set a random base64-encoded 32-byte key for AES encryption tests."""
-    key = base64.b64encode(os.urandom(32)).decode()
-    os.environ["PAS_ENCRYPTION_KEY"] = key
-    yield key
-    os.environ.pop("PAS_ENCRYPTION_KEY", None)
+class SequencedProvider:
+    def __init__(self, *results: FakeCredentials | Exception) -> None:
+        self.results = list(results)
+        self.calls = 0
+
+    def _next(self) -> FakeCredentials:
+        self.calls += 1
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def get_credentials(self) -> FakeCredentials:
+        return self._next()
+
+    async def get_credentials_async(self) -> FakeCredentials:
+        await asyncio.sleep(0)
+        return self._next()
+
+    def get_provider_name(self) -> str:
+        return "sequence"
 
 
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
+class BlockingFailureProvider:
+    def __init__(self, valid: FakeCredentials) -> None:
+        self.valid = valid
+        self.calls = 0
+        self.async_calls = 0
+        self.fail_refresh = False
+        self.sync_started = Event()
+        self.sync_release = Event()
+        self.async_started: asyncio.Event | None = None
+        self.async_release: asyncio.Event | None = None
 
-def _install_settings(overrides: dict[str, object] | None = None):
-    defaults = {
-        "credential_mode": "direct_ak",
-        "access_key_id": "TEST_ACCESS_KEY_ID",
-        "access_key_secret": "TEST_CREDENTIAL_VALUE_123",
-        "role_arn": "acs:ram::123456:role/test-role",
-        "role_session_name": "polardb-agentic",
-        "sts_duration_seconds": 3600,
-        "region_id": "cn-hangzhou",
-        "openapi_network": "public",
+    def get_credentials(self) -> FakeCredentials:
+        self.calls += 1
+        if not self.fail_refresh:
+            return self.valid
+        self.sync_started.set()
+        if not self.sync_release.wait(timeout=2):
+            raise AssertionError("sync refresh was not released")
+        raise RuntimeError("metadata unavailable")
+
+    async def get_credentials_async(self) -> FakeCredentials:
+        self.async_calls += 1
+        if not self.fail_refresh:
+            return self.valid
+        assert self.async_started is not None
+        assert self.async_release is not None
+        self.async_started.set()
+        await self.async_release.wait()
+        raise RuntimeError("metadata unavailable")
+
+    def get_provider_name(self) -> str:
+        return "blocking"
+
+
+class BlockingSuccessProvider:
+    def __init__(self, credentials: FakeCredentials) -> None:
+        self.credentials = credentials
+        self.sync_calls = 0
+        self.async_calls = 0
+        self.sync_started = Event()
+        self.sync_release = Event()
+        self.async_started: asyncio.Event | None = None
+        self.async_release: asyncio.Event | None = None
+
+    def get_credentials(self) -> FakeCredentials:
+        self.sync_calls += 1
+        self.sync_started.set()
+        if not self.sync_release.wait(timeout=2):
+            raise AssertionError("sync refresh was not released")
+        return self.credentials
+
+    async def get_credentials_async(self) -> FakeCredentials:
+        self.async_calls += 1
+        assert self.async_started is not None
+        assert self.async_release is not None
+        self.async_started.set()
+        await self.async_release.wait()
+        return self.credentials
+
+    def get_provider_name(self) -> str:
+        return "blocking-success"
+
+
+class InterruptingProvider:
+    def get_credentials(self) -> FakeCredentials:
+        raise KeyboardInterrupt()
+
+    async def get_credentials_async(self) -> FakeCredentials:
+        raise KeyboardInterrupt()
+
+    def get_provider_name(self) -> str:
+        return "interrupting"
+
+
+class _HostileDiagnosticsError(Exception):
+    @property
+    def code(self):
+        raise RuntimeError("hostile diagnostic accessor")
+
+
+class _BlockingHostileProvider:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def get_credentials(self):
+        raise _HostileDiagnosticsError()
+
+    async def get_credentials_async(self):
+        self.started.set()
+        await self.release.wait()
+        raise _HostileDiagnosticsError()
+
+    def get_provider_name(self) -> str:
+        return "hostile"
+
+
+class FakeClock:
+    def __init__(self, now: int) -> None:
+        self.now = now
+
+    def __call__(self) -> int:
+        return self.now
+
+    def set(self, now: int) -> None:
+        self.now = now
+
+
+def test_credentials_sdk_is_a_direct_runtime_dependency() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "alibabacloud-credentials>=1.0.8,<2.0.0" in project["project"]["dependencies"]
+
+
+def test_ecs_provider_forces_imdsv2_and_disables_sdk_background_updates(monkeypatch) -> None:
+    created: dict[str, object] = {}
+    monkeypatch.setattr(
+        credential_provider,
+        "EcsRamRoleCredentialsProvider",
+        lambda **kwargs: created.update(kwargs) or FakeProvider(),
+    )
+
+    provider = ECSRamRoleProvider(
+        role_name=None,
+        region_id="cn-hangzhou",
+        openapi_network="vpc",
+    )
+
+    assert created["disable_imds_v1"] is True
+    assert created["async_update_enabled"] is False
+    assert created["http_options"].proxy is None
+    assert provider.mode == "ecs_ram_role"
+    assert provider.region_id == "cn-hangzhou"
+    assert provider.openapi_network == "vpc"
+
+
+def test_assume_role_uses_explicit_official_provider_and_resolved_endpoint(monkeypatch) -> None:
+    created: dict[str, object] = {}
+    source = FakeProvider()
+    raw = FakeProvider()
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ambient-ak")
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ambient-sk")
+    monkeypatch.setenv("ALIBABA_CLOUD_ROLE_ARN", "acs:ram::1:role/ambient")
+    monkeypatch.setenv("ALIBABA_CLOUD_ROLE_SESSION_NAME", "ambient-session")
+    monkeypatch.setattr(
+        credential_provider,
+        "StaticAKCredentialsProvider",
+        lambda **kwargs: created.setdefault("source", kwargs) and source,
+    )
+    monkeypatch.setattr(
+        credential_provider,
+        "SafeRamRoleArnCredentialsProvider",
+        lambda **kwargs: created.update(kwargs) or raw,
+    )
+
+    provider = AssumeRoleProvider(
+        source_access_key_id="source-ak",
+        source_access_key_secret="source-sk",
+        role_arn="acs:ram::1234567890123456:role/pas-runtime",
+        role_session_name="pas-session",
+        duration_seconds=1800,
+        external_id="external-id",
+        region_id="cn-beijing",
+        openapi_network="vpc",
+    )
+
+    assert created["source"] == {
+        "access_key_id": "source-ak",
+        "access_key_secret": "source-sk",
     }
-    if overrides:
-        defaults.update(overrides)
-    config_module._config = AppConfig(aliyun=defaults)
+    assert created["credentials_provider"] is source
+    assert created["role_arn"] == "acs:ram::1234567890123456:role/pas-runtime"
+    assert created["role_session_name"] == "pas-session"
+    assert created["duration_seconds"] == 1800
+    assert created["external_id"] == "external-id"
+    assert created["sts_endpoint"] == "sts-vpc.cn-beijing.aliyuncs.com"
+    assert created["http_options"].proxy is None
+    assert provider.mode == "assume_role"
+    assert provider.credential_client.cloud_credential.provider is provider.managed_provider
 
 
-# ---------------------------------------------------------------------------
-# Tests: DirectAKProvider
-# ---------------------------------------------------------------------------
+def test_direct_provider_constructs_explicit_static_credentials(monkeypatch) -> None:
+    created: dict[str, object] = {}
+    raw = FakeProvider(FakeCredentials(expiration=None, provider_name="static_ak"))
+    monkeypatch.setattr(
+        credential_provider,
+        "StaticAKCredentialsProvider",
+        lambda **kwargs: created.update(kwargs) or raw,
+    )
 
-class TestDirectAKProvider:
-    async def test_returns_credentials(self):
-        provider = DirectAKProvider(ak="my_ak", sk="my_sk", region_id="cn-shanghai")
-        creds = await provider.get_credentials()
-        assert creds.access_key_id == "my_ak"
-        assert creds.access_key_secret == "my_sk"
-        assert creds.security_token is None
-        assert creds.region_id == "cn-shanghai"
-        assert creds.openapi_network == "public"
+    provider = DirectAKProvider(
+        access_key_id="ak",
+        access_key_secret="sk",
+        region_id="cn-shanghai",
+        openapi_network="public",
+    )
 
-    async def test_vpc_network_is_propagated(self):
-        provider = DirectAKProvider(
-            ak="ak",
-            sk="sk",
-            region_id="cn-beijing",
-            openapi_network="vpc",
+    assert created == {"access_key_id": "ak", "access_key_secret": "sk"}
+    assert provider.mode == "direct_ak"
+    assert provider.probe().expires_at is None
+    assert provider.probe().provider_name == "static_ak"
+
+
+def test_direct_provider_rejects_blank_config_instead_of_using_ambient_keys(monkeypatch) -> None:
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ambient-ak")
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ambient-sk")
+
+    with pytest.raises(ValueError, match="access_key_id"):
+        DirectAKProvider(access_key_id="", access_key_secret="configured-sk")
+    with pytest.raises(ValueError, match="access_key_secret"):
+        DirectAKProvider(access_key_id="configured-ak", access_key_secret="")
+
+    provider = DirectAKProvider(
+        access_key_id="configured-ak",
+        access_key_secret="configured-sk",
+    )
+    credentials = provider.managed_provider.get_credentials()
+    assert credentials.get_access_key_id() == "configured-ak"
+    assert credentials.get_access_key_secret() == "configured-sk"
+
+
+def test_assume_role_rejects_blank_config_instead_of_using_ambient_values(monkeypatch) -> None:
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_ID", "ambient-ak")
+    monkeypatch.setenv("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ambient-sk")
+    monkeypatch.setenv("ALIBABA_CLOUD_ROLE_ARN", "acs:ram::1:role/ambient")
+    monkeypatch.setenv("ALIBABA_CLOUD_ROLE_SESSION_NAME", "ambient-session")
+
+    valid = {
+        "source_access_key_id": "configured-ak",
+        "source_access_key_secret": "configured-sk",
+        "role_arn": "acs:ram::1234567890123456:role/pas-runtime",
+        "role_session_name": "configured-session",
+    }
+    for field in valid:
+        invalid = {**valid, field: ""}
+        with pytest.raises(ValueError, match=field):
+            AssumeRoleProvider(**invalid)
+
+
+def test_ecs_omitted_role_ignores_ambient_role_override(monkeypatch) -> None:
+    monkeypatch.setenv("ALIBABA_CLOUD_ECS_METADATA", "ambient-role")
+
+    provider = ECSRamRoleProvider(role_name=None)
+
+    assert provider.managed_provider._delegate._role_name is None
+
+
+async def test_managed_provider_has_async_singleflight_refresh() -> None:
+    delegate = SequencedProvider(FakeCredentials(expiration=2000))
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
+
+    credentials = await asyncio.gather(
+        *(managed.get_credentials_async() for _ in range(12))
+    )
+
+    assert delegate.calls == 1
+    assert all(result is credentials[0] for result in credentials)
+
+
+def test_managed_provider_has_sync_singleflight_refresh() -> None:
+    delegate = SequencedProvider(FakeCredentials(expiration=2000))
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
+
+    first = managed.get_credentials()
+    second = managed.get_credentials()
+
+    assert delegate.calls == 1
+    assert first is second
+
+
+async def test_managed_provider_never_returns_expired_cache() -> None:
+    clock = FakeClock(999)
+    delegate = SequencedProvider(
+        FakeCredentials(expiration=1000),
+        RuntimeError("metadata unavailable"),
+    )
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=clock,
+        refresh_jitter_seconds=(0, 0),
+    )
+
+    await managed.get_credentials_async()
+    clock.set(1001)
+
+    with pytest.raises(TemporaryCredentialExpired):
+        await managed.get_credentials_async()
+
+
+def test_managed_provider_uses_still_valid_cache_after_refresh_failure() -> None:
+    clock = FakeClock(1000)
+    cached = FakeCredentials(expiration=2000)
+    delegate = SequencedProvider(cached, RuntimeError("metadata unavailable"))
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=clock,
+        refresh_jitter_seconds=(0, 0),
+    )
+    assert managed.get_credentials() is cached
+
+    managed._refresh_at = 1000
+
+    assert managed.get_credentials() is cached
+    assert delegate.calls == 2
+
+
+def test_sync_failed_refresh_collapses_waiters_until_bounded_retry() -> None:
+    clock = FakeClock(1000)
+    delegate = BlockingFailureProvider(FakeCredentials(expiration=2000))
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=clock,
+        refresh_jitter_seconds=(0, 0),
+        failure_retry_seconds=60,
+    )
+    cached = managed.get_credentials()
+    managed._refresh_at = 1000
+    delegate.fail_refresh = True
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        leader = executor.submit(managed.get_credentials)
+        assert delegate.sync_started.wait(timeout=2)
+        waiters = [executor.submit(managed.get_credentials) for _ in range(7)]
+        delegate.sync_release.set()
+        results = [leader.result(), *(waiter.result() for waiter in waiters)]
+
+    assert delegate.calls == 2
+    assert all(result is cached for result in results)
+
+
+async def test_async_failed_refresh_collapses_waiters_until_bounded_retry() -> None:
+    clock = FakeClock(1000)
+    delegate = BlockingFailureProvider(FakeCredentials(expiration=2000))
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=clock,
+        refresh_jitter_seconds=(0, 0),
+        failure_retry_seconds=60,
+    )
+    cached = await managed.get_credentials_async()
+    managed._refresh_at = 1000
+    delegate.fail_refresh = True
+    delegate.async_started = asyncio.Event()
+    delegate.async_release = asyncio.Event()
+
+    leader = asyncio.create_task(managed.get_credentials_async())
+    await asyncio.wait_for(delegate.async_started.wait(), timeout=2)
+    waiters = [asyncio.create_task(managed.get_credentials_async()) for _ in range(7)]
+    delegate.async_release.set()
+    results = await asyncio.gather(leader, *waiters)
+
+    assert delegate.calls == 0
+    assert delegate.async_calls == 2
+    assert all(result is cached for result in results)
+
+
+async def test_hostile_diagnostics_cannot_orphan_shared_failure_future() -> None:
+    delegate = _BlockingHostileProvider()
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
+
+    owner = asyncio.create_task(managed.get_credentials_async())
+    await asyncio.wait_for(delegate.started.wait(), timeout=1)
+    waiter = asyncio.create_task(managed.get_credentials_async())
+    delegate.release.set()
+
+    with pytest.raises(TemporaryCredentialExpired):
+        await asyncio.wait_for(owner, timeout=1)
+    with pytest.raises(TemporaryCredentialExpired):
+        await asyncio.wait_for(waiter, timeout=1)
+
+
+async def test_mixed_sync_and_async_refreshes_share_one_inflight_attempt() -> None:
+    clock = FakeClock(1000)
+    delegate = BlockingFailureProvider(FakeCredentials(expiration=2000))
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=clock,
+        refresh_jitter_seconds=(0, 0),
+        failure_retry_seconds=60,
+    )
+    cached = managed.get_credentials()
+    managed._refresh_at = 1000
+    delegate.fail_refresh = True
+
+    sync_refresh = asyncio.create_task(asyncio.to_thread(managed.get_credentials))
+    await asyncio.to_thread(delegate.sync_started.wait, 2)
+    async_waiter = asyncio.create_task(managed.get_credentials_async())
+    delegate.sync_release.set()
+
+    sync_result, async_result = await asyncio.gather(sync_refresh, async_waiter)
+
+    assert delegate.calls == 2
+    assert delegate.async_calls == 0
+    assert sync_result is cached
+    assert async_result is cached
+
+
+async def test_cancelled_async_owner_does_not_orphan_sync_waiter() -> None:
+    credentials = FakeCredentials(expiration=2000)
+    delegate = BlockingSuccessProvider(credentials)
+    delegate.async_started = asyncio.Event()
+    delegate.async_release = asyncio.Event()
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
+
+    owner = asyncio.create_task(managed.get_credentials_async())
+    await asyncio.wait_for(delegate.async_started.wait(), timeout=2)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        sync_waiter = executor.submit(managed.get_credentials)
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+        delegate.async_release.set()
+        try:
+            assert await asyncio.to_thread(sync_waiter.result, 0.1) is credentials
+        finally:
+            if managed._inflight is not None and not managed._inflight.done():
+                managed._inflight.set_result(credentials)
+            await asyncio.to_thread(sync_waiter.result, 2)
+
+    assert await managed.get_credentials_async() is credentials
+    assert delegate.async_calls == 1
+    assert delegate.sync_calls == 0
+
+
+async def test_cancelled_async_waiter_does_not_poison_sync_owner(monkeypatch) -> None:
+    credentials = FakeCredentials(expiration=2000)
+    delegate = BlockingSuccessProvider(credentials)
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
+
+    sync_owner = asyncio.create_task(asyncio.to_thread(managed.get_credentials))
+    await asyncio.to_thread(delegate.sync_started.wait, 2)
+    waiting = asyncio.Event()
+    original_wait = managed._await_shared_future
+
+    async def wait_until_cancelled(future):
+        waiting.set()
+        return await original_wait(future)
+
+    monkeypatch.setattr(managed, "_await_shared_future", wait_until_cancelled)
+    async_waiter = asyncio.create_task(managed.get_credentials_async())
+    await asyncio.wait_for(waiting.wait(), timeout=2)
+    async_waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await async_waiter
+    delegate.sync_release.set()
+
+    assert await sync_owner is credentials
+    assert await managed.get_credentials_async() is credentials
+    assert delegate.sync_calls == 1
+    assert delegate.async_calls == 0
+
+
+async def test_waiter_revalidates_fallback_after_future_completion(monkeypatch) -> None:
+    clock = FakeClock(1000)
+    cached = FakeCredentials(expiration=1001)
+    managed = ManagedCredentialsProvider(
+        FakeProvider(cached),
+        clock=clock,
+        refresh_jitter_seconds=(0, 0),
+    )
+    shared: Future[FakeCredentials] = Future()
+    managed._credentials = cached
+    managed._refresh_at = 1000
+    managed._inflight = shared
+    waiting = asyncio.Event()
+    original_wait = managed._await_shared_future
+
+    async def wait_until_released(future):
+        waiting.set()
+        return await original_wait(future)
+
+    monkeypatch.setattr(managed, "_await_shared_future", wait_until_released)
+    waiter = asyncio.create_task(managed.get_credentials_async())
+    await asyncio.wait_for(waiting.wait(), timeout=2)
+    shared.set_result(cached)
+    clock.set(1001)
+
+    with pytest.raises(TemporaryCredentialExpired):
+        await waiter
+
+
+async def test_async_owner_completes_when_default_executor_has_sync_waiter(monkeypatch) -> None:
+    credentials = FakeCredentials(expiration=2000)
+    delegate = BlockingSuccessProvider(credentials)
+    delegate.async_started = asyncio.Event()
+    delegate.async_release = asyncio.Event()
+    managed = ManagedCredentialsProvider(
+        delegate,
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
+    loop = asyncio.get_running_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    loop.set_default_executor(executor)
+    original_complete = managed._complete_success
+
+    def complete_once(future, value):
+        if not future.done():
+            original_complete(future, value)
+
+    monkeypatch.setattr(managed, "_complete_success", complete_once)
+    waiter_entered = Event()
+    original_begin = managed._begin_refresh
+
+    def begin_waiter():
+        waiter_entered.set()
+        return original_begin()
+
+    try:
+        owner = asyncio.create_task(managed.get_credentials_async())
+        await asyncio.wait_for(delegate.async_started.wait(), timeout=2)
+        monkeypatch.setattr(managed, "_begin_refresh", begin_waiter)
+        sync_waiter = asyncio.create_task(asyncio.to_thread(managed.get_credentials))
+        for _ in range(100):
+            if waiter_entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert waiter_entered.is_set()
+        delegate.async_release.set()
+
+        owner_result, waiter_result = await asyncio.wait_for(
+            asyncio.gather(owner, sync_waiter),
+            timeout=0.5,
         )
-
-        creds = await provider.get_credentials()
-
-        assert creds.openapi_network == "vpc"
-
-    async def test_default_region(self):
-        provider = DirectAKProvider(ak="ak", sk="sk")
-        creds = await provider.get_credentials()
-        assert creds.region_id == "cn-hangzhou"
-
-    async def test_frozen_credentials(self):
-        provider = DirectAKProvider(ak="ak", sk="sk")
-        creds = await provider.get_credentials()
-        assert isinstance(creds, AliyunCredentials)
-        with pytest.raises(AttributeError):
-            creds.access_key_id = "changed"
+        assert owner_result is credentials
+        assert waiter_result is credentials
+    finally:
+        delegate.async_release.set()
+        if managed._inflight is not None and not managed._inflight.done():
+            managed._inflight.set_result(credentials)
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
-# ---------------------------------------------------------------------------
-# Tests: AssumeRoleProvider
-# ---------------------------------------------------------------------------
+def test_sync_keyboard_interrupt_propagates() -> None:
+    managed = ManagedCredentialsProvider(
+        InterruptingProvider(),
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
 
-def _make_sts_mock():
-    """Create a mock STS response."""
-    mock_cred = MagicMock()
-    mock_cred.access_key_id = "STS.temp_ak"
-    mock_cred.access_key_secret = "temp_sk"
-    mock_cred.security_token = "token123"
-    mock_resp = MagicMock()
-    mock_resp.body.credentials = mock_cred
-    return mock_resp
+    with pytest.raises(KeyboardInterrupt):
+        managed.get_credentials()
 
 
-class TestAssumeRoleProvider:
-    async def test_calls_sts_and_returns_credentials(self):
-        provider = AssumeRoleProvider(
-            ak="base_ak", sk="base_sk",
-            role_arn="acs:ram::123:role/test",
-            session_name="test-session",
-            duration=3600,
-            region_id="cn-beijing",
-            openapi_network="vpc",
+def test_probe_exposes_only_metadata() -> None:
+    credentials = FakeCredentials(expiration=2000, provider_name="ecs_ram_role")
+    provider = ECSRamRoleProvider.__new__(ECSRamRoleProvider)
+    provider.mode = "ecs_ram_role"
+    provider.region_id = "cn-hangzhou"
+    provider.openapi_network = "public"
+    provider.role_name = "pas-runtime"
+    provider.managed_provider = ManagedCredentialsProvider(
+        FakeProvider(credentials),
+        clock=FakeClock(1000),
+        refresh_jitter_seconds=(0, 0),
+    )
+    provider.managed_provider.get_credentials()
+
+    probe = provider.probe()
+
+    assert probe.mode == "ecs_ram_role"
+    assert probe.provider_name == "ecs_ram_role"
+    assert probe.expires_at == 2000
+    assert probe.role_name == "pas-runtime"
+    assert "temporary-secret" not in repr(probe)
+
+
+def test_build_credential_provider_selects_direct_and_assume_role_modes() -> None:
+    direct = build_credential_provider(
+        AliyunConfig(
+            credential_mode="direct_ak",
+            access_key_id="ak",
+            access_key_secret="sk",
         )
-        mock_resp = _make_sts_mock()
-        with patch(
-            "server.aliyun.credential_provider._call_sts_assume_role",
-            new_callable=AsyncMock,
-        ) as mock_sts:
-            mock_sts.return_value = mock_resp
-            creds = await provider.get_credentials()
-
-        assert creds.access_key_id == "STS.temp_ak"
-        assert creds.access_key_secret == "temp_sk"
-        assert creds.security_token == "token123"
-        assert creds.region_id == "cn-beijing"
-        assert creds.openapi_network == "vpc"
-        mock_sts.assert_called_once_with(
-            "base_ak", "base_sk", "acs:ram::123:role/test",
-            "test-session", 3600, "sts-vpc.cn-beijing.aliyuncs.com",
+    )
+    assume = build_credential_provider(
+        AliyunConfig(
+            credential_mode="assume_role",
+            access_key_id="source-ak",
+            access_key_secret="source-sk",
+            role_arn="acs:ram::1234567890123456:role/pas-runtime",
         )
+    )
 
-    async def test_caches_credentials(self):
-        provider = AssumeRoleProvider(
-            ak="ak", sk="sk", role_arn="arn", duration=3600,
-        )
-        mock_resp = _make_sts_mock()
-        with patch(
-            "server.aliyun.credential_provider._call_sts_assume_role",
-            new_callable=AsyncMock,
-        ) as mock_sts:
-            mock_sts.return_value = mock_resp
-            creds1 = await provider.get_credentials()
-            creds2 = await provider.get_credentials()
-
-        # STS should only be called once due to caching
-        assert mock_sts.call_count == 1
-        assert creds1 is creds2
-
-    async def test_refreshes_when_near_expiry(self):
-        provider = AssumeRoleProvider(
-            ak="ak", sk="sk", role_arn="arn", duration=3600,
-        )
-        mock_resp = _make_sts_mock()
-        with patch(
-            "server.aliyun.credential_provider._call_sts_assume_role",
-            new_callable=AsyncMock,
-        ) as mock_sts:
-            mock_sts.return_value = mock_resp
-            # First call populates cache
-            await provider.get_credentials()
-            assert mock_sts.call_count == 1
-
-            # Simulate near-expiry: set _expires_at to soon
-            provider._expires_at = time.monotonic() + 100  # within 300s buffer
-
-            # Second call should refresh
-            await provider.get_credentials()
-            assert mock_sts.call_count == 2
-
-    async def test_default_session_name_and_duration(self):
-        provider = AssumeRoleProvider(ak="ak", sk="sk", role_arn="arn")
-        assert provider._session_name == "polardb-agentic"
-        assert provider._duration == 3600
-        assert provider._region_id == "cn-hangzhou"
-
-
-# ---------------------------------------------------------------------------
-# Tests: build_credential_provider
-# ---------------------------------------------------------------------------
-
-class TestBuildCredentialProvider:
-    async def test_direct_ak_mode(self, session: AsyncSession, encryption_key):
-        _install_settings({"credential_mode": "direct_ak"})
-        provider = await build_credential_provider(session)
-        assert isinstance(provider, DirectAKProvider)
-        creds = await provider.get_credentials()
-        assert creds.access_key_id == "TEST_ACCESS_KEY_ID"
-        assert creds.access_key_secret == "TEST_CREDENTIAL_VALUE_123"
-        assert creds.region_id == "cn-hangzhou"
-
-    async def test_assume_role_mode(self, session: AsyncSession, encryption_key):
-        _install_settings({
-            "credential_mode": "assume_role",
-            "role_arn": "acs:ram::999:role/my-role",
-            "role_session_name": "custom-session",
-            "sts_duration_seconds": 1800,
-            "region_id": "cn-shanghai",
-            "openapi_network": "vpc",
-        })
-        provider = await build_credential_provider(session)
-        assert isinstance(provider, AssumeRoleProvider)
-        assert provider._role_arn == "acs:ram::999:role/my-role"
-        assert provider._session_name == "custom-session"
-        assert provider._duration == 1800
-        assert provider._region_id == "cn-shanghai"
-        assert provider._openapi_network == "vpc"
-
-    async def test_defaults_to_direct_ak(self, session: AsyncSession, encryption_key):
-        """When no credential mode is stored, defaults to direct_ak."""
-        # Don't seed anything — should use schema defaults
-        provider = await build_credential_provider(session)
-        assert isinstance(provider, DirectAKProvider)
-
-    async def test_custom_region_propagated(self, session: AsyncSession, encryption_key):
-        _install_settings({
-            "credential_mode": "direct_ak",
-            "region_id": "ap-southeast-1",
-        })
-        provider = await build_credential_provider(session)
-        creds = await provider.get_credentials()
-        assert creds.region_id == "ap-southeast-1"
+    assert isinstance(direct, DirectAKProvider)
+    assert isinstance(assume, AssumeRoleProvider)

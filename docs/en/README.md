@@ -13,13 +13,13 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 - [Deployment (single ECS + Docker Compose)](getting-started/deploy-compose.md):
   install Docker, prepare `.env`, migrate, start, and claim ownership.
 - [Feature usage: guided configuration](getting-started/configure.md): set cloud
-  credentials, purchase settings, and pool network placement.
+  credentials and Service runtime policy, then create an auto-provisioning pool.
 - [Feature usage: register a database instance](getting-started/register-instance.md):
   register an existing PolarDB cluster and verify connectivity.
 - [Feature usage: Agent, Token, and MCP](getting-started/agents-and-mcp.md):
   create an Agent, issue a Token, grant access, and call the tools.
-- [Feature usage: resource pool and instances](getting-started/resource-pool.md):
-  set target capacity, replenish, and manage pooled instances.
+- [Auto-provisioning pools](database-instances/dedicated-hot-pools.md): set target
+  capacity, route Agents, and manage hot and cold-created members.
 
 ## Setup
 
@@ -54,11 +54,17 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 - [SQL access model](agents/sql-access-model.md): optional SQL proxy,
   capabilities, resource coherence, and backend permission limits.
 
+## Knowledge
+
+- [PolarRAG MCP and enterprise identities](knowledge/polarrag-mcp.md):
+  instance registration, identity principals, knowledge discovery, user-only
+  tools, ACL boundaries, and required upstream capabilities.
+
 ## Deployment
 
 - [Agent-assisted single-host deployment](deployment/agent-assisted-deployment.md):
   explicitly invoked Codex, Claude Code, Cursor, and compatible Agent Skills
-  workflows pinned to PAS 0.0.6.
+  workflows pinned to PAS 0.0.7.
 - [Production prerequisites](deployment/prerequisites.md): supported
   platforms, metadata database, root-key handling, writable paths, and
   registry access.
@@ -99,6 +105,12 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
   access, call the four database instance Tools, and operate cleanup.
 - [Multitenant provisioning](database-instances/multitenant-provisioning.md):
   prerequisites, backend policy, Agent provisioning, and recovery.
+- [Auto-provisioning pools](database-instances/dedicated-hot-pools.md): pool sizing,
+  lifecycle credentials, prewarming, readiness, permission templates,
+  cooldown, restore, reclamation, and rollout safety.
+- [Agent REST database provisioning](database-instances/agent-rest-provisioning.md):
+  Bearer authentication, scoped OpenAPI, create/poll/delete workflow,
+  statuses, idempotency, errors, and credential safety.
 
 ## Operations
 

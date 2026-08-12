@@ -1,5 +1,12 @@
 from server.models.agent import Agent, AgentStatus
 from server.models.agent_api_token import AgentAPIToken, AgentTokenRevealLimit
+from server.models.agent_polarrag_access import (
+    AgentGroupAssignment,
+    AgentGroupKind,
+    AgentPolarRAGInstanceBinding,
+    AgentUserAssignment,
+    AgentUserToken,
+)
 from server.models.audit_log import AuditLog, AuditStatus
 from server.models.base import Base
 from server.models.binding import (
@@ -24,8 +31,20 @@ from server.models.credential import (
 from server.models.db_instance_resource import (
     DBInstanceResource,
     DBInstanceStatus,
+    DeleteLifecycleStep,
     LeaseCleanupStep,
     LeaseProvisioningStep,
+)
+from server.models.dedicated_pool import (
+    DedicatedMemberStatus,
+    DedicatedPool,
+    DedicatedPoolMember,
+    DedicatedPoolStatus,
+    DedicatedPreparationStep,
+    DedicatedWorkerHeartbeat,
+    LifecycleAdministratorPolicy,
+    ReadinessStatus,
+    ReclaimPolicy,
 )
 from server.models.department import Department
 from server.models.instance import (
@@ -48,7 +67,37 @@ from server.models.provisioning_backend import (
     ProvisioningBackend,
     ProvisioningBackendHealth,
     ProvisioningBackendStatus,
+    ProvisioningBackendType,
     ProvisioningCapacity,
+)
+from server.models.permission_template import (
+    PermissionSyncJob,
+    PermissionSyncMode,
+    PermissionSyncStatus,
+    PermissionSyncTarget,
+    PermissionSyncTargetStatus,
+    PermissionTemplate,
+    PermissionTemplateRevision,
+)
+from server.models.provisioning_operation_budget import (
+    ProvisioningOperationBudget,
+)
+from server.models.polarrag import (
+    ENTERPRISE_PRINCIPAL_PROVIDERS,
+    EnterprisePrincipalAssignment,
+    EnterprisePrincipalSource,
+    EnterprisePrincipalStatus,
+    EnterprisePrincipalType,
+    KnowledgeBindingMode,
+    KnowledgeResource,
+    KnowledgeResourceSyncStatus,
+    PolarRAGInstance,
+    PolarRAGInstanceStatus,
+    PolarRAGSpace,
+)
+from server.models.polarrag_upload import (
+    PolarRAGUploadSession,
+    PolarRAGUploadStatus,
 )
 from server.models.quota_counter import QuotaCounter
 from server.models.secret_reveal_limit import SecretRevealLimit
@@ -77,6 +126,11 @@ __all__ = [
     "AgentStatus",
     "AgentAPIToken",
     "AgentTokenRevealLimit",
+    "AgentGroupAssignment",
+    "AgentGroupKind",
+    "AgentPolarRAGInstanceBinding",
+    "AgentUserAssignment",
+    "AgentUserToken",
     "Department",
     "Instance",
     "InstanceEngine",
@@ -101,10 +155,29 @@ __all__ = [
     "TenantProvisioningStep",
     "ProvisioningBackend",
     "ProvisioningBackendStatus",
+    "ProvisioningBackendType",
     "ProvisioningBackendHealth",
     "ProvisioningCapacity",
+    "DedicatedPool",
+    "DedicatedPoolMember",
+    "DedicatedPoolStatus",
+    "DedicatedMemberStatus",
+    "DedicatedPreparationStep",
+    "DedicatedWorkerHeartbeat",
+    "ReadinessStatus",
+    "ReclaimPolicy",
+    "LifecycleAdministratorPolicy",
+    "PermissionTemplate",
+    "PermissionTemplateRevision",
+    "PermissionSyncJob",
+    "PermissionSyncMode",
+    "PermissionSyncStatus",
+    "PermissionSyncTarget",
+    "PermissionSyncTargetStatus",
+    "ProvisioningOperationBudget",
     "DBInstanceResource",
     "DBInstanceStatus",
+    "DeleteLifecycleStep",
     "LeaseCleanupStep",
     "LeaseProvisioningStep",
     "AuditLog",
@@ -121,4 +194,17 @@ __all__ = [
     "UserRefreshToken",
     "QuotaCounter",
     "SecretRevealLimit",
+    "ENTERPRISE_PRINCIPAL_PROVIDERS",
+    "EnterprisePrincipalAssignment",
+    "EnterprisePrincipalSource",
+    "EnterprisePrincipalStatus",
+    "EnterprisePrincipalType",
+    "KnowledgeBindingMode",
+    "KnowledgeResource",
+    "KnowledgeResourceSyncStatus",
+    "PolarRAGInstance",
+    "PolarRAGInstanceStatus",
+    "PolarRAGSpace",
+    "PolarRAGUploadSession",
+    "PolarRAGUploadStatus",
 ]

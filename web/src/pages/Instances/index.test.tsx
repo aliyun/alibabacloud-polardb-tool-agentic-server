@@ -94,6 +94,104 @@ describe('Instances page', () => {
     expect(JSON.stringify(vi.mocked(api.post).mock.calls)).not.toContain('"type"')
   })
 
+  it('registers PolarRAG from the shared engine-aware dialog', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter>
+        <Instances />
+      </MemoryRouter>,
+    )
+
+    await user.click(
+      await screen.findByRole('button', { name: /register instance/i }),
+    )
+    await user.click(screen.getByLabelText(/engine/i))
+    await user.click(await screen.findByText('PolarRAG'))
+
+    const dialog = screen.getByRole('dialog', { name: /register instance/i })
+    expect(within(dialog).queryByLabelText(/cluster id/i)).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText(/topology/i)).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText(/region/i)).not.toBeInTheDocument()
+    expect(
+      within(dialog).getByLabelText(/scheme/i).closest('.ant-form-item'),
+    ).toHaveTextContent('HTTP')
+    expect(
+      within(dialog).getByLabelText(/verify tls certificates/i),
+    ).not.toBeChecked()
+    expect(within(dialog).getByLabelText(/^port$/i)).toHaveValue('9200')
+
+    await user.type(within(dialog).getByLabelText(/^name$/i), 'Primary RAG')
+    await user.type(
+      within(dialog).getByLabelText(/^host$/i),
+      'rag.example.test',
+    )
+    await user.type(
+      within(dialog).getByLabelText(/^username$/i),
+      'pas-service',
+    )
+    await user.type(
+      within(dialog).getByLabelText(/^password$/i),
+      'top-secret',
+    )
+    await user.click(
+      within(dialog).getByRole('button', { name: /save instance/i }),
+    )
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/api/polarrag/instances', {
+        name: 'Primary RAG',
+        scheme: 'http',
+        host: 'rag.example.test',
+        port: 9200,
+        username: 'pas-service',
+        password: 'top-secret',
+        tls_verify: false,
+        ca_bundle: null,
+      }),
+    )
+    expect(
+      await screen.findByRole('tab', {
+        name: /polarrag instances/i,
+        selected: true,
+      }),
+    ).toBeInTheDocument()
+  })
+
+  it('opens PolarRAG registration from the matching empty state', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/polarrag/instances') {
+        return Promise.resolve({ data: { items: [] } } as never)
+      }
+      return Promise.resolve({
+        data: { items: [instance], total: 1, offset: 0, limit: 20 },
+      } as never)
+    })
+    render(
+      <MemoryRouter initialEntries={['/instances?type=polarrag']}>
+        <Instances />
+      </MemoryRouter>,
+    )
+
+    expect(
+      await screen.findByText('No PolarRAG instances registered'),
+    ).toBeInTheDocument()
+    const registerButtons = screen.getAllByRole('button', {
+      name: /register instance/i,
+    })
+    await user.click(registerButtons[registerButtons.length - 1])
+
+    const dialog = screen.getByRole('dialog', { name: /register instance/i })
+    expect(within(dialog).queryByLabelText(/cluster id/i)).not.toBeInTheDocument()
+    expect(
+      within(dialog).getByLabelText(/scheme/i).closest('.ant-form-item'),
+    ).toHaveTextContent('HTTP')
+    expect(
+      within(dialog).getByLabelText(/verify tls certificates/i),
+    ).not.toBeChecked()
+    expect(within(dialog).getByLabelText(/^port$/i)).toHaveValue('9200')
+  })
+
   it('shows provisioning state without implying general health', async () => {
     render(
       <MemoryRouter>

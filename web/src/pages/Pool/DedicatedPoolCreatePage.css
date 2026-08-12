@@ -1,0 +1,84 @@
+.dedicated-create {
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.dedicated-create > .ant-steps {
+  margin-bottom: 28px;
+}
+
+.dedicated-create > .ant-alert {
+  margin-bottom: 18px;
+}
+
+.dedicated-create-step {
+  min-height: 430px;
+  padding: 24px 4px 12px;
+}
+
+.dedicated-create-step > h4.ant-typography {
+  margin-top: 0;
+}
+
+.dedicated-create-step .ant-alert {
+  margin-bottom: 20px;
+}
+
+.dedicated-readiness-list {
+  margin: 12px 0 20px;
+}
+
+.dedicated-readiness-list .ant-list-item {
+  padding-inline: 4px;
+}
+
+.readiness-ready,
+.readiness-blocked {
+  font-size: 20px;
+}
+
+.readiness-ready {
+  color: #237804;
+}
+
+.readiness-blocked {
+  color: #a8071a;
+}
+
+.dedicated-blocker-list {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.dedicated-help-copy {
+  max-width: 72ch;
+}
+
+.dedicated-create-step .ant-input-number {
+  width: 100%;
+}
+
+.permission-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: -4px 0 20px;
+  padding: 14px 16px;
+  background: var(--surface-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.dedicated-create-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-default);
+}
+
+@media (max-width: 767px) {
+  .dedicated-create-step {
+    min-height: 0;
+    padding-top: 20px;
+  }
+}

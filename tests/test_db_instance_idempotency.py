@@ -43,6 +43,7 @@ from server.models import (
     ProvisioningBackend,
     ProvisioningBackendHealth,
     ProvisioningCapacity,
+    ProvisioningMode,
     User,
 )
 from server.models.base import utc_now
@@ -74,14 +75,30 @@ def test_name_normalization_rejects_invalid_display_names(name):
 
 
 def test_request_fingerprint_has_stable_version_one_golden_values():
-    assert request_fingerprint("polardb_mysql", "  Orders  ") == (
+    assert request_fingerprint(
+        "polardb_mysql", "  Orders  ", version=1
+    ) == (
         "7a4eb1aaf94e7e85f48287e7c1d19c8ced99390da1b6307a05a43d1916600db4"
     )
-    assert request_fingerprint("polardb_mysql", None) == (
+    assert request_fingerprint("polardb_mysql", None, version=1) == (
         "bc55b3b4961681a71b8622e436a2a30f53c6b7aa801bbd5753c720171fc4210a"
     )
     with pytest.raises(ValueError):
-        request_fingerprint("polardb_mysql", None, version=2)
+        request_fingerprint("polardb_mysql", None, version=3)
+
+
+def test_request_fingerprint_version_two_includes_provisioning_mode():
+    multitenant = request_fingerprint(
+        "polardb_mysql",
+        "Orders",
+        ProvisioningMode.MULTITENANT,
+    )
+    dedicated = request_fingerprint(
+        "polardb_mysql",
+        "Orders",
+        ProvisioningMode.DEDICATED,
+    )
+    assert multitenant != dedicated
 
 
 async def _seed_backend(

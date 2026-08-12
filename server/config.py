@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -72,89 +72,132 @@ class AuthConfig(BaseModel):
 
 
 class AliyunConfig(BaseModel):
-    credential_mode: str = "direct_ak"
-    access_key_id: str = ""
-    access_key_secret: str = ""
-    role_arn: str = ""
-    role_session_name: str = "polardb-agentic"
-    sts_duration_seconds: int = 3600
+    """The one active Alibaba Cloud credential configuration for this process."""
+
+    credential_mode: Literal["direct_ak", "assume_role", "ecs_ram_role"] = (
+        "direct_ak"
+    )
+    direct_ak: "RuntimeDirectAKConfig | None" = None
+    assume_role: "RuntimeAssumeRoleConfig | None" = None
+    ecs_ram_role: "RuntimeECSRamRoleConfig | None" = None
     region_id: str = "cn-hangzhou"
     openapi_network: str = "public"
+    credential_digest: str = ""
+    config_revision: int = 0
 
-
-def _stringify_settings(values: dict[str, object]) -> dict[str, str]:
-    return {
-        key: str(value).lower() if isinstance(value, bool) else str(value)
-        for key, value in values.items()
-    }
-
-
-class AgenticDBConfig(BaseModel):
-    enabled: bool = True
-    auto_stop_minutes: int = 30
-    auto_delete_days: int = 90
-    notify_before_delete_days: int = 7
-    db_type: str = "MySQL"
-    db_version: str = "8.0"
-    db_minor_version: str = "8.0.2"
-    db_node_class: str = "polar.mysql.sl.small.c"
-    proxy_class: str = "polar.maxscale.g2.medium.c"
-    proxy_type: str = "GENERAL"
-    architecture: str = "X86"
-    loose_polar_log_bin: str = "OFF"
-    loose_x_engine: str = "OFF"
-    pay_type: str = "Postpaid"
-    serverless_type: str = "AgileServerless"
-    scale_min: int = 0
-    scale_max: int = 4
-    allow_shut_down: bool = True
-    scale_ro_num_min: int = 0
-    scale_ro_num_max: int = 1
-    storage_type: str = "essdpl1"
-    storage_space: int = 20
-
-    def spec_settings(self) -> dict[str, str]:
-        lifecycle = {
-            "enabled",
-            "auto_stop_minutes",
-            "auto_delete_days",
-            "notify_before_delete_days",
-        }
-        return _stringify_settings(
-            {
-                key: value
-                for key, value in self.model_dump().items()
-                if key not in lifecycle
+    @model_validator(mode="before")
+    @classmethod
+    def _project_legacy_flat_credentials(cls, values: Any) -> Any:
+        if not isinstance(values, dict):
+            return values
+        result = dict(values)
+        mode = result.get("credential_mode", "direct_ak")
+        if mode == "direct_ak" and "direct_ak" not in result:
+            key_id = result.get("access_key_id")
+            key_secret = result.get("access_key_secret")
+            if key_id or key_secret:
+                result["direct_ak"] = {
+                    "access_key_id": key_id or "",
+                    "access_key_secret": key_secret or "",
+                }
+        elif mode == "assume_role" and "assume_role" not in result:
+            key_id = result.get("access_key_id")
+            key_secret = result.get("access_key_secret")
+            if key_id or key_secret or result.get("role_arn"):
+                result["assume_role"] = {
+                    "source_access_key_id": key_id or "",
+                    "source_access_key_secret": key_secret or "",
+                    "role_arn": result.get("role_arn", ""),
+                    "role_session_name": result.get(
+                        "role_session_name", "polardb-agentic"
+                    ),
+                    "duration_seconds": result.get(
+                        "sts_duration_seconds", 3600
+                    ),
+                    "external_id": result.get("external_id"),
+                }
+        elif mode == "ecs_ram_role" and "ecs_ram_role" not in result:
+            result["ecs_ram_role"] = {
+                "role_name": result.get("ecs_role_name"),
             }
+        return result
+
+    def has_active_credentials(self) -> bool:
+        if self.credential_mode == "direct_ak":
+            return bool(
+                self.direct_ak
+                and self.direct_ak.access_key_id
+                and self.direct_ak.access_key_secret
+            )
+        if self.credential_mode == "assume_role":
+            return bool(
+                self.assume_role
+                and self.assume_role.source_access_key_id
+                and self.assume_role.source_access_key_secret
+                and self.assume_role.role_arn
+            )
+        return self.ecs_ram_role is not None
+
+    # Compatibility accessors for callers that still consume the v1 flat
+    # runtime facade. New runtime code must use the mode-scoped blocks above.
+    @property
+    def access_key_id(self) -> str:
+        if self.direct_ak is not None:
+            return self.direct_ak.access_key_id
+        if self.assume_role is not None:
+            return self.assume_role.source_access_key_id
+        return ""
+
+    @property
+    def access_key_secret(self) -> str:
+        if self.direct_ak is not None:
+            return self.direct_ak.access_key_secret
+        if self.assume_role is not None:
+            return self.assume_role.source_access_key_secret
+        return ""
+
+    @property
+    def role_arn(self) -> str:
+        return self.assume_role.role_arn if self.assume_role else ""
+
+    @property
+    def role_session_name(self) -> str:
+        return (
+            self.assume_role.role_session_name
+            if self.assume_role
+            else "polardb-agentic"
         )
 
+    @property
+    def sts_duration_seconds(self) -> int:
+        return self.assume_role.duration_seconds if self.assume_role else 3600
 
-class ResourcePoolRuntimeConfig(BaseModel):
-    target_size: int = 0
-    region_id: str = ""
-    vpc_id: str = ""
-    vswitch_id: str = ""
-    zone_id: str = ""
-    security_ip_list: str = "127.0.0.1"
-    endpoint_net_type: str = "Private"
-    provisioning_poll_timeout_seconds: int = 600
-    retry_after_seconds: int = 10
+    @property
+    def external_id(self) -> str | None:
+        return self.assume_role.external_id if self.assume_role else None
 
-    def network_settings(self) -> dict[str, str]:
-        keys = {
-            "region_id",
-            "vpc_id",
-            "vswitch_id",
-            "zone_id",
-            "security_ip_list",
-        }
-        return _stringify_settings(
-            {
-                key: value
-                for key, value in self.model_dump().items()
-                if key in keys
-            }
-        )
+    @property
+    def ecs_role_name(self) -> str | None:
+        return self.ecs_ram_role.role_name if self.ecs_ram_role else None
+
+
+class RuntimeDirectAKConfig(BaseModel):
+    access_key_id: str
+    access_key_secret: str
+
+
+class RuntimeAssumeRoleConfig(BaseModel):
+    source_access_key_id: str
+    source_access_key_secret: str
+    role_arn: str
+    role_session_name: str = "polardb-agentic"
+    duration_seconds: int = 3600
+    external_id: str | None = None
+
+
+class RuntimeECSRamRoleConfig(BaseModel):
+    role_name: str | None = None
+    metadata_policy: Literal["v2_only"] = "v2_only"
 
 
 class ConnectionPoolConfig(BaseModel):
@@ -167,6 +210,9 @@ class ConnectionPoolConfig(BaseModel):
 
 class TenantProvisioningConfig(BaseModel):
     enabled: bool = False
+    dedicated_pool_enabled: bool = False
+    dedicated_pool_simulation_enabled: bool = False
+    dedicated_pool_preparation_mode: Literal["full", "openapi_only"] = "full"
     # Deprecated lease-named compatibility fields. Remove after operators have
     # migrated to the resource-named environment settings below.
     max_active_leases: int = Field(default=100, ge=1)
@@ -176,6 +222,12 @@ class TenantProvisioningConfig(BaseModel):
     resource_max_cpu: int = Field(default=2, ge=1)
     ddl_concurrency: int = Field(default=4, ge=1)
     worker_poll_interval_seconds: int = Field(default=1, ge=1, le=5)
+    dedicated_worker_heartbeat_interval_seconds: int = Field(
+        default=10, ge=1
+    )
+    dedicated_worker_heartbeat_stale_after_seconds: int = Field(
+        default=30, ge=1
+    )
     worker_claim_ttl_seconds: int = Field(default=120, ge=10)
     worker_claim_renew_seconds: int = Field(default=30, ge=1)
     worker_max_retries: int = Field(default=5, ge=0)
@@ -185,9 +237,25 @@ class TenantProvisioningConfig(BaseModel):
     health_stale_after_seconds: int = Field(default=30, ge=2)
     backend_health_stale_after_seconds: int | None = Field(default=None, ge=2)
     describe_max_requests_per_second: int = Field(default=2, ge=1)
+    delete_cooldown_duration_hours: int = Field(default=24, ge=1)
 
     @model_validator(mode="after")
     def _validate_tenant_provisioning(self) -> "TenantProvisioningConfig":
+        heartbeat_stale_floor = max(
+            3 * self.dedicated_worker_heartbeat_interval_seconds,
+            30,
+        )
+        if self.dedicated_worker_heartbeat_stale_after_seconds < 30:
+            raise ValueError(
+                "worker heartbeat stale threshold must be at least 30 seconds"
+            )
+        if (
+            self.dedicated_worker_heartbeat_stale_after_seconds
+            < heartbeat_stale_floor
+        ):
+            raise ValueError(
+                "worker heartbeat stale threshold must be at least three heartbeat intervals"
+            )
         if self.worker_claim_renew_seconds >= self.worker_claim_ttl_seconds:
             raise ValueError("claim renew interval must be less than claim TTL")
         if self.health_check_interval_seconds >= self.health_stale_after_seconds:
@@ -224,20 +292,11 @@ class TenantProvisioningConfig(BaseModel):
 
 
 class PolarDBConfig(BaseModel):
-    agentic_db: AgenticDBConfig = Field(default_factory=AgenticDBConfig)
     connection_pool: ConnectionPoolConfig = Field(default_factory=ConnectionPoolConfig)
     tenant_provisioning: TenantProvisioningConfig = Field(
         default_factory=TenantProvisioningConfig
     )
-    resource_pool: ResourcePoolRuntimeConfig = Field(
-        default_factory=ResourcePoolRuntimeConfig
-    )
     endpoint_cache_ttl_seconds: int = 300
-
-    def provisioning_settings(self) -> dict[str, str]:
-        settings = self.agentic_db.spec_settings()
-        settings.update(self.resource_pool.network_settings())
-        return settings
 
 
 class RateLimitConfig(BaseModel):

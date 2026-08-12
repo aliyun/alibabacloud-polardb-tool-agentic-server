@@ -2,8 +2,10 @@
 
 **English** | [简体中文](../../zh-cn/database-instances/access-and-provisioning.md)
 
-For focused procedures, see [instance registration](registration.md) and
-[multitenant provisioning](multitenant-provisioning.md).
+For focused procedures, see [instance registration](registration.md),
+[multitenant provisioning](multitenant-provisioning.md),
+[Auto-provisioning pools](dedicated-hot-pools.md), and
+[Agent REST database provisioning](agent-rest-provisioning.md).
 
 This guide explains how an administrator registers PolarDB MySQL instances,
 manages credentials and provisioning backends in the web console, grants
@@ -12,11 +14,19 @@ MCP.
 
 ## Scope
 
-This release supports physical instances with engine `polardb_mysql`,
-topology `single_tenant` or `multitenant`, and allocation mode `registered`.
-Both ordinary and multitenant registered instances can be exposed through
-direct bindings. Only `polardb_mysql` + `multitenant` instances can be
-provisioning backends for `create_db_instance`.
+PAS supports physical instances with engine `polardb_mysql`, topology
+`single_tenant` or `multitenant`, and allocation mode `registered` or
+owned by an auto-provisioning pool. Ordinary and multitenant registered instances can be
+exposed through direct bindings. A `polardb_mysql` + `multitenant` instance can
+provide shared logical resources, while an auto-provisioning pool allocates one
+single-tenant member per Agent resource.
+
+There are three supply paths: registered multitenant logical provisioning,
+administrator-assigned registered single-tenant access, and PAS-purchased
+auto-provisioning pool members. Human Users use only assigned registered instances;
+they do not claim pool capacity or trigger physical purchases. If none is
+assigned, the request returns `NO_INSTANCE_ASSIGNED` and directs the User to
+an administrator.
 
 A production Agent can have direct bindings to multiple physical instances.
 It uses `list_db_instances` to discover the instances and capabilities it may
@@ -25,9 +35,11 @@ use, `describe_db_instance` to retrieve authorized connection details, and
 service connects to the selected backend with the registered or bound MySQL
 account.
 
-Provisioned logical databases are persistent until an explicit
-`delete_db_instance` call. This release does not create dedicated PolarDB
-clusters and does not automatically delete resources after a fixed lifetime.
+Provisioned databases are persistent until an explicit `delete_db_instance`
+call. Auto-provisioning pools can purchase PolarDB clusters in advance and
+pre-create the sandbox database/account. Delete uses a configurable cooldown;
+it is not an automatic lifetime and starts only after disconnection is
+verified.
 
 Before enabling multitenant provisioning, review the
 [official PolarDB for MySQL multitenant management documentation](https://help.aliyun.com/zh/polardb/polardb-for-mysql/user-guide/multi-tenant-management-instructions)
@@ -465,8 +477,9 @@ Delete an owned logical database:
 }
 ```
 
-The database instance Tools are exposed through MCP, not through a parallel
-public REST lifecycle API.
+The same lifecycle is also exposed to Agent Bearer Tokens through the scoped
+[Agent REST API](agent-rest-provisioning.md). MCP and REST are adapters over
+the same application service; they do not create parallel resource records.
 
 ### Common Tool errors
 
@@ -507,20 +520,43 @@ delete_db_instance(db_instance_id)
       DELETED
 ```
 
-Creation durably reserves capacity and returns `CREATING`; background workers
-perform tenant, resource configuration, account, database, grant, and
-connection verification. Only `READY` exposes provisioned connection
-credentials.
+Creation durably reserves capacity. Multitenant and cold Dedicated paths
+return `CREATING`; a fresh prewarmed Dedicated member can return `READY`
+immediately. Background workers perform the mode-specific resource,
+account, database, grant, and connection verification. Only `READY` exposes
+provisioned connection credentials.
 
-Deletion immediately stops credential disclosure. Cleanup locks the account,
-terminates active sessions, removes database objects and tenant resource
-configuration, verifies that no residue remains, retires the encrypted
-resource credential, and releases capacity. Capacity is released only after
-verification. `delete_db_instance` is idempotent for deletable states.
+For a cold Dedicated request, PAS creates an `ALLOCATED_PREPARING` member in
+the selected pool and pins it to the resource before calling PolarDB. The
+resulting physical cluster therefore remains visible to pool capacity,
+purchase-budget, delete, cooldown, restore, and cleanup controls throughout
+its lifecycle.
+
+Deletion immediately stops credential disclosure. Multitenant cleanup locks
+the account, terminates sessions, removes database objects and tenant resource
+configuration, verifies no residue remains, retires the encrypted credential,
+and releases capacity. Dedicated cleanup first verifies disconnection, enters
+`COOLING_DOWN`, and later destroys or sanitizes the member. An administrator
+may restore a still-reversible Dedicated resource with its old credentials.
+`delete_db_instance` is idempotent for deletable states.
 
 The resource row and its `client_token` remain after `DELETED` as permanent
 idempotency and audit history. Deletion is always explicit; no background
 age-based sweep changes a persistent resource to `DELETING`.
+
+## Dedicated route ownership
+
+Administrators assign Dedicated supply per Agent, not globally. The Agent
+detail page maintains one primary pool and ordered fallback pools. Reordering
+changes future placement only; each existing resource retains its original
+backend and pool for delete, cooldown, restore, and cleanup. A binding with a
+nonterminal resource can be paused but cannot be unlinked.
+
+Human administration uses the authenticated `/api/agents/*` and
+`/api/dedicated-pools/*` console APIs. An Agent uses its unchanged Agent Bearer
+Token with `/mcp` or `/mcp/rest/db-instances`; it cannot choose or reorder its
+own pools. See [Auto-provisioning pools](dedicated-hot-pools.md) for readiness,
+typed purchase-profile, cost, and route-selection details.
 
 ## Operations and recovery
 

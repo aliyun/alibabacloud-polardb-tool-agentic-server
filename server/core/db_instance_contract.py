@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from server.core.crypto import decrypt
 from server.models import (
@@ -28,6 +28,15 @@ class ResourceConnectionDetails:
     database: str
     username: str
     password: str
+
+
+@dataclass(frozen=True, slots=True)
+class DBInstanceConnectionView:
+    host: str
+    port: int
+    database: str
+    username: str
+    password: str = field(repr=False)
 
 
 def usable_resource_access_credential(

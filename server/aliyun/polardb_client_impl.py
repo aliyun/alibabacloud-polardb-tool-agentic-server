@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections.abc import Mapping
 
 from server.aliyun.credential_provider import CredentialProvider
+from server.aliyun.diagnostics import (
+    error_code_from_error,
+    error_detail_from_error,
+    request_id_from_error,
+)
 from server.aliyun.endpoints import resolve_openapi_endpoint
 from server.aliyun.polardb_client import OpenAPIError, PolarDBClient
+from server.logging import safe_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -19,19 +24,17 @@ class AliyunPolarDBClient(PolarDBClient):
     def __init__(self, credential_provider: CredentialProvider) -> None:
         self._credential_provider = credential_provider
         self._sdk: object | None = None
-        self._sdk_credential_hash: str | None = None
+        self._sdk_endpoint: str | None = None
+        self.last_request_id: str | None = None
 
     async def _get_sdk(self):
-        """Return the SDK client, rebuilding it when credentials change."""
-        cred = await self._credential_provider.get_credentials()
+        """Return the SDK client backed by the refreshing credentials client."""
         endpoint = resolve_openapi_endpoint(
             "polardb",
-            cred.region_id,
-            cred.openapi_network,
+            self._credential_provider.region_id,
+            self._credential_provider.openapi_network,
         )
-        key = f"{cred.access_key_id}:{cred.security_token}:{endpoint}"
-        h = hashlib.sha256(key.encode()).hexdigest()
-        if self._sdk is not None and h == self._sdk_credential_hash:
+        if self._sdk is not None and endpoint == self._sdk_endpoint:
             return self._sdk
 
         from alibabacloud_polardb20170801.client import Client  # type: ignore[import-untyped]
@@ -39,20 +42,40 @@ class AliyunPolarDBClient(PolarDBClient):
 
         self._sdk = Client(
             Config(
-                access_key_id=cred.access_key_id,
-                access_key_secret=cred.access_key_secret,
-                security_token=cred.security_token,
-                region_id=cred.region_id,
+                credential=self._credential_provider.credential_client,
+                region_id=self._credential_provider.region_id,
                 endpoint=endpoint,
             )
         )
-        self._sdk_credential_hash = h
+        self._sdk_endpoint = endpoint
         return self._sdk
 
-    def _wrap_error(self, e: Exception) -> OpenAPIError:
-        code = getattr(e, "code", None) or type(e).__name__
-        message = str(e)
-        return OpenAPIError(code, message)
+    def _wrap_error(
+        self, e: Exception, *, operation: str | None = None
+    ) -> OpenAPIError:
+        return OpenAPIError(
+            error_code_from_error(e) or type(e).__name__,
+            error_detail_from_error(e)
+            or "Alibaba Cloud OpenAPI request failed.",
+            request_id=request_id_from_error(e),
+            operation=operation,
+        )
+
+    @staticmethod
+    def _response_request_id(response: object) -> str | None:
+        body = getattr(response, "body", None)
+        request_id = safe_request_id(getattr(body, "request_id", None))
+        if request_id is not None:
+            return request_id
+        for attribute in ("request_id", "requestId"):
+            value = getattr(response, attribute, None)
+            request_id = safe_request_id(value)
+            if request_id is not None:
+                return request_id
+        headers = getattr(response, "headers", None)
+        if isinstance(headers, Mapping):
+            return safe_request_id(headers.get("x-acs-request-id"))
+        return None
 
     async def discover_clusters(self, region_id: str) -> list[dict]:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
@@ -61,6 +84,7 @@ class AliyunPolarDBClient(PolarDBClient):
         try:
             req = m.DescribeDBClustersRequest(region_id=region_id)
             resp = await sdk.describe_dbclusters_async(req)
+            self.last_request_id = self._response_request_id(resp)
             return [
                 {"cluster_id": c.dbcluster_id, "status": c.dbcluster_status}
                 for c in (resp.body.items.dbcluster or [])
@@ -68,7 +92,7 @@ class AliyunPolarDBClient(PolarDBClient):
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(e, operation="DescribeDBClusters") from e
 
     async def describe_endpoints(self, cluster_id: str) -> dict:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
@@ -98,10 +122,16 @@ class AliyunPolarDBClient(PolarDBClient):
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(
+                e, operation="DescribeDBClusterEndpoints"
+            ) from e
 
     async def create_account(
-        self, cluster_id: str, account_name: str, password: str
+        self,
+        cluster_id: str,
+        account_name: str,
+        password: str,
+        account_type: str = "Normal",
     ) -> dict:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
 
@@ -111,23 +141,49 @@ class AliyunPolarDBClient(PolarDBClient):
                 dbcluster_id=cluster_id,
                 account_name=account_name,
                 account_password=password,
-                account_type="Normal",
+                account_type=account_type,
             )
             await sdk.create_account_async(req)
             return {"account_name": account_name}
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(e, operation="CreateAccount") from e
+
+    async def describe_account(
+        self, cluster_id: str, account_name: str
+    ) -> dict | None:
+        from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
+
+        sdk = await self._get_sdk()
+        try:
+            req = m.DescribeAccountsRequest(
+                dbcluster_id=cluster_id,
+                account_name=account_name,
+            )
+            resp = await sdk.describe_accounts_async(req)
+            for account in resp.body.accounts or []:
+                if account.account_name == account_name:
+                    return {
+                        "account_name": account.account_name,
+                        "status": account.account_status,
+                        "account_type": account.account_type,
+                    }
+            return None
+        except OpenAPIError:
+            raise
+        except Exception as e:
+            raise self._wrap_error(e, operation="DescribeAccounts") from e
 
     async def create_agentic_db(self, settings: Mapping[str, str]) -> dict:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
 
         sdk = await self._get_sdk()
-        cred = await self._credential_provider.get_credentials()
         try:
             req = m.CreateDBClusterRequest(
-                region_id=settings.get("region_id", cred.region_id),
+                region_id=settings.get(
+                    "region_id", self._credential_provider.region_id
+                ),
                 dbtype=settings.get("db_type", "MySQL"),
                 dbversion=settings.get("db_version", "8.0"),
                 dbminor_version=settings.get("db_minor_version", "8.0.2"),
@@ -173,7 +229,7 @@ class AliyunPolarDBClient(PolarDBClient):
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(e, operation="CreateDBCluster") from e
 
     async def create_dedicated_cluster(
         self,
@@ -211,21 +267,24 @@ class AliyunPolarDBClient(PolarDBClient):
                 v_switch_id=params.get("vswitch_id") or None,
                 zone_id=params.get("zone_id"),
                 security_iplist=params.get("security_ip_list"),
+                client_token=params.get("client_token"),
                 agentic_db_type=agentic_db_type,
                 agentic_db_cluster_id=agentic_db_cluster_id,
                 agentic_db_cluster_description=agentic_db_cluster_description,
                 dbcluster_description=db_cluster_description,
             )
             resp = await sdk.create_dbcluster_async(req)
+            self.last_request_id = self._response_request_id(resp)
             return {
                 "cluster_id": resp.body.dbcluster_id,
                 "agentic_db_cluster_id": resp.body.agentic_db_cluster_id,
                 "agentic_db_cluster_description": resp.body.agentic_db_cluster_description,
+                "request_id": self.last_request_id,
             }
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(e, operation="CreateDBCluster") from e
 
     async def delete_cluster(self, cluster_id: str) -> None:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
@@ -237,7 +296,7 @@ class AliyunPolarDBClient(PolarDBClient):
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(e, operation="DeleteDBCluster") from e
 
     async def describe_cluster_attribute(self, cluster_id: str) -> dict:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
@@ -250,13 +309,15 @@ class AliyunPolarDBClient(PolarDBClient):
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(
+                e, operation="DescribeDBClusterAttribute"
+            ) from e
 
     async def create_database(
         self,
         cluster_id: str,
         db_name: str,
-        account_name: str,
+        account_name: str | None = None,
         character_set: str = "utf8",
         account_privilege: str = "ReadWrite",
     ) -> None:
@@ -264,15 +325,19 @@ class AliyunPolarDBClient(PolarDBClient):
 
         sdk = await self._get_sdk()
         try:
-            req = m.CreateDatabaseRequest(
+            request_values = dict(
                 dbcluster_id=cluster_id,
                 dbname=db_name,
                 character_set_name=character_set,
-                account_name=account_name,
-                account_privilege=account_privilege,
             )
+            if account_name:
+                request_values.update(
+                    account_name=account_name,
+                    account_privilege=account_privilege,
+                )
+            req = m.CreateDatabaseRequest(**request_values)
             await sdk.create_database_async(req)
         except OpenAPIError:
             raise
         except Exception as e:
-            raise self._wrap_error(e) from e
+            raise self._wrap_error(e, operation="CreateDatabase") from e

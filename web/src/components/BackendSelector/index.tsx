@@ -25,8 +25,12 @@ export default function BackendSelector({
   const { t } = useTranslation()
   const options = backends.map((backend) => {
     const active = backend.status === 'active'
+    const targetId = backend.instance_id ?? backend.dedicated_pool_id
     const name =
-      instanceNames[backend.instance_id] ?? t('components.backendSelector.instanceFallback', { id: backend.instance_id })
+      (targetId && instanceNames[targetId]) ??
+      t('components.backendSelector.instanceFallback', {
+        id: targetId ?? backend.id,
+      })
     const eligibility = active ? t('components.backendSelector.accepting') : t('components.backendSelector.notAccepting')
 
     return {

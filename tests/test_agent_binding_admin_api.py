@@ -13,6 +13,7 @@ from server.models import (
     CredentialPurpose,
     DBInstanceResource,
     DBInstanceStatus,
+    DedicatedPool,
     Instance,
     InstanceCredential,
     InstanceEngine,
@@ -21,6 +22,9 @@ from server.models import (
     ProvisioningBackend,
     ProvisioningBackendHealth,
     ProvisioningBackendStatus,
+    ProvisioningBackendType,
+    PermissionTemplate,
+    PermissionTemplateRevision,
 )
 from server.models.base import utc_now
 
@@ -96,6 +100,165 @@ async def _context(setup):
         )
         await session.commit()
         return agent, direct_instance, direct_credential, backend
+
+
+async def _dedicated_backend(session, suffix: str, priority: int):
+    template = PermissionTemplate(name=f"route-template-{suffix}")
+    revision = PermissionTemplateRevision(
+        template=template,
+        revision=1,
+        privileges_json='["SELECT"]',
+    )
+    pool = DedicatedPool(
+        name=f"route-pool-{suffix}",
+        target_size=1,
+        max_total_members=3,
+        max_member_purchases_per_hour=2,
+        max_create_requests_per_agent_per_hour=10,
+        max_delete_requests_per_agent_per_hour=10,
+        purchase_config_json="{}",
+        region_id="cn-hangzhou",
+        zone_id="cn-hangzhou-k",
+        vpc_id="vpc-route",
+        vswitch_id="vsw-route",
+        permission_template_revision=revision,
+    )
+    backend = ProvisioningBackend(
+        backend_type=ProvisioningBackendType.DEDICATED_POOL,
+        dedicated_pool=pool,
+        priority=priority,
+        max_active_resources=10,
+    )
+    session.add(backend)
+    await session.flush()
+    session.add(
+        ProvisioningBackendHealth(
+            backend=backend,
+            healthy=True,
+            checked_at=utc_now(),
+        )
+    )
+    await session.flush()
+    return backend
+
+
+async def test_admin_reorders_complete_dedicated_route_list(client, setup):
+    http, admin_headers, _ = client
+    factory, _admin, _member = setup
+    agent, _, _, _ = await _context(setup)
+    async with factory() as session:
+        primary = await _dedicated_backend(session, "primary", priority=1)
+        fallback = await _dedicated_backend(session, "fallback", priority=100)
+        await session.commit()
+        primary_id = primary.id
+        fallback_id = fallback.id
+
+    first = await http.post(
+        f"/api/agents/{agent.id}/provisioning-bindings",
+        json={"backend_id": primary_id, "enabled": True},
+        headers=admin_headers,
+    )
+    second = await http.post(
+        f"/api/agents/{agent.id}/provisioning-bindings",
+        json={"backend_id": fallback_id, "enabled": True},
+        headers=admin_headers,
+    )
+    assert first.status_code == second.status_code == 201
+    assert first.json()["routing_order"] == 0
+    assert second.json()["routing_order"] == 1
+
+    reordered = await http.put(
+        f"/api/agents/{agent.id}/provisioning-bindings/dedicated-order",
+        json={"binding_ids": [second.json()["id"], first.json()["id"]]},
+        headers=admin_headers,
+    )
+
+    assert reordered.status_code == 200
+    assert [item["id"] for item in reordered.json()] == [
+        second.json()["id"],
+        first.json()["id"],
+    ]
+    assert [item["routing_order"] for item in reordered.json()] == [0, 1]
+
+    incomplete = await http.put(
+        f"/api/agents/{agent.id}/provisioning-bindings/dedicated-order",
+        json={"binding_ids": [first.json()["id"]]},
+        headers=admin_headers,
+    )
+    assert incomplete.status_code == 422
+    duplicate = await http.put(
+        f"/api/agents/{agent.id}/provisioning-bindings/dedicated-order",
+        json={
+            "binding_ids": [second.json()["id"], second.json()["id"]]
+        },
+        headers=admin_headers,
+    )
+    assert duplicate.status_code == 422
+    listed = await http.get(
+        f"/api/agents/{agent.id}/provisioning-bindings",
+        headers=admin_headers,
+    )
+    dedicated = [
+        item for item in listed.json()
+        if item["backend_type"] == "dedicated_pool"
+    ]
+    assert [item["id"] for item in dedicated] == [
+        second.json()["id"],
+        first.json()["id"],
+    ]
+
+    disabled = await http.put(
+        f"/api/agents/{agent.id}/provisioning-bindings/{second.json()['id']}",
+        json={"enabled": False},
+        headers=admin_headers,
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["routing_order"] is None
+    listed = await http.get(
+        f"/api/agents/{agent.id}/provisioning-bindings",
+        headers=admin_headers,
+    )
+    remaining = next(
+        item for item in listed.json() if item["id"] == first.json()["id"]
+    )
+    assert remaining["routing_order"] == 0
+
+    reenabled = await http.put(
+        f"/api/agents/{agent.id}/provisioning-bindings/{second.json()['id']}",
+        json={"enabled": True},
+        headers=admin_headers,
+    )
+    assert reenabled.status_code == 200
+    assert reenabled.json()["routing_order"] == 1
+
+
+async def test_instance_access_list_ignores_dedicated_pool_routes(
+    client, setup
+):
+    http, admin_headers, _ = client
+    factory, _admin, _member = setup
+    agent, _, _, _ = await _context(setup)
+    async with factory() as session:
+        backend = await _dedicated_backend(
+            session, "instance-access", priority=1
+        )
+        await session.commit()
+        backend_id = backend.id
+
+    created = await http.post(
+        f"/api/agents/{agent.id}/provisioning-bindings",
+        json={"backend_id": backend_id, "enabled": True},
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["backend_type"] == "dedicated_pool"
+
+    instance_access = await http.get(
+        f"/api/agents/{agent.id}/instance-bindings",
+        headers=admin_headers,
+    )
+    assert instance_access.status_code == 200
+    assert instance_access.json() == []
 
 
 async def test_instance_access_allows_provisioning_only_without_credential(

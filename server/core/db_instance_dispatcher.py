@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal
 
 from sqlalchemy import or_, select
@@ -22,6 +22,7 @@ from server.models import (
     CredentialStatus,
     DBInstanceResource,
     DBInstanceStatus,
+    DeleteLifecycleStep,
     Instance,
     InstanceCredential,
     LeaseCleanupStep,
@@ -87,6 +88,12 @@ _NEXT_CLEANUP_STEP = {
     LeaseCleanupStep.DATABASE_DROPPED: LeaseCleanupStep.TENANT_DROPPED,
     LeaseCleanupStep.TENANT_DROPPED: LeaseCleanupStep.RESOURCE_CONFIG_DROPPED,
     LeaseCleanupStep.RESOURCE_CONFIG_DROPPED: LeaseCleanupStep.RESIDUE_VERIFIED,
+}
+
+_NEXT_DELETE_STEP = {
+    DeleteLifecycleStep.PENDING: DeleteLifecycleStep.ACCOUNT_LOCKED,
+    DeleteLifecycleStep.ACCOUNT_LOCKED: DeleteLifecycleStep.SESSIONS_TERMINATED,
+    DeleteLifecycleStep.SESSIONS_TERMINATED: DeleteLifecycleStep.DISCONNECTED,
 }
 
 
@@ -161,6 +168,49 @@ class DBInstanceDispatcher:
             if loaded is None:
                 return
             resource, backend, instance = loaded
+            if resource.status == DBInstanceStatus.RESTORING:
+                try:
+                    if backend is None or instance is None:
+                        raise RuntimeError("Provisioning backend is unavailable")
+                    adapter = self._registry.get(instance.engine, instance.topology)
+                    await adapter.restore(resource)
+                except Exception as error:
+                    await self._record_restore_failure(resource_id, error)
+                else:
+                    await self._finish_restore(resource_id)
+                return
+            if resource.status == DBInstanceStatus.COOLING_DOWN:
+                if not await self._begin_cleanup(resource_id):
+                    return
+                continue
+            if (
+                resource.status == DBInstanceStatus.DELETING
+                and resource.delete_step
+                not in {
+                    DeleteLifecycleStep.LOGICAL_CLEANUP,
+                    DeleteLifecycleStep.PHYSICAL_DESTROY,
+                    DeleteLifecycleStep.SANITIZE_DISPATCH,
+                    DeleteLifecycleStep.COMPLETE,
+                }
+            ):
+                expected_delete_step = resource.delete_step
+                try:
+                    if backend is None or instance is None:
+                        raise RuntimeError("Provisioning backend is unavailable")
+                    adapter = self._registry.get(instance.engine, instance.topology)
+                    await adapter.disconnect(resource)
+                    if not await self._persist_disconnect_result(
+                        resource_id,
+                        expected_step=expected_delete_step,
+                        new_step=resource.delete_step,
+                    ):
+                        return
+                except Exception as error:
+                    await self._record_disconnect_failure(
+                        resource_id, error, expected_delete_step
+                    )
+                    return
+                continue
             cleanup = self._needs_cleanup(resource)
             if not cleanup and resource.status != DBInstanceStatus.CREATING:
                 await self._release_claim(resource_id)
@@ -223,10 +273,167 @@ class DBInstanceDispatcher:
 
     @staticmethod
     def _needs_cleanup(resource: DBInstanceResource) -> bool:
-        return resource.status == DBInstanceStatus.DELETING or (
+        return (
+            resource.status == DBInstanceStatus.DELETING
+            and resource.delete_step == DeleteLifecycleStep.LOGICAL_CLEANUP
+        ) or (
             resource.status == DBInstanceStatus.FAILED
             and resource.cleanup_required
         )
+
+    async def _persist_disconnect_result(
+        self,
+        resource_id: str,
+        *,
+        expected_step: DeleteLifecycleStep,
+        new_step: DeleteLifecycleStep,
+    ) -> bool:
+        if new_step != _NEXT_DELETE_STEP.get(expected_step):
+            raise RuntimeError("Adapter returned an invalid disconnect step")
+        async with self._session_factory() as session:
+            async with claim_serialization(session):
+                resource = await self._locked_resource(session, resource_id)
+                if (
+                    resource is None
+                    or not self._owns_claim(resource)
+                    or resource.status != DBInstanceStatus.DELETING
+                    or resource.delete_step != expected_step
+                ):
+                    await session.rollback()
+                    return False
+                resource.delete_step = new_step
+                resource.retry_count = 0
+                resource.next_retry_at = None
+                resource.failure_reason = None
+                if new_step == DeleteLifecycleStep.DISCONNECTED:
+                    disconnected_at = self._clock()
+                    duration = (
+                        resource.effective_delete_cooldown_duration_hours
+                    )
+                    if duration is None:
+                        raise RuntimeError("Delete cooldown is unavailable")
+                    resource.disconnected_at = disconnected_at
+                    resource.cooldown_until = disconnected_at + timedelta(
+                        hours=duration
+                    )
+                    resource.delete_step = DeleteLifecycleStep.COOLING_DOWN
+                    resource.status = DBInstanceStatus.COOLING_DOWN
+                    self._clear_claim(resource)
+                    await session.commit()
+                    return False
+                await session.commit()
+                return True
+
+    async def _begin_cleanup(self, resource_id: str) -> bool:
+        async with self._session_factory() as session:
+            async with claim_serialization(session):
+                resource = await self._locked_resource(session, resource_id)
+                if (
+                    resource is None
+                    or not self._owns_claim(resource)
+                    or resource.status != DBInstanceStatus.COOLING_DOWN
+                    or resource.delete_step != DeleteLifecycleStep.COOLING_DOWN
+                    or resource.disconnected_at is None
+                    or resource.cooldown_until is None
+                ):
+                    await session.rollback()
+                    return False
+                cooldown_until = resource.cooldown_until
+                if cooldown_until.tzinfo is None:
+                    cooldown_until = cooldown_until.replace(tzinfo=timezone.utc)
+                if cooldown_until > self._clock():
+                    self._clear_claim(resource)
+                    await session.commit()
+                    return False
+                resource.status = DBInstanceStatus.DELETING
+                resource.delete_step = DeleteLifecycleStep.LOGICAL_CLEANUP
+                resource.cleanup_required = True
+                await session.commit()
+                return True
+
+    async def _finish_restore(self, resource_id: str) -> None:
+        async with self._session_factory() as session:
+            async with claim_serialization(session):
+                resource = await self._locked_resource(session, resource_id)
+                if (
+                    resource is None
+                    or not self._owns_claim(resource)
+                    or resource.status != DBInstanceStatus.RESTORING
+                ):
+                    await session.rollback()
+                    return
+                for credential in resource.credentials:
+                    if credential.purpose == CredentialPurpose.RESOURCE_ACCESS:
+                        credential.status = CredentialStatus.ACTIVE
+                resource.status = DBInstanceStatus.READY
+                resource.cleanup_required = False
+                resource.delete_step = DeleteLifecycleStep.PENDING
+                resource.delete_requested_at = None
+                resource.disconnected_at = None
+                resource.cooldown_until = None
+                resource.restore_source_status = None
+                resource.restore_failure_reason = None
+                resource.failure_reason = None
+                resource.retry_count = 0
+                resource.next_retry_at = None
+                self._clear_claim(resource)
+                await session.commit()
+
+    async def _record_disconnect_failure(
+        self,
+        resource_id: str,
+        error: Exception,
+        expected_step: DeleteLifecycleStep,
+    ) -> None:
+        async with self._session_factory() as session:
+            async with claim_serialization(session):
+                resource = await self._locked_resource(session, resource_id)
+                if (
+                    resource is None
+                    or not self._owns_claim(resource)
+                    or resource.status != DBInstanceStatus.DELETING
+                    or resource.delete_step != expected_step
+                ):
+                    await session.rollback()
+                    return
+                resource.retry_count += 1
+                resource.failure_reason = (
+                    f"Disconnect step failed with {type(error).__name__}"
+                )
+                if resource.retry_count > self._config.worker_max_retries:
+                    resource.status = DBInstanceStatus.DELETE_FAILED
+                    resource.next_retry_at = None
+                else:
+                    resource.next_retry_at = self._clock() + self._worker.backoff(
+                        resource.retry_count
+                    )
+                self._clear_claim(resource)
+                await session.commit()
+
+    async def _record_restore_failure(
+        self, resource_id: str, error: Exception
+    ) -> None:
+        async with self._session_factory() as session:
+            async with claim_serialization(session):
+                resource = await self._locked_resource(session, resource_id)
+                if (
+                    resource is None
+                    or not self._owns_claim(resource)
+                    or resource.status != DBInstanceStatus.RESTORING
+                ):
+                    await session.rollback()
+                    return
+                source = resource.restore_source_status
+                resource.restore_failure_reason = (
+                    f"Restore verification failed with {type(error).__name__}"
+                )
+                resource.status = (
+                    DBInstanceStatus.COOLING_DOWN
+                    if source == DBInstanceStatus.COOLING_DOWN
+                    else DBInstanceStatus.DELETE_FAILED
+                )
+                self._clear_claim(resource)
+                await session.commit()
 
     async def _locked_resource(
         self,
@@ -482,6 +689,7 @@ class DBInstanceDispatcher:
         resource.failure_reason = None
         if resource.status == DBInstanceStatus.DELETING:
             resource.status = DBInstanceStatus.DELETED
+            resource.delete_step = DeleteLifecycleStep.COMPLETE
         self._clear_claim(resource)
 
     async def _release_claim(self, resource_id: str) -> None:

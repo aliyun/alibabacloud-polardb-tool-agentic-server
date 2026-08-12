@@ -158,6 +158,13 @@ _FALLBACK_DIRS = ("/app/log", "/tmp/polardb-agentic-log")
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$", re.ASCII)
 
 
+def safe_request_id(value: str | None) -> str | None:
+    """Return a request ID only when it matches the public ASCII policy."""
+    if isinstance(value, str) and _REQUEST_ID_RE.fullmatch(value):
+        return value
+    return None
+
+
 def setup_logging(
     level: str = "INFO", logging_config: LoggingConfig | None = None
 ) -> None:
@@ -243,6 +250,6 @@ def generate_request_id() -> str:
 
 def normalize_request_id(value: str | None) -> str:
     """Return a safe request ID, replacing untrusted values rather than truncating."""
-    if isinstance(value, str) and _REQUEST_ID_RE.fullmatch(value):
+    if safe_request_id(value) is not None:
         return value
     return generate_request_id()

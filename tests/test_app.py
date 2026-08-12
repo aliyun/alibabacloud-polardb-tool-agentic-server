@@ -141,7 +141,7 @@ class TestRequestID:
 
 
 async def test_provisioning_lifespan_starts_global_loops_and_closes_pool(monkeypatch):
-    cancelled = {"dispatcher": False, "health": False}
+    cancelled = {"dispatcher": False, "health": False, "dedicated": False}
 
     async def run_until_cancelled(name, _stop):
         try:
@@ -158,19 +158,28 @@ async def test_provisioning_lifespan_starts_global_loops_and_closes_pool(monkeyp
             run_once=AsyncMock(return_value=True),
             run_forever=lambda stop: run_until_cancelled("health", stop),
         ),
+        dedicated=SimpleNamespace(
+            run_forever=lambda stop: run_until_cancelled("dedicated", stop)
+        ),
         pool_manager=SimpleNamespace(close_all=AsyncMock()),
     )
     build = AsyncMock(return_value=runtime)
     monkeypatch.setattr("server.app._build_provisioning_runtime", build)
     app = SimpleNamespace(state=SimpleNamespace(background_tasks=set()))
-    config = TenantProvisioningConfig()
+    config = TenantProvisioningConfig(dedicated_pool_enabled=True)
 
     async with provisioning_runtime_lifespan(app, AsyncMock(), config):
         await asyncio.sleep(0)
         runtime.health.run_once.assert_awaited_once()
-        assert len(app.state.background_tasks) == 2
+        # Dispatcher, health worker, runtime supervisor, and its Dedicated
+        # child task are all tracked for coordinated shutdown.
+        assert len(app.state.background_tasks) == 4
 
-    assert cancelled == {"dispatcher": True, "health": True}
+    assert cancelled == {
+        "dispatcher": True,
+        "health": True,
+        "dedicated": True,
+    }
     runtime.pool_manager.close_all.assert_awaited_once()
     assert all(task.done() for task in app.state.background_tasks)
 
@@ -184,6 +193,7 @@ async def test_provisioning_lifespan_starts_without_unique_instance_gate(monkeyp
             run_once=AsyncMock(return_value=0),
             run_forever=AsyncMock(),
         ),
+        dedicated=SimpleNamespace(run_forever=AsyncMock()),
         pool_manager=SimpleNamespace(close_all=AsyncMock()),
     )
     build = AsyncMock(return_value=runtime)
@@ -244,3 +254,33 @@ class TestDiscoverStaticDir:
             str(tmp_path / "pkg" / "server" / "app.py"),
         )
         assert _discover_static_dir() is None
+
+
+async def test_spa_fallback_uses_current_index_after_frontend_swap(
+    tmp_path, monkeypatch
+):
+    static_dir = tmp_path / "dist"
+    (static_dir / "assets").mkdir(parents=True)
+    index = static_dir / "index.html"
+    index.write_text("<html>old entry</html>")
+    monkeypatch.setattr(
+        "server.app._discover_static_dir", lambda: static_dir
+    )
+    app = create_app()
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(
+        transport=transport, base_url="http://test"
+    ) as http:
+        first = await http.get(
+            "/instances?type=polarrag",
+            headers={"accept": "text/html"},
+        )
+        index.write_text("<html>new entry</html>")
+        second = await http.get(
+            "/instances?type=polarrag",
+            headers={"accept": "text/html"},
+        )
+
+    assert first.text == "<html>old entry</html>"
+    assert second.text == "<html>new entry</html>"

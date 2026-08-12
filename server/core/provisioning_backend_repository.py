@@ -9,14 +9,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.config import get_config
 from server.models import (
     AgentProvisioningBinding,
+    CredentialCapability,
+    CredentialPurpose,
+    CredentialStatus,
+    DedicatedPool,
+    DedicatedPoolStatus,
     Instance,
+    InstanceCredential,
     InstanceEngine,
     InstanceStatus,
     InstanceTopology,
     ProvisioningBackend,
     ProvisioningBackendHealth,
     ProvisioningBackendStatus,
+    ProvisioningBackendType,
     ProvisioningCapacity,
+    ProvisioningMode,
 )
 from server.models.base import utc_now
 
@@ -27,6 +35,7 @@ class BackendCandidate:
     priority: int
     active_count: int
     max_active_resources: int
+    routing_order: int | None
 
 
 def backend_health_cutoff() -> datetime:
@@ -59,6 +68,8 @@ async def list_candidates(
     agent_id: str,
     engine: InstanceEngine,
     client_token: str,
+    *,
+    mode: ProvisioningMode,
 ) -> list[BackendCandidate]:
     healthy_since = backend_health_cutoff()
     statement = (
@@ -67,12 +78,12 @@ async def list_candidates(
             ProvisioningBackend.priority,
             func.coalesce(ProvisioningCapacity.active_count, 0),
             ProvisioningBackend.max_active_resources,
+            AgentProvisioningBinding.routing_order,
         )
         .join(
             AgentProvisioningBinding,
             AgentProvisioningBinding.backend_id == ProvisioningBackend.id,
         )
-        .join(Instance, Instance.id == ProvisioningBackend.instance_id)
         .join(
             ProvisioningBackendHealth,
             ProvisioningBackendHealth.backend_id == ProvisioningBackend.id,
@@ -88,13 +99,44 @@ async def list_candidates(
             AgentProvisioningBinding.agent_id == agent_id,
             AgentProvisioningBinding.enabled.is_(True),
             ProvisioningBackend.status == ProvisioningBackendStatus.ACTIVE,
-            Instance.engine == engine,
-            Instance.topology == InstanceTopology.MULTITENANT,
-            Instance.status == InstanceStatus.ACTIVE,
             ProvisioningBackendHealth.healthy.is_(True),
             ProvisioningBackendHealth.checked_at >= healthy_since,
         )
     )
+    if mode == ProvisioningMode.MULTITENANT:
+        statement = statement.join(
+            Instance, Instance.id == ProvisioningBackend.instance_id
+        ).join(
+            InstanceCredential,
+            InstanceCredential.id
+            == ProvisioningBackend.admin_credential_id,
+        ).where(
+            ProvisioningBackend.backend_type
+            == ProvisioningBackendType.MULTITENANT,
+            Instance.engine == engine,
+            Instance.topology == InstanceTopology.MULTITENANT,
+            Instance.status == InstanceStatus.ACTIVE,
+            InstanceCredential.instance_id == Instance.id,
+            InstanceCredential.resource_id.is_(None),
+            InstanceCredential.purpose
+            == CredentialPurpose.PROVISIONING_ADMIN,
+            InstanceCredential.capability == CredentialCapability.ADMIN,
+            InstanceCredential.status == CredentialStatus.ACTIVE,
+            InstanceCredential.username_ciphertext.is_not(None),
+            InstanceCredential.password_ciphertext.is_not(None),
+        )
+    else:
+        if engine != InstanceEngine.POLARDB_MYSQL:
+            return []
+        statement = statement.join(
+            DedicatedPool,
+            DedicatedPool.id == ProvisioningBackend.dedicated_pool_id,
+        ).where(
+            ProvisioningBackend.backend_type
+            == ProvisioningBackendType.DEDICATED_POOL,
+            DedicatedPool.status == DedicatedPoolStatus.ACTIVE,
+            AgentProvisioningBinding.routing_order.is_not(None),
+        )
     rows = (await session.execute(statement)).all()
     candidates = [
         BackendCandidate(
@@ -102,9 +144,18 @@ async def list_candidates(
             priority=priority,
             active_count=active_count,
             max_active_resources=max_active_resources,
+            routing_order=routing_order,
         )
-        for backend_id, priority, active_count, max_active_resources in rows
+        for (
+            backend_id,
+            priority,
+            active_count,
+            max_active_resources,
+            routing_order,
+        ) in rows
     ]
+    if mode == ProvisioningMode.DEDICATED:
+        return sorted(candidates, key=lambda item: item.routing_order)
     from server.core.backend_selector import order_candidates
 
     return order_candidates(

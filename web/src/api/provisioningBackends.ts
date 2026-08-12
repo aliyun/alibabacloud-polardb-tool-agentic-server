@@ -1,11 +1,14 @@
 import api from './client'
 
 export type ProvisioningBackendStatus = 'active' | 'draining' | 'disabled'
+export type ProvisioningBackendType = 'multitenant' | 'dedicated_pool'
 
 export interface ProvisioningBackend {
   id: string
-  instance_id: string
-  admin_credential_id: string
+  backend_type: ProvisioningBackendType
+  instance_id: string | null
+  dedicated_pool_id: string | null
+  admin_credential_id: string | null
   status: ProvisioningBackendStatus
   priority: number
   max_active_resources: number
@@ -20,15 +23,33 @@ export interface ProvisioningBackend {
   updated_at: string | null
 }
 
-export interface CreateProvisioningBackendInput {
-  instance_id: string
-  admin_credential_id: string
+interface CreateProvisioningBackendCommonInput {
   priority: number
   max_active_resources: number
   resource_min_cpu: number
   resource_max_cpu: number
   ddl_concurrency: number
 }
+
+interface CreateMultitenantBackendInput
+  extends CreateProvisioningBackendCommonInput {
+  backend_type?: 'multitenant'
+  instance_id: string
+  admin_credential_id: string
+  dedicated_pool_id?: never
+}
+
+interface CreateDedicatedBackendInput
+  extends CreateProvisioningBackendCommonInput {
+  backend_type: 'dedicated_pool'
+  dedicated_pool_id: string
+  instance_id?: never
+  admin_credential_id?: never
+}
+
+export type CreateProvisioningBackendInput =
+  | CreateMultitenantBackendInput
+  | CreateDedicatedBackendInput
 
 export interface UpdateProvisioningBackendInput {
   admin_credential_id?: string

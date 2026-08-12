@@ -23,12 +23,15 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import {
+  deleteAgentPolarRAGBinding,
   getAgent,
+  listAgentPolarRAGBindings,
   regenerateAgentToken,
   revealAgentToken,
   revokeAgentToken,
   updateAgent,
   type Agent,
+  type AgentPolarRAGBinding,
   type AgentToken,
   type AgentTokenStatus,
   type AgentTokenSummary,
@@ -59,6 +62,9 @@ import {
 import BindingEditor from '../../components/BindingEditor'
 import PageContainer from '../../components/PageContainer'
 import MCPConnectionPanel from './MCPConnectionPanel'
+import RESTAPIConnectionPanel from './RESTAPIConnectionPanel'
+import DedicatedPoolRoutes from './DedicatedPoolRoutes'
+import PolarRAGAccessPanel from './PolarRAGAccessPanel'
 
 const { Text, Title } = Typography
 
@@ -89,11 +95,11 @@ function editableAccessCapabilities(
   )
 }
 
-function buildMCPServerURL(baseUrl: unknown): string {
+function buildServerBaseURL(baseUrl: unknown): string {
   const configuredBaseUrl =
     typeof baseUrl === 'string' ? baseUrl.trim() : ''
   const effectiveBaseUrl = configuredBaseUrl || window.location.origin
-  return `${effectiveBaseUrl.replace(/\/+$/, '')}/mcp`
+  return effectiveBaseUrl.replace(/\/+$/, '')
 }
 
 type Confirmation =
@@ -101,7 +107,22 @@ type Confirmation =
   | { kind: 'regenerate' }
   | { kind: 'revoke' }
   | { kind: 'delete-access'; access: AgentInstanceAccess }
+  | { kind: 'delete-polarrag-access'; binding: AgentPolarRAGBinding }
   | null
+
+type InstanceAccessRow =
+  | {
+      key: string
+      kind: 'database'
+      name: string
+      access: AgentInstanceAccess
+    }
+  | {
+      key: string
+      kind: 'polarrag'
+      name: string
+      binding: AgentPolarRAGBinding
+    }
 
 interface RouteScope {
   agentId: string
@@ -164,18 +185,19 @@ export default function AgentDetail() {
   const [instanceAccess, setInstanceAccess] = useState<
     AgentInstanceAccess[]
   >([])
+  const [polarRAGBindings, setPolarRAGBindings] = useState<
+    AgentPolarRAGBinding[]
+  >([])
   const [resources, setResources] = useState<AgentResource[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<Confirmation>(null)
-  const [token, setToken] = useState<string | null>(null)
-  const [tokenLoading, setTokenLoading] = useState(false)
-  const [tokenError, setTokenError] = useState<string | null>(null)
-  const [mcpUrl, setMcpUrl] = useState(() =>
-    buildMCPServerURL(window.location.origin),
+  const [serverBaseUrl, setServerBaseUrl] = useState(() =>
+    buildServerBaseURL(window.location.origin),
   )
+  const mcpUrl = `${serverBaseUrl}/mcp`
   const [accessDraft, setAccessDraft] =
     useState<AgentInstanceAccessInput | null>(null)
   const [accessDraftInstanceId, setAccessDraftInstanceId] =
@@ -203,33 +225,6 @@ export default function AgentDetail() {
     )
   }, [])
 
-  const loadToken = useCallback(
-    async (scope: RouteScope) => {
-      setTokenLoading(true)
-      setTokenError(null)
-      try {
-        const response = await revealAgentToken(scope.agentId, {
-          confirmed: true,
-        })
-        if (!isCurrentScope(scope)) return
-        if (!response.data.token) throw new Error(t('agentDetail.tokenInactive'))
-        setToken(response.data.token)
-      } catch (requestError) {
-        if (!isCurrentScope(scope)) return
-        setToken(null)
-        setTokenError(
-          getAPIErrorMessage(
-            requestError,
-            t('agentDetail.tokenLoadFailed'),
-          ),
-        )
-      } finally {
-        if (isCurrentScope(scope)) setTokenLoading(false)
-      }
-    },
-    [isCurrentScope, t],
-  )
-
   const load = useCallback(async (scope: RouteScope) => {
     try {
       const [
@@ -237,12 +232,14 @@ export default function AgentDetail() {
         instancesResponse,
         backendsResponse,
         accessResponse,
+        polarRAGBindingsResponse,
         resourcesResponse,
       ] = await Promise.all([
         getAgent(scope.agentId),
         listInstances(),
         listProvisioningBackends(),
         listAgentInstanceAccess(scope.agentId),
+        listAgentPolarRAGBindings(scope.agentId),
         listAgentResources(scope.agentId),
       ])
       if (!isCurrentScope(scope)) return
@@ -251,23 +248,17 @@ export default function AgentDetail() {
       setInstances(instancesResponse.items)
       setBackends(backendsResponse.data)
       setInstanceAccess(accessResponse.data)
+      setPolarRAGBindings(polarRAGBindingsResponse.data)
       setResources(
         resourcesResponse.data.filter((resource) => resource.status !== 'deleted'),
       )
-      if (loadedAgent.token_summary?.status === 'active') {
-        void loadToken(scope)
-      } else {
-        setToken(null)
-        setTokenLoading(false)
-        setTokenError(null)
-      }
     } catch (requestError) {
       if (!isCurrentScope(scope)) return
       setError(getAPIErrorMessage(requestError, t('agentDetail.loadFailed')))
     } finally {
       if (isCurrentScope(scope)) setLoading(false)
     }
-  }, [isCurrentScope, loadToken, t])
+  }, [isCurrentScope, t])
 
   const loadMCPServerURL = useCallback(
     async (scope: RouteScope) => {
@@ -283,7 +274,7 @@ export default function AgentDetail() {
         // The Agent page remains usable when runtime configuration is unavailable.
       }
       if (isCurrentScope(scope)) {
-        setMcpUrl(buildMCPServerURL(externalBaseUrl))
+        setServerBaseUrl(buildServerBaseURL(externalBaseUrl))
       }
     },
     [isCurrentScope],
@@ -301,16 +292,14 @@ export default function AgentDetail() {
     setCredentialErrors({})
     setBackends([])
     setInstanceAccess([])
+    setPolarRAGBindings([])
     setResources([])
     setLoading(true)
     setBusy(false)
     setError(null)
     setNotice(null)
     setConfirmation(null)
-    setToken(null)
-    setTokenLoading(false)
-    setTokenError(null)
-    setMcpUrl(buildMCPServerURL(window.location.origin))
+    setServerBaseUrl(buildServerBaseURL(window.location.origin))
     setAccessDraft(null)
     setAccessDraftInstanceId(null)
     setAccessDraftValid(false)
@@ -393,12 +382,35 @@ export default function AgentDetail() {
   const backendNames = useMemo(
     () =>
       Object.fromEntries(
-        backends.map((backend) => [
-          backend.id,
-          instanceNames[backend.instance_id] ?? backend.instance_id,
-        ]),
+        backends.map((backend) => {
+          const targetId =
+            backend.instance_id ?? backend.dedicated_pool_id
+          return [
+            backend.id,
+            (targetId && instanceNames[targetId]) ??
+              targetId ??
+              backend.id,
+          ]
+        }),
       ),
     [backends, instanceNames],
+  )
+  const combinedInstanceAccess = useMemo<InstanceAccessRow[]>(
+    () => [
+      ...instanceAccess.map((access) => ({
+        key: `database:${access.instance_id}`,
+        kind: 'database' as const,
+        name: instanceNames[access.instance_id] ?? access.instance_id,
+        access,
+      })),
+      ...polarRAGBindings.map((binding) => ({
+        key: `polarrag:${binding.id}`,
+        kind: 'polarrag' as const,
+        name: binding.instance_name,
+        binding,
+      })),
+    ],
+    [instanceAccess, instanceNames, polarRAGBindings],
   )
 
   const showReconnectNotice = (summary: string) => {
@@ -440,9 +452,6 @@ export default function AgentDetail() {
       } else if (currentConfirmation.kind === 'regenerate') {
         const response = await regenerateAgentToken(currentAgent.id)
         if (!isCurrentScope(scope)) return
-        if (!response.data.token) throw new Error(t('agentDetail.tokenEmpty'))
-        setToken(response.data.token)
-        setTokenError(null)
         setAgent((current) =>
           current
             ? {
@@ -459,8 +468,6 @@ export default function AgentDetail() {
       } else if (currentConfirmation.kind === 'revoke') {
         const response = await revokeAgentToken(currentAgent.id)
         if (!isCurrentScope(scope)) return
-        setToken(null)
-        setTokenError(null)
         setAgent((current) =>
           current
             ? {
@@ -473,8 +480,8 @@ export default function AgentDetail() {
               }
             : current,
         )
-        showReconnectNotice(t('agentDetail.tokenRevoked'))
-      } else {
+        showReconnectNotice('Token revoked.')
+      } else if (currentConfirmation.kind === 'delete-access') {
         await deleteAgentInstanceAccess(
           currentAgent.id,
           currentConfirmation.access.instance_id,
@@ -486,7 +493,17 @@ export default function AgentDetail() {
               item.instance_id !== currentConfirmation.access.instance_id,
           ),
         )
-        showReconnectNotice(t('agentDetail.accessRemoved'))
+        showReconnectNotice('Instance access removed.')
+      } else {
+        await deleteAgentPolarRAGBinding(
+          currentAgent.id,
+          currentConfirmation.binding.id,
+        )
+        if (!isCurrentScope(scope)) return
+        setPolarRAGBindings((current) =>
+          current.filter((item) => item.id !== currentConfirmation.binding.id),
+        )
+        showReconnectNotice('PolarRAG instance access removed.')
       }
       setConfirmation(null)
     } catch (requestError) {
@@ -701,15 +718,35 @@ export default function AgentDetail() {
           <MCPConnectionPanel
             agentName={agent.name}
             mcpUrl={mcpUrl}
-            token={token}
-            loading={tokenLoading}
-            error={tokenError}
+            tokenPrefix={agent.token_summary?.token_prefix ?? null}
             tokenStatus={agent.token_summary?.status ?? null}
             expiresAt={agent.token_summary?.expires_at ?? null}
             lastUsedAt={agent.token_summary?.last_used_at ?? null}
-            onRetry={() => void loadToken({ ...scopeRef.current })}
+            revealToken={async (password) => {
+              const response = await revealAgentToken(agent.id, { password })
+              if (!response.data.token) {
+                throw new Error('Agent Token is not active')
+              }
+              return response.data.token
+            }}
             onRegenerate={() => setConfirmation({ kind: 'regenerate' })}
             onRevoke={() => setConfirmation({ kind: 'revoke' })}
+          />
+        </section>
+
+        <Divider style={{ margin: 0 }} />
+
+        <section aria-labelledby="agent-rest-api-heading">
+          <RESTAPIConnectionPanel serverBaseUrl={serverBaseUrl} />
+        </section>
+
+        <Divider style={{ margin: 0 }} />
+
+        <section aria-label={t('agentDetail.polarragAccessLabel')}>
+          <PolarRAGAccessPanel
+            agentId={agent.id}
+            bindings={polarRAGBindings}
+            onBindingsChange={setPolarRAGBindings}
           />
         </section>
 
@@ -718,8 +755,8 @@ export default function AgentDetail() {
         <section aria-labelledby="agent-instance-access-heading">
           <SectionHeading
             id="agent-instance-access-heading"
-            title={t('agentDetail.accessTitle')}
-            description={t('agentDetail.accessDescription')}
+            title={t('agentDetail.combinedAccessTitle')}
+            description={t('agentDetail.combinedAccessDescription')}
             action={
               <Button
                 onClick={() => {
@@ -800,8 +837,8 @@ export default function AgentDetail() {
             </div>
           )}
           <Table
-            rowKey="instance_id"
-            dataSource={instanceAccess}
+            rowKey="key"
+            dataSource={combinedInstanceAccess}
             pagination={false}
             scroll={{ x: 820 }}
             style={{ marginTop: 16 }}
@@ -809,87 +846,121 @@ export default function AgentDetail() {
               emptyText: (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={t('agentDetail.noAccess')}
+                  description={t('agentDetail.combinedAccessEmpty')}
                 />
               ),
             }}
             columns={[
               {
-                title: t('instances.instance'),
-                dataIndex: 'instance_id',
-                render: (instanceId: string) =>
-                  instanceNames[instanceId] ?? instanceId,
+                title: 'Instance',
+                dataIndex: 'name',
               },
               {
-                title: t('agentDetail.permission'),
-                dataIndex: 'permission',
-                render: (value: string | null) =>
-                  value === 'readonly'
-                    ? t('instanceDetail.readOnly')
-                    : value === 'readwrite'
-                      ? t('instanceDetail.readWrite')
+                title: 'Instance type',
+                key: 'instance_type',
+                render: (_: unknown, row: InstanceAccessRow) =>
+                  row.kind === 'polarrag'
+                    ? 'PolarRAG'
+                    : 'PolarDB for MySQL',
+              },
+              {
+                title: 'Permission',
+                key: 'permission',
+                render: (_: unknown, row: InstanceAccessRow) =>
+                  row.kind === 'polarrag'
+                    ? 'User ACL'
+                    : row.access.permission === 'readonly'
+                    ? 'Read only'
+                    : row.access.permission === 'readwrite'
+                      ? 'Read and write'
                       : '—',
               },
               {
-                title: t('agentDetail.capabilities'),
-                dataIndex: 'capabilities',
-                render: (values: string[]) => (
+                title: 'Capabilities',
+                key: 'capabilities',
+                render: (_: unknown, row: InstanceAccessRow) => (
                   <Space wrap>
-                    {values.map((value) => <Tag key={value}>{value}</Tag>)}
+                    {row.kind === 'polarrag' ? (
+                      <Tag>{t('agentDetail.knowledgeRetrieval')}</Tag>
+                    ) : (
+                      row.access.capabilities.map((value) => (
+                        <Tag key={value}>{value}</Tag>
+                      ))
+                    )}
                   </Space>
                 ),
               },
               {
                 title: t('agentDetail.state'),
                 key: 'state',
-                render: (_: unknown, access: AgentInstanceAccess) => (
+                render: (_: unknown, row: InstanceAccessRow) =>
+                  row.kind === 'polarrag' ? (
+                    <Tag color="success">{t('agentDetail.bound')}</Tag>
+                  ) : (
                   <Space wrap>
-                    {access.direct_binding_id && (
+                    {row.access.direct_binding_id && (
                       <Tag
                         color={
-                          access.direct_enabled ? 'success' : 'default'
+                          row.access.direct_enabled ? 'success' : 'default'
                         }
                       >
-                        {t('agentDetail.direct')} {access.direct_enabled ? t('common.enabled') : t('common.disabled')}
+                        {t('agentDetail.direct')}{' '}
+                        {row.access.direct_enabled
+                          ? t('common.enabled')
+                          : t('common.disabled')}
                       </Tag>
                     )}
-                    {access.provisioning_binding_id && (
+                    {row.access.provisioning_binding_id && (
                       <Tag
                         color={
-                          access.capabilities.includes('db_instance:create')
+                          row.access.capabilities.includes('db_instance:create')
                             ? 'success'
                             : 'default'
                         }
                       >
                         {t('agentDetail.create')}{' '}
-                        {access.capabilities.includes('db_instance:create')
+                        {row.access.capabilities.includes('db_instance:create')
                           ? t('common.enabled')
                           : t('common.disabled')}
                       </Tag>
                     )}
                   </Space>
-                ),
+                  ),
               },
               {
                 title: t('instances.actions'),
                 key: 'actions',
-                render: (_: unknown, access: AgentInstanceAccess) => (
+                render: (_: unknown, row: InstanceAccessRow) =>
+                  row.kind === 'polarrag' ? (
+                    <Button
+                      size="small"
+                      danger
+                      onClick={() =>
+                        setConfirmation({
+                          kind: 'delete-polarrag-access',
+                          binding: row.binding,
+                        })
+                      }
+                    >
+                      {t('agentDetail.remove')}
+                    </Button>
+                  ) : (
                   <Space>
                     <Button
                       size="small"
                       onClick={() => {
                         const draft = {
-                          instance_id: access.instance_id,
-                          credential_id: access.credential_id,
-                          permission: access.permission,
-                          direct_enabled: access.direct_enabled,
+                          instance_id: row.access.instance_id,
+                          credential_id: row.access.credential_id,
+                          permission: row.access.permission,
+                          direct_enabled: row.access.direct_enabled,
                           capabilities: editableAccessCapabilities(
-                            access.capabilities,
+                            row.access.capabilities,
                           ),
                         }
                         setAccessDraft(draft)
-                        void loadCredentialsForInstance(access.instance_id)
-                        setAccessDraftInstanceId(access.instance_id)
+                        void loadCredentialsForInstance(row.access.instance_id)
+                        setAccessDraftInstanceId(row.access.instance_id)
                         setAccessDraftValid(false)
                       }}
                     >
@@ -899,17 +970,28 @@ export default function AgentDetail() {
                       size="small"
                       danger
                       onClick={() =>
-                        setConfirmation({ kind: 'delete-access', access })
+                        setConfirmation({
+                          kind: 'delete-access',
+                          access: row.access,
+                        })
                       }
                     >
                       {t('agentDetail.remove')}
                     </Button>
                   </Space>
-                ),
+                  ),
               },
             ]}
           />
         </section>
+
+        <Divider style={{ margin: 0 }} />
+
+        <DedicatedPoolRoutes
+          agentId={agent.id}
+          resources={resources}
+          backends={backends}
+        />
 
         <Divider style={{ margin: 0 }} />
 

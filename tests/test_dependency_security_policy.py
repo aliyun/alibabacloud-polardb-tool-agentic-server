@@ -28,6 +28,7 @@ def test_installed_python_dependencies_meet_the_security_baseline() -> None:
 
     minimum_versions = {
         "aiohttp": Version("3.14.3"),
+        "alibabacloud-credentials": Version("1.0.8"),
         "cryptography": Version("48.0.1"),
         "mcp": Version("1.28.1"),
         "pydantic-settings": Version("2.14.2"),
@@ -80,7 +81,7 @@ def test_dependency_vulnerability_exceptions_are_complete_and_current() -> None:
         assert required_fields <= item.keys()
         assert all(item[field] for field in required_fields)
         assert item["owner"] == "PAS maintainers"
-        assert item["release"] == "v0.0.6"
+        assert item["release"] == "v0.0.7"
         assert item["expires_on"] == date(2026, 8, 31)
         assert item["expires_on"] >= date.today()
         assert item["advisory_url"] == (

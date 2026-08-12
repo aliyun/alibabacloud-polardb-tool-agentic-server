@@ -627,7 +627,7 @@ class TestRunSqlMultitenantIntegration:
         result = await resolve_target_instance(user, session)
         assert isinstance(result, dict)
         payload = json.loads(result["content"][0]["text"])
-        assert payload["error"] == "NO_MULTITENANT_INSTANCE"
+        assert payload["error"] == "NO_INSTANCE_ASSIGNED"
 
 
 _ADMIN_PASSWORD = "TestPass123"

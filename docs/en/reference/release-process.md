@@ -28,7 +28,7 @@ an allowed Conventional Commit type and describe the user-visible behavior or
 fix, rather than only the version or publication action. For example:
 
 ```text
-fix: harden resource pool networking and endpoint selection
+fix: harden dedicated pool networking and endpoint selection
 
 Release-Version: vMAJOR.MINOR.PATCH
 Source-Develop: 0123456789abcdef0123456789abcdef01234567

@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     Enum,
     ForeignKey,
+    Integer,
     String,
     UniqueConstraint,
     true,
@@ -210,12 +211,26 @@ class AgentInstanceBindingCapability(Base):
 
 class AgentProvisioningBinding(TimestampMixin, Base):
     __tablename__ = "agent_provisioning_bindings"
-    __table_args__ = (UniqueConstraint("agent_id", "backend_id", name="uq_agent_provisioning_binding"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "agent_id", "backend_id", name="uq_agent_provisioning_binding"
+        ),
+        UniqueConstraint(
+            "agent_id",
+            "routing_order",
+            name="uq_agent_provisioning_binding_routing_order",
+        ),
+        CheckConstraint(
+            "routing_order IS NULL OR routing_order >= 0",
+            name="ck_agent_provisioning_binding_routing_order_nonnegative",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     agent_id: Mapped[str] = mapped_column(String(36), ForeignKey("agents.id"), index=True)
     backend_id: Mapped[str] = mapped_column(String(36), ForeignKey("provisioning_backends.id"), index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    routing_order: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_by_user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
 
     agent: Mapped["Agent"] = relationship(lazy="selectin")

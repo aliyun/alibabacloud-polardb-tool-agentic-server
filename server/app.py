@@ -20,6 +20,8 @@ from server.db.engine import get_engine, get_session_factory
 from server.db.schema import check_database_schema
 from server.logging import normalize_request_id, setup_logging, trace_id_var
 from server.mcp.server import router as mcp_router
+from server.mcp.agent_openapi import router as agent_openapi_router
+from server.mcp.db_instance_rest import router as agent_db_instance_router
 from server.auth.cleanup import sweep_expired_oauth_rows
 from server.mcp.transport import LazyMCPApplication, mcp_lifespan
 from server.version import __version__
@@ -31,7 +33,172 @@ logger = logging.getLogger(__name__)
 class ProvisioningRuntime:
     dispatcher: Any
     health: Any
+    dedicated: Any
     pool_manager: Any
+    dedicated_client_available: bool
+
+
+async def _build_dedicated_worker_runtime(
+    session_factory,
+    config: TenantProvisioningConfig,
+) -> tuple[Any, bool]:
+    from server.aliyun.polardb_client import (
+        AliyunCredentialsUnavailable,
+        get_polardb_client_async,
+    )
+    from server.core.dedicated_mysql import DedicatedMySQL
+    from server.core.dedicated_pool_provisioner import DedicatedPoolProvisioner
+    from server.core.dedicated_pool_worker import DedicatedPoolWorker
+
+    client_available = True
+    try:
+        async with session_factory() as session:
+            polardb_client = await get_polardb_client_async(session)
+    except AliyunCredentialsUnavailable:
+        client_available = False
+        polardb_client = None
+    dedicated_mysql = DedicatedMySQL()
+    dedicated_provisioner = DedicatedPoolProvisioner(
+        session_factory,
+        polardb_client,
+        dedicated_mysql,
+    )
+    return (
+        DedicatedPoolWorker(
+            session_factory,
+            config,
+            dedicated_provisioner,
+            dedicated_mysql,
+            worker_id=f"dedicated-{uuid.uuid4().hex}",
+        ),
+        client_available,
+    )
+
+
+class DedicatedPoolWorkerSupervisor:
+    """Reconcile the in-process Dedicated worker with active runtime config."""
+
+    def __init__(
+        self,
+        app: FastAPI,
+        session_factory,
+        config: TenantProvisioningConfig,
+        runtime: ProvisioningRuntime,
+    ) -> None:
+        self._app = app
+        self._session_factory = session_factory
+        self._config = config
+        self._runtime = runtime
+        self._wake = asyncio.Event()
+        self._rebuild_required = False
+        self._worker_task: asyncio.Task[Any] | None = None
+        self._worker_stop: asyncio.Event | None = None
+
+    def request_reconcile(self, *, rebuild: bool = False) -> None:
+        self._rebuild_required = self._rebuild_required or rebuild
+        self._wake.set()
+
+    def request_run(self) -> None:
+        """Wake the active worker, reconciling first when it is unavailable."""
+        request_run = getattr(self._runtime.dedicated, "request_run", None)
+        if callable(request_run):
+            request_run()
+        self._wake.set()
+
+    async def _stop_worker(self, *, cancel: bool = False) -> None:
+        task = self._worker_task
+        stop_event = self._worker_stop
+        self._worker_task = None
+        self._worker_stop = None
+        self._app.state.dedicated_pool_worker_enabled = False
+        if task is None:
+            return
+        if stop_event is not None:
+            stop_event.set()
+        if cancel:
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    async def _rebuild_worker(self) -> None:
+        await self._stop_worker()
+        worker, client_available = await _build_dedicated_worker_runtime(
+            self._session_factory,
+            self._config,
+        )
+        self._runtime.dedicated = worker
+        self._runtime.dedicated_client_available = client_available
+
+    async def _reconcile(self) -> None:
+        enabled = bool(self._config.dedicated_pool_enabled)
+        if not enabled:
+            self._rebuild_required = False
+            await self._stop_worker()
+            return
+        if self._rebuild_required:
+            await self._rebuild_worker()
+            self._rebuild_required = False
+        client_available = bool(
+            getattr(self._runtime, "dedicated_client_available", True)
+        )
+        if not client_available:
+            await self._stop_worker()
+            return
+        if self._worker_task is not None and self._worker_task.done():
+            await self._stop_worker()
+        if self._worker_task is not None:
+            return
+        self._worker_stop = asyncio.Event()
+        self._worker_task = asyncio.create_task(
+            self._runtime.dedicated.run_forever(self._worker_stop)
+        )
+        self._app.state.background_tasks.add(self._worker_task)
+        self._worker_task.add_done_callback(
+            self._app.state.background_tasks.discard
+        )
+        self._app.state.dedicated_pool_worker_enabled = True
+
+    async def _reconcile_safely(self) -> None:
+        try:
+            await self._reconcile()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._app.state.dedicated_pool_worker_enabled = False
+            logger.exception(
+                "Dedicated pool worker runtime reconciliation failed",
+                extra={"feature": "dedicated_pool"},
+            )
+
+    async def run_forever(self, stop_event: asyncio.Event) -> None:
+        try:
+            await self._reconcile_safely()
+            while not stop_event.is_set():
+                stop_wait = asyncio.create_task(stop_event.wait())
+                wake_wait = asyncio.create_task(self._wake.wait())
+                retry_wait = asyncio.create_task(
+                    asyncio.sleep(
+                        max(
+                            float(
+                                self._config.worker_poll_interval_seconds
+                            ),
+                            1.0,
+                        )
+                    )
+                )
+                done, pending = await asyncio.wait(
+                    {stop_wait, wake_wait, retry_wait},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                if stop_wait in done and stop_event.is_set():
+                    break
+                if wake_wait in done:
+                    self._wake.clear()
+                await self._reconcile_safely()
+        finally:
+            await self._stop_worker(cancel=True)
 
 
 async def _build_provisioning_runtime(
@@ -68,7 +235,19 @@ async def _build_provisioning_runtime(
         registry,
         pool_manager,
     )
-    return ProvisioningRuntime(dispatcher, health, pool_manager)
+    dedicated, dedicated_client_available = (
+        await _build_dedicated_worker_runtime(
+            session_factory,
+            config,
+        )
+    )
+    return ProvisioningRuntime(
+        dispatcher,
+        health,
+        dedicated,
+        pool_manager,
+        dedicated_client_available,
+    )
 
 
 @asynccontextmanager
@@ -79,9 +258,18 @@ async def provisioning_runtime_lifespan(
     app.state.provisioning_runtime = runtime
     await runtime.health.run_once()
     stop_event = asyncio.Event()
+    supervisor = DedicatedPoolWorkerSupervisor(
+        app,
+        session_factory,
+        config,
+        runtime,
+    )
+    app.state.dedicated_pool_worker_supervisor = supervisor
+    app.state.dedicated_pool_worker_enabled = False
     tasks = [
         asyncio.create_task(runtime.dispatcher.run_forever(stop_event)),
         asyncio.create_task(runtime.health.run_forever(stop_event)),
+        asyncio.create_task(supervisor.run_forever(stop_event)),
     ]
     app.state.background_tasks.update(tasks)
     try:
@@ -161,15 +349,35 @@ async def lifespan(app: FastAPI):
     async def apply_observability(_old, new) -> None:
         setup_logging(new.server.log_level, new.logging)
 
+    def request_dedicated_worker_reconcile() -> None:
+        supervisor = getattr(
+            app.state,
+            "dedicated_pool_worker_supervisor",
+            None,
+        )
+        if supervisor is not None:
+            # The lifecycle adapter runs before RuntimeConfigStore publishes
+            # its candidate. Waking the supervisor schedules reconciliation
+            # for the next event-loop turn, after the new snapshot is visible.
+            supervisor.request_reconcile(rebuild=True)
+
+    async def apply_runtime_policy(old, new) -> None:
+        await apply_access_policy(old, new)
+        request_dedicated_worker_reconcile()
+
+    async def apply_aliyun_access(_old, _new) -> None:
+        request_dedicated_worker_reconcile()
+
     runtime_store = RuntimeConfigStore(
         repository,
         crypto,
         lifecycle_manager=ModuleLifecycleManager(
             {
                 "core_admin": apply_access_policy,
-                "runtime_policy": apply_access_policy,
+                "runtime_policy": apply_runtime_policy,
                 "user_sso": apply_access_policy,
                 "token_security": apply_token_security,
+                "aliyun_access": apply_aliyun_access,
                 "observability": apply_observability,
             }
         ),
@@ -203,23 +411,6 @@ async def lifespan(app: FastAPI):
                 await session.commit()
                 logger.info("Created default department '%s'", default_dept)
 
-    # Startup recovery sweep
-    try:
-        from server.core.provisioner import startup_recovery_sweep
-
-        await startup_recovery_sweep(session_factory, app.state.background_tasks)
-    except Exception:
-        logger.exception("startup recovery sweep failed, continuing")
-
-    # Startup safety check
-    pool = get_config().polardb.resource_pool
-    if pool.target_size > 0 and pool.security_ip_list == "127.0.0.1":
-        logger.warning(
-            "resource pool target_size=%d but security_ip_list is still "
-            "127.0.0.1 — agents cannot connect",
-            pool.target_size,
-        )
-
     # Share background_tasks with MCP transport module
     from server.mcp.transport import set_background_tasks
 
@@ -227,7 +418,7 @@ async def lifespan(app: FastAPI):
 
     # Background loops
     from server.core.audit_retention import audit_retention_loop
-    from server.core.pool_manager import health_check_loop, replenishment_loop
+    from server.polarrag.catalog import catalog_sync_loop
 
     async def _oauth_cleanup_loop():
         while True:
@@ -238,8 +429,9 @@ async def lifespan(app: FastAPI):
                 logger.exception("OAuth cleanup sweep failed")
 
     cleanup_task = asyncio.create_task(_oauth_cleanup_loop())
-    replenish_task = asyncio.create_task(replenishment_loop(session_factory, app.state.background_tasks))
-    health_task = asyncio.create_task(health_check_loop(session_factory))
+    polarrag_catalog_task = asyncio.create_task(
+        catalog_sync_loop(session_factory)
+    )
     audit_retention_task = (
         asyncio.create_task(
             audit_retention_loop(
@@ -256,8 +448,7 @@ async def lifespan(app: FastAPI):
     lifecycle_tasks = [
         config_poll_task,
         cleanup_task,
-        replenish_task,
-        health_task,
+        polarrag_catalog_task,
     ]
     if audit_retention_task is not None:
         lifecycle_tasks.append(audit_retention_task)
@@ -418,6 +609,10 @@ def create_app() -> FastAPI:
 
     # Legacy REST endpoints (must be before mount to avoid shadowing)
     app.include_router(mcp_router)
+    # Agent lifecycle routes deliberately use a different principal under the
+    # shared REST prefix and are absent from the application OpenAPI schema.
+    app.include_router(agent_db_instance_router)
+    app.include_router(agent_openapi_router)
 
     # Serve frontend static files if build exists.
     _static_dir = _discover_static_dir()
@@ -441,8 +636,6 @@ def create_app() -> FastAPI:
     # SPA fallback: middleware intercepts 404s from ALL sub-apps (including
     # the MCP mount) and serves index.html for browser navigation requests.
     if _static_dir is not None:
-        _index_bytes = (_static_dir / "index.html").read_bytes()
-
         @app.middleware("http")
         async def _spa_fallback(request: Request, call_next):
             response = await call_next(request)
@@ -451,7 +644,7 @@ def create_app() -> FastAPI:
                 and "text/html" in request.headers.get("accept", "")
                 and not request.url.path.startswith(("/api/", "/auth/", "/mcp", "/.well-known/"))
             ):
-                return Response(content=_index_bytes, media_type="text/html")
+                return FileResponse(str(_static_dir / "index.html"))
             return response
 
     return app

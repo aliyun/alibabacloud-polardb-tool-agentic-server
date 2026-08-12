@@ -5,6 +5,10 @@
 Create an Agent and grant its access before connecting a client. The Agent
 detail page is the source of truth for the MCP URL and active Token.
 
+For PolarRAG, an administrator must also bind PolarRAG instances and assign the
+PAS user to the Agent. The user then signs in and issues a `pas_user_agent_`
+Token from **My Instances > MCP connections**.
+
 ## Copy the client configuration
 
 The **Copy JSON configuration** action produces:
@@ -25,6 +29,26 @@ The **Copy JSON configuration** action produces:
 The server name defaults to the Agent name. Replace no fields manually when
 using the console-generated JSON. Store the Token in the client's secret
 storage, not source control.
+
+The user-specific PolarRAG configuration includes `type: "http"` and is shown
+with the plaintext Token only after issue, reveal, or regeneration:
+
+```json
+{
+  "mcpServers": {
+    "AGENT_NAME": {
+      "type": "http",
+      "url": "http://PAS_HOST:18780/mcp",
+      "headers": {
+        "Authorization": "Bearer pas_user_agent_REDACTED"
+      }
+    }
+  }
+}
+```
+
+Private-network HTTP is suitable only for an isolated development environment.
+Use HTTPS for production and any untrusted network.
 
 ## Network and TLS
 

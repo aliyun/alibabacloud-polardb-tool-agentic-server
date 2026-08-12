@@ -15,6 +15,8 @@ from server.models import (
     CredentialCapability,
     CredentialPurpose,
     CredentialStatus,
+    DedicatedPool,
+    DedicatedPoolStatus,
     Instance,
     InstanceCredential,
     InstanceEngine,
@@ -23,8 +25,10 @@ from server.models import (
     ProvisioningBackend,
     ProvisioningBackendHealth,
     ProvisioningBackendStatus,
+    ProvisioningBackendType,
 )
 from server.models.base import utc_now
+from server.models.dedicated_pool import validate_readiness_schedule
 
 
 class BackendNotFound(LookupError):
@@ -123,6 +127,44 @@ async def _context(
     return instance, credential
 
 
+async def _dedicated_pool_context(
+    session: AsyncSession,
+    pool_id: str,
+) -> DedicatedPool:
+    pool = await session.get(DedicatedPool, pool_id)
+    if pool is None:
+        raise BackendNotFound("Dedicated pool not found")
+    if pool.status != DedicatedPoolStatus.ACTIVE:
+        raise BackendValidationError("Dedicated pool must be active")
+    try:
+        validate_readiness_schedule(
+            check_interval_seconds=(
+                pool.available_health_check_interval_seconds
+            ),
+            stale_after_seconds=pool.available_health_stale_after_seconds,
+        )
+    except ValueError as exc:
+        raise BackendValidationError(str(exc)) from exc
+    return pool
+
+
+async def _mark_backend_healthy(
+    session: AsyncSession,
+    backend: ProvisioningBackend,
+) -> None:
+    health = await session.get(ProvisioningBackendHealth, backend.id)
+    if health is None:
+        health = ProvisioningBackendHealth(
+            backend_id=backend.id,
+            checked_at=utc_now(),
+        )
+        session.add(health)
+    health.healthy = True
+    health.checked_at = utc_now()
+    health.consecutive_failures = 0
+    health.error_code = None
+
+
 async def list_backends(
     session: AsyncSession,
 ) -> list[ProvisioningBackend]:
@@ -143,8 +185,10 @@ async def list_backends(
 async def create_backend(
     session: AsyncSession,
     *,
-    instance_id: str,
-    admin_credential_id: str,
+    backend_type: ProvisioningBackendType,
+    instance_id: str | None,
+    dedicated_pool_id: str | None,
+    admin_credential_id: str | None,
     priority: int,
     max_active_resources: int,
     resource_min_cpu: int,
@@ -155,14 +199,8 @@ async def create_backend(
         raise BackendValidationError(
             "resource_min_cpu must not exceed resource_max_cpu"
         )
-    instance, credential = await _context(
-        session,
-        instance_id=instance_id,
-        credential_id=admin_credential_id,
-    )
     backend = ProvisioningBackend(
-        instance_id=instance.id,
-        admin_credential_id=credential.id,
+        backend_type=backend_type,
         status=ProvisioningBackendStatus.ACTIVE,
         priority=priority,
         max_active_resources=max_active_resources,
@@ -171,25 +209,74 @@ async def create_backend(
         ddl_concurrency=ddl_concurrency,
         config_revision=1,
     )
-    validate_backend_definition(backend, instance, credential)
+    if backend_type == ProvisioningBackendType.MULTITENANT:
+        if instance_id is None or admin_credential_id is None:
+            raise BackendValidationError(
+                "Multitenant backend requires instance and admin credential"
+            )
+        if dedicated_pool_id is not None:
+            raise BackendValidationError(
+                "Multitenant backend cannot target a dedicated pool"
+            )
+        instance, credential = await _context(
+            session,
+            instance_id=instance_id,
+            credential_id=admin_credential_id,
+        )
+        backend.instance_id = instance.id
+        backend.admin_credential_id = credential.id
+        validate_backend_definition(backend, instance, credential)
+    else:
+        if dedicated_pool_id is None:
+            raise BackendValidationError(
+                "Dedicated backend requires a dedicated pool"
+            )
+        if instance_id is not None or admin_credential_id is not None:
+            raise BackendValidationError(
+                "Dedicated backend cannot target an instance or admin credential"
+            )
+        pool = await _dedicated_pool_context(session, dedicated_pool_id)
+        backend.dedicated_pool_id = pool.id
+        backend.permission_template_revision_id = (
+            pool.permission_template_revision_id
+        )
+        backend.delete_cooldown_duration_hours = (
+            pool.delete_cooldown_duration_hours
+        )
     session.add(backend)
     await session.flush()
-    health_result = await validate_backend_connectivity(session, backend)
-    if not health_result.healthy:
-        raise BackendValidationError(
-            "Provisioning backend connectivity validation failed"
-        )
-    session.add(
-        ProvisioningBackendHealth(
-            backend_id=backend.id,
-            healthy=True,
-            checked_at=utc_now(),
-            consecutive_failures=0,
-            error_code=None,
-        )
-    )
+    if backend_type == ProvisioningBackendType.MULTITENANT:
+        health_result = await validate_backend_connectivity(session, backend)
+        if not health_result.healthy:
+            raise BackendValidationError(
+                "Provisioning backend connectivity validation failed"
+            )
+    await _mark_backend_healthy(session, backend)
     await session.flush()
     return backend
+
+
+async def _validate_backend_target(
+    session: AsyncSession,
+    backend: ProvisioningBackend,
+) -> None:
+    if backend.backend_type == ProvisioningBackendType.DEDICATED_POOL:
+        if backend.dedicated_pool_id is None:
+            raise BackendValidationError(
+                "Dedicated backend requires a dedicated pool"
+            )
+        await _dedicated_pool_context(session, backend.dedicated_pool_id)
+        return
+    if backend.instance_id is None or backend.admin_credential_id is None:
+        raise BackendValidationError(
+            "Multitenant backend requires instance and admin credential"
+        )
+    instance, credential = await _context(
+        session,
+        instance_id=backend.instance_id,
+        credential_id=backend.admin_credential_id,
+    )
+    validate_backend_definition(backend, instance, credential)
 
 
 async def update_backend(
@@ -206,6 +293,14 @@ async def update_backend(
     ).scalar_one_or_none()
     if backend is None:
         raise BackendNotFound("Provisioning backend not found")
+
+    if (
+        backend.backend_type == ProvisioningBackendType.DEDICATED_POOL
+        and "admin_credential_id" in changes
+    ):
+        raise BackendValidationError(
+            "Dedicated backend does not use an admin credential"
+        )
 
     pool_affecting_fields = {
         "admin_credential_id",
@@ -226,35 +321,20 @@ async def update_backend(
         raise BackendValidationError(
             "resource_min_cpu must not exceed resource_max_cpu"
         )
-    instance, credential = await _context(
-        session,
-        instance_id=backend.instance_id,
-        credential_id=backend.admin_credential_id,
-    )
-    validate_backend_definition(backend, instance, credential)
+    await _validate_backend_target(session, backend)
     await session.flush()
     if pool_affecting_fields.intersection(changes):
         await bump_backend_config_revision(session, backend)
-    if (
-        backend.status == ProvisioningBackendStatus.ACTIVE
-        or "admin_credential_id" in changes
+    if backend.status == ProvisioningBackendStatus.ACTIVE or (
+        "admin_credential_id" in changes
     ):
-        result = await validate_backend_connectivity(session, backend)
-        if not result.healthy:
-            raise BackendValidationError(
-                "Provisioning backend connectivity validation failed"
-            )
-        health = await session.get(ProvisioningBackendHealth, backend.id)
-        if health is None:
-            health = ProvisioningBackendHealth(
-                backend_id=backend.id,
-                checked_at=utc_now(),
-            )
-            session.add(health)
-        health.healthy = True
-        health.checked_at = utc_now()
-        health.consecutive_failures = 0
-        health.error_code = None
+        if backend.backend_type == ProvisioningBackendType.MULTITENANT:
+            result = await validate_backend_connectivity(session, backend)
+            if not result.healthy:
+                raise BackendValidationError(
+                    "Provisioning backend connectivity validation failed"
+                )
+        await _mark_backend_healthy(session, backend)
     await session.flush()
     return backend
 

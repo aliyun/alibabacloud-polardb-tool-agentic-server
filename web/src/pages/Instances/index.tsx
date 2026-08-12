@@ -12,13 +12,15 @@ import {
   Select,
   Skeleton,
   Space,
+  Switch,
   Table,
+  Tabs,
   Tag,
   Typography,
 } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
-import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import { CheckCircleOutlined, PlusOutlined } from '@ant-design/icons'
+import { Link, useSearchParams } from 'react-router-dom'
 
 import { getAPIErrorMessage } from '../../api/client'
 import {
@@ -29,9 +31,26 @@ import {
   type InstanceSummary,
   type RegisterInstanceInput,
 } from '../../api/instances'
+import {
+  createPolarRAGInstance,
+  type CreatePolarRAGInstanceInput,
+} from '../../api/polarrag'
 import PageContainer from '../../components/PageContainer'
+import InstancesPanel from '../PolarRAG/InstancesPanel'
 
 const { Text } = Typography
+
+type RegisterFormInput = Omit<
+  RegisterInstanceInput,
+  'cluster_id' | 'engine' | 'topology'
+> & {
+  cluster_id?: string
+  engine: 'polardb_mysql' | 'polarrag'
+  topology?: RegisterInstanceInput['topology']
+  scheme?: CreatePolarRAGInstanceInput['scheme']
+  tls_verify?: boolean
+  ca_bundle?: string | null
+}
 
 type ConnectionTestResult =
   | { status: 'success' }
@@ -63,6 +82,7 @@ function Provisioning({ instance }: { instance: InstanceSummary }) {
 
 export default function Instances() {
   const { t } = useTranslation()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [instances, setInstances] = useState<InstanceSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [total, setTotal] = useState(0)
@@ -76,7 +96,11 @@ export default function Instances() {
     useState<ConnectionTestResult>(null)
   const [removeTarget, setRemoveTarget] = useState<InstanceSummary | null>(null)
   const [removeLoading, setRemoveLoading] = useState(false)
-  const [form] = Form.useForm<RegisterInstanceInput>()
+  const [polarRAGRefreshKey, setPolarRAGRefreshKey] = useState(0)
+  const [form] = Form.useForm<RegisterFormInput>()
+  const selectedEngine = Form.useWatch('engine', form) ?? 'polardb_mysql'
+  const activeTab =
+    searchParams.get('type') === 'polarrag' ? 'polarrag' : 'database'
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -96,26 +120,64 @@ export default function Instances() {
     void load()
   }, [load])
 
-  const handleRegister = async (values: RegisterInstanceInput) => {
+  const openRegister = (
+    engine: RegisterFormInput['engine'] = 'polardb_mysql',
+  ) => {
+    form.resetFields()
+    form.setFieldsValue(
+      engine === 'polarrag'
+        ? {
+            engine,
+            topology: undefined,
+            port: 9200,
+            scheme: 'http',
+            tls_verify: false,
+          }
+        : {
+            engine,
+            topology: 'single_tenant',
+            port: 3306,
+          },
+    )
+    setConnectionTestResult(null)
+    setCreateOpen(true)
+  }
+
+  const handleRegister = async (values: RegisterFormInput) => {
     setCreateLoading(true)
     setError(null)
     try {
-      await registerAdminInstance({
-        cluster_id: values.cluster_id.trim(),
-        name: values.name.trim(),
-        usage: values.usage?.trim() || undefined,
-        engine: values.engine,
-        topology: values.topology,
-        region: values.region?.trim() || undefined,
-        host: values.host.trim(),
-        port: values.port,
-        username: values.username.trim(),
-        password: values.password,
-      })
+      if (values.engine === 'polarrag') {
+        await createPolarRAGInstance({
+          name: values.name.trim(),
+          scheme: values.scheme ?? 'http',
+          host: values.host.trim(),
+          port: values.port,
+          username: values.username.trim(),
+          password: values.password,
+          tls_verify: values.tls_verify ?? false,
+          ca_bundle: values.ca_bundle?.trim() || null,
+        })
+        setSearchParams({ type: 'polarrag' })
+        setPolarRAGRefreshKey((key) => key + 1)
+      } else {
+        await registerAdminInstance({
+          cluster_id: values.cluster_id!.trim(),
+          name: values.name.trim(),
+          usage: values.usage?.trim() || undefined,
+          engine: values.engine,
+          topology: values.topology!,
+          region: values.region?.trim() || undefined,
+          host: values.host.trim(),
+          port: values.port,
+          username: values.username.trim(),
+          password: values.password,
+        })
+        await load()
+      }
       setCreateOpen(false)
       setConnectionTestResult(null)
       form.resetFields()
-      await load()
     } catch (requestError) {
       setError(
         getAPIErrorMessage(requestError, t('instances.registerFailed')),
@@ -137,7 +199,7 @@ export default function Instances() {
         'password',
       ])
       await testAdminInstanceConnection({
-        topology: values.topology,
+        topology: values.topology!,
         host: values.host.trim(),
         port: values.port,
         username: values.username.trim(),
@@ -189,17 +251,23 @@ export default function Instances() {
         <Button
           type="primary"
           icon={<PlusOutlined />}
-          onClick={() => {
-            form.resetFields()
-            setConnectionTestResult(null)
-            setCreateOpen(true)
-          }}
+          onClick={() => openRegister()}
         >
           {t('instances.register')}
         </Button>
       }
     >
-      <Space direction="vertical" size={20} style={{ width: '100%' }}>
+      <Tabs
+        activeKey={activeTab}
+        onChange={(key) =>
+          setSearchParams(key === 'polarrag' ? { type: 'polarrag' } : {})
+        }
+        items={[
+          {
+            key: 'database',
+            label: 'Database Instances',
+            children: (
+              <Space direction="vertical" size={20} style={{ width: '100%' }}>
         {error && (
           <Alert
             type="error"
@@ -230,11 +298,7 @@ export default function Instances() {
           >
             <Button
               type="primary"
-              onClick={() => {
-                form.resetFields()
-                setConnectionTestResult(null)
-                setCreateOpen(true)
-              }}
+              onClick={() => openRegister()}
             >
               {t('instances.register')}
             </Button>
@@ -327,7 +391,21 @@ export default function Instances() {
             ]}
           />
         )}
-      </Space>
+              </Space>
+            ),
+          },
+          {
+            key: 'polarrag',
+            label: 'PolarRAG Instances',
+            children: (
+              <InstancesPanel
+                key={polarRAGRefreshKey}
+                onRegister={() => openRegister('polarrag')}
+              />
+            ),
+          },
+        ]}
+      />
 
       <Modal
         title={t('instances.register')}
@@ -352,8 +430,32 @@ export default function Instances() {
             engine: 'polardb_mysql',
             topology: 'single_tenant',
             port: 3306,
+            scheme: 'http',
+            tls_verify: false,
           }}
           onValuesChange={(changedValues) => {
+            if ('engine' in changedValues) {
+              const engine = changedValues.engine
+              form.setFieldsValue(
+                engine === 'polarrag'
+                  ? {
+                      cluster_id: undefined,
+                      topology: undefined,
+                      region: undefined,
+                      usage: undefined,
+                      port: 9200,
+                      scheme: 'http',
+                      tls_verify: false,
+                    }
+                  : {
+                      topology: 'single_tenant',
+                      port: 3306,
+                      scheme: undefined,
+                      tls_verify: undefined,
+                      ca_bundle: undefined,
+                    },
+              )
+            }
             if (
               ['topology', 'host', 'port', 'username', 'password'].some(
                 (field) => field in changedValues,
@@ -364,21 +466,19 @@ export default function Instances() {
           }}
           onFinish={(values) => void handleRegister(values)}
         >
-          <Row
-            gutter={[16, 0]}
-            role="group"
-            aria-label={t('instances.identity')}
-          >
-            <Col xs={24} md={12}>
-              <Form.Item
-                name="cluster_id"
-                label={t('instances.clusterId')}
-                rules={[{ required: true, whitespace: true }, { max: 255 }]}
-              >
-                <Input placeholder="pc-xxx" autoComplete="off" />
-              </Form.Item>
-            </Col>
-            <Col xs={24} md={12}>
+          <Row gutter={[16, 0]} role="group" aria-label={t('instances.identity')}>
+            {selectedEngine === 'polardb_mysql' && (
+              <Col xs={24} md={12}>
+                <Form.Item
+                  name="cluster_id"
+                  label={t('instances.clusterId')}
+                  rules={[{ required: true, whitespace: true }, { max: 255 }]}
+                >
+                  <Input placeholder="pc-xxx" autoComplete="off" />
+                </Form.Item>
+              </Col>
+            )}
+            <Col xs={24} md={selectedEngine === 'polarrag' ? 24 : 12}>
               <Form.Item
                 name="name"
                 label={t('instances.name')}
@@ -388,18 +488,16 @@ export default function Instances() {
               </Form.Item>
             </Col>
           </Row>
-          <Form.Item
-            name="usage"
-            label={t('instances.usage')}
-            rules={[{ max: 1024 }]}
-          >
-            <Input.TextArea
-              rows={2}
-              showCount
-              maxLength={1024}
-              placeholder={t('instances.usagePlaceholder')}
-            />
-          </Form.Item>
+          {selectedEngine === 'polardb_mysql' && (
+            <Form.Item name="usage" label={t('instances.usage')} rules={[{ max: 1024 }]}>
+              <Input.TextArea
+                rows={2}
+                showCount
+                maxLength={1024}
+                placeholder={t('instances.usagePlaceholder')}
+              />
+            </Form.Item>
+          )}
           <Row
             gutter={[16, 0]}
             role="group"
@@ -414,23 +512,39 @@ export default function Instances() {
                 <Select
                   options={[
                     { value: 'polardb_mysql', label: 'PolarDB for MySQL' },
+                    { value: 'polarrag', label: 'PolarRAG' },
                   ]}
                 />
               </Form.Item>
             </Col>
             <Col xs={24} md={12}>
-              <Form.Item
-                name="topology"
-                label={t('instances.topology')}
-                rules={[{ required: true }]}
-              >
-                <Select
-                  options={[
-                    { value: 'single_tenant', label: t('instances.singleTenant') },
-                    { value: 'multitenant', label: t('instances.multitenant') },
-                  ]}
-                />
-              </Form.Item>
+              {selectedEngine === 'polardb_mysql' ? (
+                <Form.Item
+                  name="topology"
+                  label={t('instances.topology')}
+                  rules={[{ required: true }]}
+                >
+                  <Select
+                    options={[
+                      { value: 'single_tenant', label: 'Single tenant' },
+                      { value: 'multitenant', label: 'Multi-tenant' },
+                    ]}
+                  />
+                </Form.Item>
+              ) : (
+                <Form.Item
+                  name="scheme"
+                  label={t('instances.scheme')}
+                  rules={[{ required: true }]}
+                >
+                  <Select
+                    options={[
+                      { value: 'https', label: 'HTTPS' },
+                      { value: 'http', label: 'HTTP' },
+                    ]}
+                  />
+                </Form.Item>
+              )}
             </Col>
           </Row>
           <Row
@@ -438,11 +552,13 @@ export default function Instances() {
             role="group"
             aria-label={t('instances.location')}
           >
-            <Col xs={24} md={12}>
-              <Form.Item name="region" label={t('instances.region')} rules={[{ max: 64 }]}>
-                <Input placeholder="cn-hangzhou" autoComplete="off" />
-              </Form.Item>
-            </Col>
+            {selectedEngine === 'polardb_mysql' && (
+              <Col xs={24} md={12}>
+                <Form.Item name="region" label={t('instances.region')} rules={[{ max: 64 }]}>
+                  <Input placeholder="cn-hangzhou" autoComplete="off" />
+                </Form.Item>
+              </Col>
+            )}
             <Col xs={24} md={12}>
               <Form.Item
                 name="port"
@@ -472,6 +588,27 @@ export default function Instances() {
               </Form.Item>
             </Col>
           </Row>
+          {selectedEngine === 'polarrag' && (
+            <>
+              <Form.Item
+                name="tls_verify"
+                label={t('instances.verifyTls')}
+                valuePropName="checked"
+              >
+                <Switch
+                  checkedChildren={<CheckCircleOutlined />}
+                  unCheckedChildren="Off"
+                />
+              </Form.Item>
+              <Form.Item name="ca_bundle" label={t('instances.caBundle')}>
+                <Input.TextArea
+                  rows={4}
+                  placeholder={t('instances.pemChain')}
+                  autoComplete="off"
+                />
+              </Form.Item>
+            </>
+          )}
           <Row
             gutter={[16, 0]}
             role="group"
@@ -499,20 +636,31 @@ export default function Instances() {
               </Form.Item>
             </Col>
           </Row>
-          <Alert
-            type="info"
-            showIcon
-            message={t('instances.mysqlPermissions')}
-            description={t('instances.mysqlPermissionsDescription')}
-          />
-          <Button
-            style={{ marginTop: 16 }}
-            loading={connectionTestLoading}
-            onClick={() => void handleTestConnection()}
-          >
-            {t('instances.testConnection')}
-          </Button>
-          {connectionTestResult && (
+          {selectedEngine === 'polardb_mysql' ? (
+            <>
+              <Alert
+                type="info"
+                showIcon
+                message={t('instances.mysqlPermissions')}
+                description={t('instances.mysqlPermissionsDescription')}
+              />
+              <Button
+                style={{ marginTop: 16 }}
+                loading={connectionTestLoading}
+                onClick={() => void handleTestConnection()}
+              >
+                {t('instances.testConnection')}
+              </Button>
+            </>
+          ) : (
+            <Alert
+              type="info"
+              showIcon
+              message={t('instances.polarragCredentialTitle')}
+              description={t('instances.polarragCredentialDescription')}
+            />
+          )}
+          {selectedEngine === 'polardb_mysql' && connectionTestResult && (
             <Alert
               type={
                 connectionTestResult.status === 'success' ? 'success' : 'error'

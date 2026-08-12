@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from server.config import TenantProvisioningConfig
 from server.core.resource_write_guard import serialized_resource_write
-from server.models import DBInstanceResource, DBInstanceStatus
+from server.models import DBInstanceResource, DBInstanceStatus, ProvisioningMode
 from server.models.base import utc_now
 
 Clock = Callable[[], datetime]
@@ -57,11 +57,20 @@ class DBInstanceResourceWorker:
                         or_(
                             DBInstanceResource.status == DBInstanceStatus.CREATING,
                             DBInstanceResource.status == DBInstanceStatus.DELETING,
+                            DBInstanceResource.status == DBInstanceStatus.RESTORING,
+                            and_(
+                                DBInstanceResource.status
+                                == DBInstanceStatus.COOLING_DOWN,
+                                DBInstanceResource.cooldown_until.is_not(None),
+                                DBInstanceResource.cooldown_until <= now,
+                            ),
                             and_(
                                 DBInstanceResource.status == DBInstanceStatus.FAILED,
                                 DBInstanceResource.cleanup_required.is_(True),
                             ),
                         ),
+                        DBInstanceResource.provisioning_mode
+                        != ProvisioningMode.DEDICATED,
                         or_(
                             DBInstanceResource.next_retry_at.is_(None),
                             DBInstanceResource.next_retry_at <= now,

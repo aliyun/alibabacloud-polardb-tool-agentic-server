@@ -75,8 +75,8 @@ async def test_mutation_requires_expected_revision(api_context) -> None:
         json={
             "protocol_version": 1,
             "action": ConfigAction.SAVE_DRAFT,
-            "module": "agent_token_auth",
-            "config": {"enabled": True},
+            "module": "observability",
+            "config": {"log_level": "debug"},
         },
     )
     assert response.status_code == 409
@@ -96,7 +96,7 @@ async def test_side_effect_requires_idempotency_key(api_context) -> None:
         json={
             "protocol_version": 1,
             "action": "activate",
-            "module": "agent_token_auth",
+            "module": "aliyun_access",
             "expected_revision": 0,
         },
     )
@@ -119,7 +119,7 @@ async def test_request_larger_than_one_mib_is_rejected(
         json={
             "protocol_version": 1,
             "action": "plan",
-            "module": "agent_token_auth",
+            "module": "runtime_policy",
             "config": {"padding": "x" * 1_048_576},
         },
     )

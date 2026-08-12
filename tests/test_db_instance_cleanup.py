@@ -18,6 +18,7 @@ from server.models import (
     CredentialStatus,
     DBInstanceResource,
     DBInstanceStatus,
+    DeleteLifecycleStep,
     Instance,
     InstanceCredential,
     InstanceEngine,
@@ -86,6 +87,7 @@ async def cleanup_env(tmp_path):
             resource_config_name="rc_t123456789",
             database_name="agentic@t123456789",
             status=DBInstanceStatus.DELETING,
+            delete_step=DeleteLifecycleStep.LOGICAL_CLEANUP,
             cleanup_required=True,
         )
         session.add(resource)

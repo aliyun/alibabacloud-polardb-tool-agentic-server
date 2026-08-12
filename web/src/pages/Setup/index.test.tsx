@@ -1,6 +1,12 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from 'react-router-dom'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import App from '../../App'
@@ -96,7 +102,11 @@ function runtimePolicy(): ConfigModule {
     effective: {
       revision: 4,
       state: 'ACTIVE',
-      config: { config_poll_interval_seconds: 5 },
+      config: {
+        config_poll_interval_seconds: 5,
+        dedicated_pool_enabled: false,
+        dedicated_worker_heartbeat_interval_seconds: 10,
+      },
     },
     dependencies: [],
     dependents: [],
@@ -109,7 +119,43 @@ function runtimePolicy(): ConfigModule {
           minimum: 1,
           maximum: 60,
         },
+        dedicated_pool_enabled: {
+          type: 'boolean',
+          title: 'Dedicated pool enabled',
+          default: false,
+        },
+        dedicated_worker_heartbeat_interval_seconds: {
+          type: 'integer',
+          title: 'Dedicated worker heartbeat interval seconds',
+          default: 10,
+          minimum: 1,
+        },
+        dedicated_pool_preparation_mode: {
+          type: 'string',
+          title: 'Dedicated pool preparation mode',
+          default: 'full',
+          enum: ['full', 'openapi_only'],
+        },
       },
+    },
+  }
+}
+
+function aliyunAccess(revision = 0): ConfigModule {
+  return {
+    name: 'aliyun_access',
+    revision,
+    workflow_state: 'NOT_CONFIGURED',
+    draft: null,
+    effective: null,
+    dependencies: [],
+    dependents: [],
+    ui_hints: {
+      secret_fields: ['access_key_id', 'access_key_secret'],
+    },
+    schema: {
+      type: 'object',
+      properties: {},
     },
   }
 }
@@ -122,6 +168,30 @@ function activeCoreAdmin(): ConfigModule {
       revision: 4,
       state: 'ACTIVE',
       config: { username: 'admin' },
+    },
+  }
+}
+
+function agentTokenAuth(): ConfigModule {
+  return {
+    name: 'agent_token_auth',
+    revision: 1,
+    workflow_state: 'ACTIVE',
+    desired_state: 'ACTIVE',
+    draft: null,
+    effective: {
+      revision: 1,
+      state: 'ACTIVE',
+      config: { enabled: true },
+    },
+    configurable: false,
+    dependencies: [],
+    dependents: [],
+    schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', default: true },
+      },
     },
   }
 }
@@ -139,6 +209,146 @@ async function claimInstallation(
 function renderedActions() {
   return vi.mocked(executeConfig).mock.calls.map(([command]) => command.action)
 }
+
+function ConfigurationLocationProbe() {
+  const location = useLocation()
+  const navigate = useNavigate()
+  return (
+    <>
+      <output aria-label="current configuration search">
+        {location.search}
+      </output>
+      <button type="button" onClick={() => navigate(-1)}>
+        Back in configuration history
+      </button>
+    </>
+  )
+}
+
+function renderConfiguration(
+  initialEntry: string,
+  language: 'en-US' | 'zh-CN' = 'en-US',
+) {
+  return render(
+    <LocaleProvider i18nInstance={createTestI18n(language)}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <Routes>
+          <Route
+            path="/settings/configuration"
+            element={(
+              <>
+                <Setup mode="admin" />
+                <ConfigurationLocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>
+    </LocaleProvider>,
+  )
+}
+
+it('opens a configuration module deep link and preserves selection in history', async () => {
+  const user = userEvent.setup()
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin(), runtimePolicy(), aliyunAccess()],
+    }),
+  )
+
+  renderConfiguration('/settings/configuration?module=runtime_policy')
+
+  expect(await screen.findByRole('heading', {
+    name: /service runtime policy/i,
+  })).toBeInTheDocument()
+  expect(screen.getByRole('form', {
+    name: /service runtime policy configuration/i,
+  })).toBeInTheDocument()
+  expect(screen.getByLabelText(/enable auto-provisioning worker/i))
+    .toBeInTheDocument()
+  expect(screen.getByLabelText(
+    /auto-provisioning worker heartbeat interval/i,
+  )).toBeInTheDocument()
+  expect(screen.getByLabelText('current configuration search'))
+    .toHaveTextContent('?module=runtime_policy')
+
+  await user.click(screen.getByRole('button', {
+    name: /alibaba cloud access credentials/i,
+  }))
+  expect(await screen.findByRole('heading', {
+    name: /alibaba cloud access credentials/i,
+  })).toBeInTheDocument()
+  expect(screen.getByLabelText('current configuration search'))
+    .toHaveTextContent('?module=aliyun_access')
+
+  await user.click(screen.getByRole('button', {
+    name: /back in configuration history/i,
+  }))
+  expect(await screen.findByRole('heading', {
+    name: /service runtime policy/i,
+  })).toBeInTheDocument()
+})
+
+it('focuses a preparation mode field deep link', async () => {
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin(), runtimePolicy()],
+    }),
+  )
+
+  renderConfiguration(
+    '/settings/configuration?module=runtime_policy&field=dedicated_pool_preparation_mode',
+  )
+
+  const mode = await screen.findByLabelText(
+    /auto-provisioning preparation mode/i,
+  )
+  await waitFor(() => expect(mode).toHaveFocus())
+})
+
+it('localizes the service runtime policy and worker controls in Chinese', async () => {
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin(), runtimePolicy()],
+    }),
+  )
+
+  renderConfiguration(
+    '/settings/configuration?module=runtime_policy',
+    'zh-CN',
+  )
+
+  expect(await screen.findByRole('heading', { name: '服务运行策略' }))
+    .toBeInTheDocument()
+  expect(screen.getByLabelText(/启用自动供给 Worker/))
+    .toBeInTheDocument()
+})
+
+it('shows Agent Token authentication as an active built-in capability', async () => {
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin(), agentTokenAuth()],
+    }),
+  )
+
+  renderConfiguration('/settings/configuration?module=agent_token_auth')
+
+  expect(await screen.findByRole('heading', {
+    name: /agent token authentication/i,
+  })).toBeInTheDocument()
+  expect(screen.getByText(/built-in capability is active/i))
+    .toBeInTheDocument()
+  expect(screen.getByText(/agent detail page/i)).toBeInTheDocument()
+  expect(screen.queryByRole('form')).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /run dry-run/i }))
+    .not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /skip for now/i }))
+    .not.toBeInTheDocument()
+})
 
 it('routes setup mode to a standalone ownership screen', async () => {
   render(<App />)
@@ -233,6 +443,316 @@ it('runs a read-only dry-run and invalidates it after editing', async () => {
   ).not.toBeInTheDocument()
 })
 
+it.each([
+  { mode: 'bootstrap' as const, route: '/setup' },
+  { mode: 'admin' as const, route: '/settings/configuration' },
+])('renders the Aliyun access form through the $route route', async ({ mode, route }) => {
+  const user = userEvent.setup()
+  const modules = [coreAdmin(), aliyunAccess()]
+  window.history.replaceState({}, '', route)
+  vi.mocked(discoverSystemState).mockResolvedValue(
+    mode === 'admin' ? 'READY' : 'SETUP',
+  )
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: mode === 'admin' ? 'READY' : 'SETUP',
+      modules,
+    }),
+  )
+
+  render(
+    <App />,
+  )
+
+  if (mode === 'bootstrap') {
+    await screen.findByRole('heading', { name: /claim this installation/i })
+    await claimInstallation(user)
+  }
+  await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+
+  expect(
+    await screen.findByRole('radio', { name: /ecs instance ram role/i }),
+  ).toBeInTheDocument()
+  expect(screen.getAllByRole('button', { name: /switch language/i })).toHaveLength(1)
+})
+
+it('requires an explicit confirmation before activating a confirmable external failure', async () => {
+  const user = userEvent.setup()
+  const module = aliyunAccess()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), module] }))
+    .mockResolvedValueOnce(
+      response({
+        plan: {
+          valid: false,
+          message: 'untrusted SDK body: access_key_secret=should-not-render',
+          error_code: 'OPENAPI_CONNECT_FAILURE',
+          confirmation_allowed: true,
+          request_id: 'request-123',
+          writes: false,
+        },
+      }),
+    )
+    .mockResolvedValueOnce(
+      response({
+        module: { ...module, revision: 1, workflow_state: 'DRAFT' },
+      }),
+    )
+    .mockResolvedValueOnce(
+      response({
+        module: { ...module, revision: 2, workflow_state: 'VALIDATED' },
+        validation: {
+          status: 'PASSED',
+          validation_id: 'returned-validation-id',
+        },
+      }),
+    )
+    .mockResolvedValueOnce(
+      response({
+        module: { ...module, revision: 3, workflow_state: 'ACTIVE' },
+      }),
+    )
+    .mockResolvedValueOnce(
+      response({ modules: [{ ...module, revision: 3, workflow_state: 'ACTIVE' }] }),
+    )
+
+  render(
+    <MemoryRouter>
+      <Setup />
+    </MemoryRouter>,
+  )
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
+  await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+
+  expect(await screen.findByText('OPENAPI_CONNECT_FAILURE')).toBeInTheDocument()
+  expect(screen.queryByText(/should-not-render/i)).not.toBeInTheDocument()
+  await user.click(
+    screen.getByRole('button', { name: /save and enable anyway/i }),
+  )
+  expect(
+    await screen.findByRole('dialog', { name: /connection check failed/i }),
+  ).toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: /confirm activation/i }))
+
+  await waitFor(() =>
+    expect(vi.mocked(executeConfig)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'validate',
+        confirm_impact: true,
+      }),
+      'bootstrap',
+    ),
+  )
+  expect(vi.mocked(executeConfig)).toHaveBeenCalledWith(
+    expect.objectContaining({
+      action: 'activate',
+      validation_id: 'returned-validation-id',
+    }),
+    'bootstrap',
+  )
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: /alibaba cloud access credentials/i })).toHaveFocus(),
+  )
+})
+
+it.each([
+  { label: 'missing', validation: { status: 'PASSED' } },
+  { label: 'empty', validation: { status: 'PASSED', validation_id: '' } },
+  { label: 'wrong-type', validation: { status: 'PASSED', validation_id: 42 } },
+  { label: 'failed', validation: { status: 'FAILED', validation_id: 'proof' } },
+])('does not activate when the confirmed validation proof is $label', async ({ validation }) => {
+  const user = userEvent.setup()
+  const module = aliyunAccess()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), module] }))
+    .mockResolvedValueOnce(response({
+      plan: {
+        valid: false,
+        error_code: 'OPENAPI_CONNECT_FAILURE',
+        confirmation_allowed: true,
+        writes: false,
+      },
+    }))
+    .mockResolvedValueOnce(response({
+      module: { ...module, revision: 1, workflow_state: 'DRAFT' },
+    }))
+    .mockResolvedValueOnce(response({
+      module: { ...module, revision: 3, workflow_state: 'VALIDATED' },
+      validation: validation as never,
+    }))
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), { ...module, revision: 3, workflow_state: 'VALIDATED' }] }))
+
+  render(<MemoryRouter><Setup /></MemoryRouter>)
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
+  await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+  await user.click(screen.getByRole('button', { name: /save and enable anyway/i }))
+  await user.click(await screen.findByRole('button', { name: /confirm activation/i }))
+
+  await waitFor(() => expect(renderedActions()).toEqual([
+    'describe', 'plan', 'save_draft', 'validate', 'describe',
+  ]))
+  expect(screen.getByRole('button', { name: /^run dry-run$/i })).toHaveFocus()
+})
+
+it('keeps generic local validation guidance without rendering a backend message', async () => {
+  const user = userEvent.setup()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), runtimePolicy()] }))
+    .mockResolvedValueOnce(response({
+      plan: {
+        valid: false,
+        error_code: 'INVALID_MODULE_CONFIG',
+        message: 'access_key_secret=must-not-render',
+        writes: false,
+      },
+    }))
+
+  render(<MemoryRouter><Setup /></MemoryRouter>)
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /runtime policy/i }))
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+
+  expect(await screen.findByText('INVALID_MODULE_CONFIG')).toBeInTheDocument()
+  expect(screen.getByText(/review the required fields and supported values/i)).toBeInTheDocument()
+  expect(screen.queryByText(/must-not-render/i)).not.toBeInTheDocument()
+})
+
+it('keeps dependency guidance for a nonconfirmable plan', async () => {
+  const user = userEvent.setup()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), runtimePolicy()] }))
+    .mockResolvedValueOnce(response({
+      plan: {
+        valid: false,
+        error_code: 'DEPENDENCY_NOT_ACTIVE',
+        writes: false,
+      },
+    }))
+
+  render(<MemoryRouter><Setup /></MemoryRouter>)
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /runtime policy/i }))
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+
+  expect(await screen.findByText('DEPENDENCY_NOT_ACTIVE')).toBeInTheDocument()
+  expect(screen.getByText(/activate the required dependency/i)).toBeInTheDocument()
+})
+
+it('keeps submitted Aliyun mode and endpoint repair guidance without a candidate', async () => {
+  const user = userEvent.setup()
+  const module = aliyunAccess()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), module] }))
+    .mockResolvedValueOnce(response({
+      plan: {
+        valid: false,
+        error_code: 'OPENAPI_ENDPOINT_UNSUPPORTED',
+        message: 'access_key_secret=must-not-render',
+        writes: false,
+      },
+    }))
+
+  render(<MemoryRouter><Setup /></MemoryRouter>)
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
+  await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+
+  expect(await screen.findByText('OPENAPI_ENDPOINT_UNSUPPORTED')).toBeInTheDocument()
+  expect(screen.getAllByText('Direct AccessKey')).toHaveLength(2)
+  expect(screen.getByText(/use a supported aliyun endpoint/i)).toBeInTheDocument()
+  expect(screen.queryByText(/must-not-render/i)).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: /save and enable anyway/i })).not.toBeInTheDocument()
+})
+
+it('does not retain a candidate for a locally invalid plan even when confirmation is malformed', async () => {
+  const user = userEvent.setup()
+  const module = aliyunAccess()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), module] }))
+    .mockResolvedValueOnce(
+      response({
+        plan: {
+          valid: false,
+          error_code: 'INVALID_SCHEMA',
+          confirmation_allowed: true,
+          writes: false,
+        },
+      }),
+    )
+
+  render(
+    <MemoryRouter>
+      <Setup />
+    </MemoryRouter>,
+  )
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
+  await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+
+  expect(await screen.findByText(/dry-run checks failed/i)).toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: /save and enable anyway/i }),
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /^run dry-run$/i })).toBeEnabled()
+})
+
+it('invalidates a confirmable candidate and returns keyboard focus after modal dismissal', async () => {
+  const user = userEvent.setup()
+  const module = aliyunAccess()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), module] }))
+    .mockResolvedValueOnce(
+      response({
+        plan: {
+          valid: false,
+          error_code: 'OPENAPI_CONNECT_FAILURE',
+          confirmation_allowed: true,
+          writes: false,
+        },
+      }),
+    )
+
+  render(
+    <MemoryRouter>
+      <Setup />
+    </MemoryRouter>,
+  )
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
+  await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+  await user.click(screen.getByRole('button', { name: /save and enable anyway/i }))
+  await screen.findByRole('dialog', { name: /connection check failed/i })
+
+  fireEvent.keyDown(
+    screen.getByText(/connection check did not complete/i),
+    { key: 'Escape' },
+  )
+
+  await waitFor(() =>
+    expect(
+      screen.queryByRole('dialog', { name: /connection check failed/i }),
+    ).not.toBeInTheDocument(),
+  )
+  const dryRun = screen.getByRole('button', { name: /^run dry-run$/i })
+  expect(dryRun).toHaveFocus()
+  expect(
+    screen.queryByRole('button', { name: /save and enable anyway/i }),
+  ).not.toBeInTheDocument()
+})
+
 it('shows backend OpenAPI endpoints returned by an Aliyun dry-run', async () => {
   const user = userEvent.setup()
   const aliyunModule: ConfigModule = {
@@ -274,6 +794,7 @@ it('shows backend OpenAPI endpoints returned by an Aliyun dry-run', async () => 
                 network: 'vpc',
                 endpoint: 'polardb-vpc.cn-beijing.aliyuncs.com',
                 status: 'REACHABLE',
+                identity_hint: 'LTAI****ABCD',
               },
             ],
           },
@@ -288,11 +809,11 @@ it('shows backend OpenAPI endpoints returned by an Aliyun dry-run', async () => 
   )
   await claimInstallation(user)
   await user.click(
-    screen.getByRole('button', { name: /aliyun access/i }),
+    screen.getByRole('button', { name: /alibaba cloud access credentials/i }),
   )
-  await user.type(screen.getByLabelText(/access key id/i), 'test-ak')
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(
-    screen.getByLabelText(/access key secret/i),
+    screen.getByLabelText(/accesskey secret/i),
     'test-secret',
   )
   await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
@@ -302,7 +823,66 @@ it('shows backend OpenAPI endpoints returned by an Aliyun dry-run', async () => 
       /polardb-vpc\.cn-beijing\.aliyuncs\.com/,
     ),
   ).toBeInTheDocument()
-  expect(screen.getByText(/checked by the backend pod/i)).toBeInTheDocument()
+  expect(screen.getByText(/polardb check/i)).toBeInTheDocument()
+  expect(screen.getByText(/status: reachable/i)).toBeInTheDocument()
+  expect(
+    screen.getByText(/masked identity or role: LTAI\*\*\*\*ABCD/i),
+  ).toBeInTheDocument()
+  expect(
+    screen.getByText(/PolarDB permission scope/i),
+  ).toBeInTheDocument()
+  expect(screen.getByText(/DescribeDBClusters/i)).toBeInTheDocument()
+  expect(
+    screen.getByText(/does not verify.*CreateDBCluster/i),
+  ).toBeInTheDocument()
+  expect(
+    screen.getByText(/automatic instance creation can fail/i),
+  ).toBeInTheDocument()
+  expect(screen.queryByText('test-ak')).not.toBeInTheDocument()
+  expect(screen.queryByText('test-secret')).not.toBeInTheDocument()
+})
+
+it('keeps Setup usable when a dry-run response contains malformed nested details', async () => {
+  const user = userEvent.setup()
+  const module = aliyunAccess()
+  vi.mocked(executeConfig)
+    .mockResolvedValueOnce(response({ modules: [coreAdmin(), module] }))
+    .mockResolvedValueOnce(response({
+      plan: {
+        valid: true,
+        writes: false,
+        external_validation: {
+          checks: [
+            null,
+            {
+              service: 'polardb',
+              endpoint: 'access_key_secret=must-not-render',
+              status: 'REACHABLE',
+              identity_hint: 'access_key_secret=must-not-render',
+              expires_at: 9_999_999_999_999,
+            },
+            {
+              service: 'ecs_metadata',
+              endpoint: 'http://100.100.100.200',
+              status: 'REACHABLE',
+            },
+          ],
+        },
+      } as never,
+    }))
+
+  render(<MemoryRouter><Setup /></MemoryRouter>)
+  await claimInstallation(user)
+  await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
+  await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
+  await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
+
+  expect(await screen.findByText(/dry-run checks passed/i)).toBeInTheDocument()
+  expect(screen.getByText(/100\.100\.100\.200/)).toBeInTheDocument()
+  expect(screen.queryByText(/must-not-render/i)).not.toBeInTheDocument()
+  await user.type(screen.getByLabelText(/accesskey id/i), '-edited')
+  expect(screen.getByRole('button', { name: /^run dry-run$/i })).toBeEnabled()
 })
 
 it('refreshes the revision after a failed activation mutation', async () => {
@@ -371,6 +951,9 @@ it('refreshes the revision after a failed activation mutation', async () => {
   expect(
     screen.getByRole('button', { name: /^run dry-run$/i }),
   ).toBeEnabled()
+  expect(
+    screen.getByRole('button', { name: /^run dry-run$/i }),
+  ).toHaveFocus()
 })
 
 it('offers dashboard navigation when discovery reports READY', async () => {
@@ -501,7 +1084,7 @@ it('allows an administrator to dry-run an active module update', async () => {
     await screen.findByRole('button', { name: /runtime policy/i }),
   )
   const interval = await screen.findByLabelText(
-    /configuration poll interval seconds/i,
+    /configuration poll interval/i,
   )
   expect(interval).toBeEnabled()
   await user.clear(interval)

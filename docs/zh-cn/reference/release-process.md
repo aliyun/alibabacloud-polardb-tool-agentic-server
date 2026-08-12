@@ -24,7 +24,7 @@ lockfile、Chart 和 app 版本一致。
 描述用户可见功能或修复，不能只写版本号或发布动作。例如：
 
 ```text
-fix: harden resource pool networking and endpoint selection
+fix: harden dedicated pool networking and endpoint selection
 
 Release-Version: vMAJOR.MINOR.PATCH
 Source-Develop: 0123456789abcdef0123456789abcdef01234567

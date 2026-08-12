@@ -36,7 +36,13 @@ PAS 动态开放工具。Agent 只能看到有效绑定和资源所有权允许�
 
 人类用户 Session 在运行时访问允许时还可能开放 `set_default_instance`、
 `list_branches`、`create_branch` 和 `delete_branch`。Agent 不应假定这些工具
-一定存在。
+一定存在。具有可见 PolarRAG 资源的已认证用户还会获得
+`list_knowledge_resources`、`kb_search`、`kb_fetch_context`、
+`doc_find_by_name`、`doc_status`、`doc_recall` 和 `doc_get_original`。
+机器 `pas_agent_` Token 永远不会获得 PolarRAG Tool。`pas_user_agent_`
+Token 只会获得上述 7 个 Tool，同时应用被分配用户的 ACL Context 和 Agent 的
+PolarRAG 实例边界。详见
+[PolarRAG MCP 与企业身份](../knowledge/polarrag-mcp.md)。
 
 ## 可操作错误
 

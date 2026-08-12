@@ -22,6 +22,10 @@ vi.mock('./pages/AgentDetail', () => ({
   default: () => <h1>Agent detail destination</h1>,
 }))
 
+vi.mock('./pages/Instances', () => ({
+  default: () => <h1>Instances administration destination</h1>,
+}))
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((resolvePromise) => {
@@ -115,6 +119,57 @@ it('redirects a non-admin away from an admin detail route', async () => {
   expect(
     screen.queryByRole('heading', {
       name: 'Agent detail destination',
+    }),
+  ).not.toBeInTheDocument()
+})
+
+it('redirects the legacy PolarRAG route to the consolidated Instances tab', async () => {
+  window.history.replaceState({}, '', '/polarrag')
+  vi.mocked(discoverSystemState).mockResolvedValue('READY')
+  vi.mocked(useAuth).mockReturnValue({
+    user: admin,
+    loading: false,
+    login: vi.fn(),
+    logout: vi.fn(),
+    isAdmin: true,
+    authMode: 'builtin',
+  })
+
+  render(<App />)
+
+  expect(
+    await screen.findByRole('heading', {
+      name: 'Instances administration destination',
+    }),
+  ).toBeInTheDocument()
+  expect(window.location.pathname).toBe('/instances')
+  expect(window.location.search).toBe('?type=polarrag')
+})
+
+it('redirects a non-admin away from the PolarRAG administration route', async () => {
+  window.history.replaceState({}, '', '/polarrag')
+  vi.mocked(discoverSystemState).mockResolvedValue('READY')
+  vi.mocked(useAuth).mockReturnValue({
+    user: {
+      ...admin,
+      id: 'member-1',
+      external_id: 'member',
+      display_name: 'Member',
+      role: 'member',
+    },
+    loading: false,
+    login: vi.fn(),
+    logout: vi.fn(),
+    isAdmin: false,
+    authMode: 'builtin',
+  })
+
+  render(<App />)
+
+  await waitFor(() => expect(window.location.pathname).toBe('/dashboard'))
+  expect(
+    screen.queryByRole('heading', {
+      name: 'Instances administration destination',
     }),
   ).not.toBeInTheDocument()
 })

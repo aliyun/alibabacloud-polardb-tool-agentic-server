@@ -13,6 +13,11 @@ from sqlalchemy.sql.dml import Insert
 
 from server.config import get_config
 from server.core.resource_write_guard import serialized_resource_write
+from server.core.permission_template_service import (
+    PermissionScope,
+    compile_permission_snapshot,
+    permission_snapshot_to_json,
+)
 from server.models import (
     Agent,
     AgentProvisioningBinding,
@@ -26,11 +31,54 @@ from server.models import (
     ProvisioningBackendHealth,
     ProvisioningBackendStatus,
     ProvisioningCapacity,
+    PermissionTemplateRevision,
 )
 from server.models.base import utc_now
 
 class CapacityUnavailable(Exception):
     pass
+
+
+async def reserve_active_capacity_counters(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    backend_id: str,
+    agent_limit: int,
+    backend_limit: int,
+) -> None:
+    """Atomically reserve logical active-resource capacity for either mode."""
+    agent_capacity, backend_capacity = await _locked_capacity_rows(
+        session,
+        agent_id=agent_id,
+        backend_id=backend_id,
+    )
+    if (
+        agent_capacity.active_count >= agent_limit
+        or backend_capacity.active_count >= backend_limit
+    ):
+        raise CapacityUnavailable
+    agent_capacity.active_count += 1
+    backend_capacity.active_count += 1
+    await session.flush()
+
+
+async def release_active_capacity_counters(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    backend_id: str,
+) -> None:
+    agent_capacity, backend_capacity = await _locked_capacity_rows(
+        session,
+        agent_id=agent_id,
+        backend_id=backend_id,
+    )
+    if agent_capacity.active_count <= 0 or backend_capacity.active_count <= 0:
+        raise CapacityUnavailable("Provisioning capacity counters are inconsistent")
+    agent_capacity.active_count -= 1
+    backend_capacity.active_count -= 1
+    await session.flush()
 
 
 def _dialect_name(session: AsyncSession) -> str:
@@ -172,8 +220,21 @@ async def _reserve_candidate(
         select(
             ProvisioningBackend.status,
             ProvisioningBackend.max_active_resources,
+            PermissionTemplateRevision.id.label(
+                "permission_revision_id"
+            ),
+            PermissionTemplateRevision.template_id.label(
+                "permission_template_id"
+            ),
+            PermissionTemplateRevision.privileges_json,
+            PermissionTemplateRevision.grant_option,
         )
         .join(Instance, Instance.id == ProvisioningBackend.instance_id)
+        .outerjoin(
+            PermissionTemplateRevision,
+            PermissionTemplateRevision.id
+            == ProvisioningBackend.permission_template_revision_id,
+        )
         .where(
             ProvisioningBackend.id == backend_id,
             Instance.engine == engine,
@@ -216,24 +277,32 @@ async def _reserve_candidate(
     ):
         raise CapacityUnavailable
 
-    agent_capacity, backend_capacity = await _locked_capacity_rows(
-        session,
-        agent_id=agent_id,
-        backend_id=backend_id,
-    )
     default_agent_limit = (
         get_config()
         .polardb.tenant_provisioning.effective_max_active_resources_per_agent
     )
     agent_limit = agent.max_active_resources or default_agent_limit
-    if backend_capacity.active_count >= backend.max_active_resources:
-        raise CapacityUnavailable
-    if agent_capacity.active_count >= agent_limit:
-        raise CapacityUnavailable
-
-    agent_capacity.active_count += 1
-    backend_capacity.active_count += 1
+    await reserve_active_capacity_counters(
+        session,
+        agent_id=agent_id,
+        backend_id=backend_id,
+        agent_limit=agent_limit,
+        backend_limit=backend.max_active_resources,
+    )
     resource = build_resource(backend_id)
+    if backend.permission_revision_id is not None:
+        snapshot = compile_permission_snapshot(
+            revision_id=backend.permission_revision_id,
+            template_id=backend.permission_template_id,
+            privileges_json=backend.privileges_json,
+            grant_option=backend.grant_option,
+            scope=PermissionScope.MULTITENANT,
+        )
+        resource.permission_template_id = snapshot.template_id
+        resource.permission_template_revision_id = snapshot.revision_id
+        resource.permission_snapshot_json = permission_snapshot_to_json(
+            snapshot
+        )
     session.add(resource)
     await session.flush()
     if before_commit is not None:

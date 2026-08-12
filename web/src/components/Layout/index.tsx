@@ -61,7 +61,6 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
             icon: <SettingOutlined />,
             label: t('layout.configuration'),
           },
-          { key: '/settings', icon: <SettingOutlined />, label: t('layout.settings') },
           { key: '/pool', icon: <CloudOutlined />, label: t('layout.pool') },
         ]
       : []),
@@ -74,6 +73,7 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
       message.success(t('layout.passwordChanged'))
       setPwdModalOpen(false)
       pwdForm.resetFields()
+      onLogout()
     } catch (error: unknown) {
       message.error(
         getAPIErrorMessage(error, t('layout.passwordChangeFailed')),

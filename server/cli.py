@@ -68,13 +68,13 @@ def _read_secret_reference(
     *,
     stdin: TextIO,
 ) -> str | None:
-    references = {
-        "env": config.get(f"{field}_from_env"),
-        "file": config.get(f"{field}_from_file"),
-        "stdin": config.get(f"{field}_from_stdin"),
+    reference_keys = {
+        "env": f"{field}_from_env",
+        "file": f"{field}_from_file",
+        "stdin": f"{field}_from_stdin",
     }
     selected = [
-        kind for kind, value in references.items() if value
+        kind for kind, key in reference_keys.items() if key in config
     ]
     if len(selected) > 1:
         raise CLIError(
@@ -83,8 +83,9 @@ def _read_secret_reference(
     if not selected:
         return None
     source = selected[0]
+    reference = config[reference_keys[source]]
     if source == "env":
-        variable = references[source]
+        variable = reference
         if not isinstance(variable, str) or not variable:
             raise CLIError(f"{field}_from_env must name a variable")
         value = os.environ.get(variable)
@@ -94,11 +95,11 @@ def _read_secret_reference(
             )
         return value
     if source == "file":
-        value = references[source]
+        value = reference
         if not isinstance(value, str):
             raise CLIError(f"{field}_from_file must be a path")
         return _restricted_file(value).read_text().rstrip("\r\n")
-    if references[source] is not True:
+    if reference is not True:
         raise CLIError(f"{field}_from_stdin must be true")
     return stdin.readline().rstrip("\r\n")
 
@@ -109,29 +110,57 @@ def resolve_declaration_secrets(
     secret_fields: set[str],
     stdin: TextIO,
 ) -> dict[str, Any]:
-    result = {
-        key: value
-        for key, value in config.items()
-        if not key.endswith(
-            ("_from_env", "_from_file", "_from_stdin")
-        )
-    }
-    for field in secret_fields:
-        if field in result:
-            raise CLIError(
-                f"plaintext secret field '{field}' is forbidden"
-            )
-        value = _read_secret_reference(field, config, stdin=stdin)
-        if value is not None:
-            result[field] = value
-    for key in config:
-        if key.endswith(("_from_env", "_from_file", "_from_stdin")):
-            field = key.rsplit("_from_", 1)[0]
-            if field not in secret_fields:
+    suffixes = ("_from_env", "_from_file", "_from_stdin")
+
+    def dotted_path(prefix: str, field: str) -> str:
+        return f"{prefix}.{field}" if prefix else field
+
+    def walk(value: dict[str, Any], *, prefix: str) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        declared_references: list[str] = []
+
+        for key in value:
+            for suffix in suffixes:
+                if key.endswith(suffix):
+                    field = key[: -len(suffix)]
+                    if (
+                        dotted_path(prefix, field) in secret_fields
+                        and field not in declared_references
+                    ):
+                        declared_references.append(field)
+                    break
+
+        for key, item in value.items():
+            if any(
+                key == f"{field}{suffix}"
+                for field in declared_references
+                for suffix in suffixes
+            ):
+                continue
+            path = dotted_path(prefix, key)
+            if path in secret_fields:
                 raise CLIError(
-                    f"secret reference used for non-secret field '{field}'"
+                    f"plaintext secret field '{path}' is forbidden"
                 )
-    return result
+            if isinstance(item, dict):
+                result[key] = walk(item, prefix=path)
+            else:
+                result[key] = item
+
+        for field in declared_references:
+            path = dotted_path(prefix, field)
+            value_from_reference = _read_secret_reference(
+                field, value, stdin=stdin
+            )
+            if value_from_reference is not None:
+                result[field] = value_from_reference
+            elif field in value:
+                raise CLIError(
+                    f"plaintext secret field '{path}' is forbidden"
+                )
+        return result
+
+    return walk(config, prefix="")
 
 
 class ConfigProtocolClient:

@@ -14,22 +14,31 @@ import {
 } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { getDashboardStats, type DashboardStats } from '../../api/dashboard'
+import {
+  getDashboardStats,
+  type DashboardStats,
+  type DashboardViewStats,
+  type MemberDashboardStats,
+} from '../../api/dashboard'
 import './Dashboard.css'
 
-export default function Dashboard() {
-  const [stats, setStats] = useState<DashboardStats | null>(null)
+interface DashboardProps {
+  isAdmin: boolean
+}
+
+export default function Dashboard({ isAdmin }: DashboardProps) {
+  const [stats, setStats] = useState<DashboardViewStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const navigate = useNavigate()
   const { t } = useTranslation()
 
   useEffect(() => {
-    getDashboardStats()
+    getDashboardStats(isAdmin)
       .then(setStats)
       .catch(() => setError(t('dashboard.loadFailed')))
       .finally(() => setLoading(false))
-  }, [t])
+  }, [isAdmin, t])
 
   if (loading) {
     return (
@@ -42,56 +51,76 @@ export default function Dashboard() {
     return <Alert type="error" showIcon message={error} />
   }
 
-  const statCards = [
-    { icon: <TeamOutlined />, color: 'blue', value: stats?.total_users ?? 0, label: t('dashboard.totalUsers') },
-    { icon: <DatabaseOutlined />, color: 'purple', value: stats?.total_instances ?? 0, label: t('dashboard.instances') },
-    { icon: <CheckCircleOutlined />, color: 'green', value: stats?.active_instances ?? 0, label: t('dashboard.active') },
-    { icon: <CloudOutlined />, color: 'cyan', value: stats?.pool_available ?? 0, label: t('dashboard.poolAvailable') },
-    { icon: <ApartmentOutlined />, color: 'orange', value: stats?.departments ?? 0, label: t('dashboard.departments') },
-    { icon: <FileTextOutlined />, color: 'red', value: stats?.queries_today ?? 0, label: t('dashboard.queriesToday') },
-  ]
+  const adminStats = stats as DashboardStats | null
+  const memberStats = stats as MemberDashboardStats | null
+  const statCards = isAdmin
+    ? [
+        { icon: <TeamOutlined />, color: 'blue', value: adminStats?.total_users ?? 0, label: t('dashboard.totalUsers') },
+        { icon: <DatabaseOutlined />, color: 'purple', value: adminStats?.total_instances ?? 0, label: t('dashboard.instances') },
+        { icon: <CheckCircleOutlined />, color: 'green', value: adminStats?.active_instances ?? 0, label: t('dashboard.active') },
+        { icon: <CloudOutlined />, color: 'cyan', value: adminStats?.dedicated_allocatable ?? 0, label: t('dashboard.dedicatedAllocatable') },
+        { icon: <ApartmentOutlined />, color: 'orange', value: adminStats?.departments ?? 0, label: t('dashboard.departments') },
+        { icon: <FileTextOutlined />, color: 'red', value: adminStats?.queries_today ?? 0, label: t('dashboard.queriesToday') },
+      ]
+    : [
+        { icon: <DatabaseOutlined />, color: 'purple', value: memberStats?.database_instances ?? 0, label: 'Database Instances' },
+        { icon: <FileTextOutlined />, color: 'cyan', value: memberStats?.knowledge_resources ?? 0, label: 'Knowledge Resources' },
+      ]
 
-  const quickActions = [
-    {
-      icon: <PlusOutlined />,
-      iconBg: 'rgba(0, 113, 227, 0.1)',
-      iconColor: '#0071e3',
-      title: t('dashboard.registerInstance'),
-      desc: t('dashboard.registerInstanceDescription'),
-      path: '/instances',
-    },
-    {
-      icon: <UserAddOutlined />,
-      iconBg: 'rgba(52, 199, 89, 0.1)',
-      iconColor: '#34c759',
-      title: t('dashboard.manageUsers'),
-      desc: t('dashboard.manageUsersDescription'),
-      path: '/users',
-    },
-    {
-      icon: <SearchOutlined />,
-      iconBg: 'rgba(175, 82, 222, 0.1)',
-      iconColor: '#af52de',
-      title: t('dashboard.viewAuditLogs'),
-      desc: t('dashboard.viewAuditLogsDescription'),
-      path: '/audit-logs',
-    },
-    {
-      icon: <SettingOutlined />,
-      iconBg: 'rgba(255, 159, 10, 0.1)',
-      iconColor: '#ff9f0a',
-      title: t('dashboard.systemSettings'),
-      desc: t('dashboard.systemSettingsDescription'),
-      path: '/settings',
-    },
-  ]
+  const quickActions = isAdmin
+    ? [
+        {
+          icon: <PlusOutlined />,
+          iconBg: 'rgba(0, 113, 227, 0.1)',
+          iconColor: '#0071e3',
+          title: 'Register Instance',
+          desc: 'Add a PolarDB or PolarRAG instance to manage',
+          path: '/instances',
+        },
+        {
+          icon: <UserAddOutlined />,
+          iconBg: 'rgba(52, 199, 89, 0.1)',
+          iconColor: '#34c759',
+          title: 'Manage Users',
+          desc: 'Add users and assign permissions',
+          path: '/users',
+        },
+        {
+          icon: <SearchOutlined />,
+          iconBg: 'rgba(175, 82, 222, 0.1)',
+          iconColor: '#af52de',
+          title: 'View Audit Logs',
+          desc: 'Review system activity and SQL queries',
+          path: '/audit-logs',
+        },
+        {
+          icon: <SettingOutlined />,
+          iconBg: 'rgba(255, 159, 10, 0.1)',
+          iconColor: '#ff9f0a',
+          title: 'System Settings',
+          desc: 'Configure pool, quotas, and provisioning',
+          path: '/settings',
+        },
+      ]
+    : [
+        {
+          icon: <DatabaseOutlined />,
+          iconBg: 'rgba(0, 113, 227, 0.1)',
+          iconColor: '#0071e3',
+          title: 'View My Instances',
+          desc: 'Review database instances and knowledge resources accessible to you',
+          path: '/my-instances',
+        },
+      ]
 
   return (
     <div className="page-enter">
       <div style={{ marginBottom: 24 }}>
         <h2 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', letterSpacing: '-0.02em' }}>{t('dashboard.title')}</h2>
         <p style={{ fontSize: 14, color: 'var(--text-secondary)', margin: 0 }}>
-          {t('dashboard.description')}
+          {isAdmin
+            ? 'Overview of your PolarDB and PolarRAG Agentic environment'
+            : 'Overview of resources accessible to your account'}
         </p>
       </div>
 

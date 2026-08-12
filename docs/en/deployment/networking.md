@@ -10,7 +10,11 @@ routing, security-group, and database-whitelist access.
 
 Configure `aliyun_access.openapi_network` according to Pod connectivity:
 
-- `public`: `polardb.<region>.aliyuncs.com` and
+- `public`: the resolver uses the global `polardb.aliyuncs.com` hostname for
+  central regions (`cn-hangzhou`, `cn-shanghai`, `cn-beijing`,
+  `cn-wulanchabu`, `cn-heyuan`, `cn-hangzhou-finance`, and
+  `cn-beijing-finance-1`); other regions use
+  `polardb.<region>.aliyuncs.com`. STS remains regional at
   `sts.<region>.aliyuncs.com`.
 - `vpc`: `polardb-vpc.<region>.aliyuncs.com` and
   `sts-vpc.<region>.aliyuncs.com`.
@@ -19,6 +23,39 @@ AssumeRole needs both STS and PolarDB connectivity. In a VPC-only environment,
 verify CoreDNS can resolve the VPC endpoints through Alibaba Cloud DNS or
 PrivateZone, and verify routes and security policy allow HTTPS port `443`.
 Custom endpoint hostnames are not accepted.
+
+## AssumeRole and ECS requirements
+
+For `assume_role`, create a dedicated source identity for PAS. Its source
+policy grants only `sts:AssumeRole` on the one target role that PAS uses; do
+not grant a wildcard resource or PolarDB permissions to that source identity:
+
+```json
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "acs:ram::<account-id>:role/pas-runtime"
+    }
+  ]
+}
+```
+
+On the target role, configure a trust policy that permits only the intended
+source principal to assume the role. If PAS supplies an External ID, require
+the same value in the target trust policy condition. Attach the required
+PolarDB OpenAPI permissions to this target role, not to the source identity.
+Keep the source AccessKey only in PAS; STS temporary credentials are never
+persisted.
+
+For `ecs_ram_role`, attach the target RAM role to every ECS instance running a
+PAS backend Pod. PAS calls the fixed ECS metadata service through the official
+SDK with IMDSv2 only. Allow the Pod-to-metadata path required by the instance,
+but keep no HTTP proxy for metadata, do not expose a metadata URL setting, or
+expect an IMDSv1 fallback. Verify the role binding and IMDSv2 access from each
+replica before enabling the mode.
 
 ## Database endpoints
 

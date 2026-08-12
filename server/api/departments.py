@@ -17,7 +17,6 @@ class DepartmentResponse(BaseModel):
     id: str
     name: str
     description: str | None
-    max_instances: int | None = None
     agentic_db_cluster_id: str | None = None
     agentic_db_cluster_description: str | None = None
 
@@ -30,7 +29,6 @@ class CreateDepartmentRequest(BaseModel):
 class UpdateDepartmentRequest(BaseModel):
     name: str | None = None
     description: str | None = None
-    max_instances: int | None = None
     agentic_db_cluster_id: str | None = None
     agentic_db_cluster_description: str | None = None
 
@@ -51,7 +49,6 @@ async def list_departments(
     return [
         DepartmentResponse(
             id=d.id, name=d.name, description=d.description,
-            max_instances=d.max_instances,
             agentic_db_cluster_id=d.agentic_db_cluster_id,
             agentic_db_cluster_description=d.agentic_db_cluster_description,
         )
@@ -68,7 +65,6 @@ async def create_department(
     dept = await department_manager.create_department(session, body.name, body.description)
     return DepartmentResponse(
         id=dept.id, name=dept.name, description=dept.description,
-        max_instances=dept.max_instances,
         agentic_db_cluster_id=dept.agentic_db_cluster_id,
         agentic_db_cluster_description=dept.agentic_db_cluster_description,
     )
@@ -86,44 +82,6 @@ async def update_department(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
-    if body.max_instances is not None:
-        from sqlalchemy import select, func
-
-        from server.models.binding import UserDepartment
-        from server.models.instance import (
-            AllocationMode,
-            Instance,
-            InstanceStatus,
-        )
-        from server.models.quota_counter import QuotaCounter
-
-        dept.max_instances = body.max_instances
-        row = await session.execute(
-            select(QuotaCounter).where(QuotaCounter.scope == f"dept:{department_id}")
-        )
-        counter = row.scalar_one_or_none()
-        if counter is None:
-            count_result = await session.execute(
-                select(func.count()).select_from(Instance).join(
-                    UserDepartment, Instance.owner_user_id == UserDepartment.user_id
-                ).where(
-                    UserDepartment.department_id == department_id,
-                    Instance.allocation_mode.in_(
-                        [
-                            AllocationMode.AUTO_PROVISIONED,
-                            AllocationMode.POOLED,
-                        ]
-                    ),
-                    Instance.status.in_([InstanceStatus.CREATING, InstanceStatus.ACTIVE, InstanceStatus.STOPPED]),
-                )
-            )
-            current = count_result.scalar() or 0
-            counter = QuotaCounter(scope=f"dept:{department_id}", current_count=current, max_limit=body.max_instances)
-            session.add(counter)
-        else:
-            counter.max_limit = body.max_instances
-        await session.commit()
-
     if body.agentic_db_cluster_id is not None:
         dept.agentic_db_cluster_id = body.agentic_db_cluster_id
     if body.agentic_db_cluster_description is not None:
@@ -134,7 +92,6 @@ async def update_department(
 
     return DepartmentResponse(
         id=dept.id, name=dept.name, description=dept.description,
-        max_instances=dept.max_instances,
         agentic_db_cluster_id=dept.agentic_db_cluster_id,
         agentic_db_cluster_description=dept.agentic_db_cluster_description,
     )

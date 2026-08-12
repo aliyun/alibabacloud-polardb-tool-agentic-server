@@ -49,7 +49,6 @@ import {
   drainProvisioningBackend,
   listProvisioningBackends,
   updateProvisioningBackend,
-  type CreateProvisioningBackendInput,
   type ProvisioningBackend,
 } from '../../api/provisioningBackends'
 import CredentialReveal from '../../components/CredentialReveal'
@@ -86,6 +85,16 @@ interface InstanceFormValues {
   host: string
   port: number
   test_credential_id?: string
+}
+
+interface MultitenantBackendFormValues {
+  instance_id: string
+  admin_credential_id: string
+  priority: number
+  max_active_resources: number
+  resource_min_cpu: number
+  resource_max_cpu: number
+  ddl_concurrency: number
 }
 
 function statusColor(status: string) {
@@ -126,7 +135,7 @@ export default function InstanceDetail() {
   const [confirmation, setConfirmation] = useState<Confirmation>(null)
   const [instanceForm] = Form.useForm<InstanceFormValues>()
   const [credentialForm] = Form.useForm<CredentialFormValues>()
-  const [backendForm] = Form.useForm<CreateProvisioningBackendInput>()
+  const [backendForm] = Form.useForm<MultitenantBackendFormValues>()
 
   const isCurrent = useCallback((scope: RouteScope) => {
     const current = scopeRef.current
@@ -218,7 +227,7 @@ export default function InstanceDetail() {
       region: instance.region ?? undefined,
       host: instance.host ?? '',
       port: instance.port ?? 3306,
-      test_credential_id: backend?.admin_credential_id,
+      test_credential_id: backend?.admin_credential_id ?? undefined,
     })
     setEndpointChanged(false)
     setEndpointTestResult(null)
@@ -302,8 +311,9 @@ export default function InstanceDetail() {
     backendForm.setFieldsValue(
       backend
         ? {
-            instance_id: backend.instance_id,
-            admin_credential_id: backend.admin_credential_id,
+            instance_id: backend.instance_id ?? id,
+            admin_credential_id:
+              backend.admin_credential_id ?? undefined,
             priority: backend.priority,
             max_active_resources: backend.max_active_resources,
             resource_min_cpu: backend.resource_min_cpu,
@@ -433,7 +443,7 @@ export default function InstanceDetail() {
   }
 
   const handleBackendSave = async (
-    values: CreateProvisioningBackendInput,
+    values: MultitenantBackendFormValues,
   ) => {
     const scope = { ...scopeRef.current }
     const currentBackend = backend
@@ -451,6 +461,7 @@ export default function InstanceDetail() {
           })
         : await createProvisioningBackend({
             ...values,
+            backend_type: 'multitenant',
             instance_id: scope.instanceId,
           })
       if (!isCurrent(scope)) return

@@ -13,13 +13,16 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from server.models.base import Base, TimestampMixin
+from server.models.dedicated_pool import ReclaimPolicy
 from server.models.instance import InstanceEngine
+from server.models.user import ProvisioningMode
 
 if TYPE_CHECKING:
     from server.models.credential import InstanceCredential
@@ -30,6 +33,8 @@ class DBInstanceStatus(str, enum.Enum):
     READY = "ready"
     FAILED = "failed"
     DELETING = "deleting"
+    COOLING_DOWN = "cooling_down"
+    RESTORING = "restoring"
     DELETED = "deleted"
     DELETE_FAILED = "delete_failed"
 
@@ -50,6 +55,18 @@ class LeaseCleanupStep(str, enum.Enum):
     TENANT_DROPPED = "tenant_dropped"
     RESOURCE_CONFIG_DROPPED = "resource_config_dropped"
     RESIDUE_VERIFIED = "residue_verified"
+
+
+class DeleteLifecycleStep(str, enum.Enum):
+    PENDING = "pending"
+    ACCOUNT_LOCKED = "account_locked"
+    SESSIONS_TERMINATED = "sessions_terminated"
+    DISCONNECTED = "disconnected"
+    COOLING_DOWN = "cooling_down"
+    LOGICAL_CLEANUP = "logical_cleanup"
+    PHYSICAL_DESTROY = "physical_destroy"
+    SANITIZE_DISPATCH = "sanitize_dispatch"
+    COMPLETE = "complete"
 
 
 def generate_db_instance_id() -> str:
@@ -84,6 +101,30 @@ class DBInstanceResource(TimestampMixin, Base):
         Enum(DBInstanceStatus, native_enum=False, length=32),
         default=DBInstanceStatus.CREATING,
     )
+    provisioning_mode: Mapped[ProvisioningMode] = mapped_column(
+        Enum(ProvisioningMode, native_enum=False, length=32),
+        default=ProvisioningMode.MULTITENANT,
+        server_default="MULTITENANT",
+    )
+    allocated_instance_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("instances.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    permission_template_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("permission_templates.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    permission_template_revision_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("permission_template_revisions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    permission_snapshot_json: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     tenant_name: Mapped[str | None] = mapped_column(String(32), nullable=True)
     resource_config_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     database_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -102,6 +143,32 @@ class DBInstanceResource(TimestampMixin, Base):
     worker_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     worker_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     capacity_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    delete_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    disconnected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    effective_delete_cooldown_duration_hours: Mapped[int | None] = (
+        mapped_column(Integer, nullable=True)
+    )
+    cooldown_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reclaim_policy: Mapped[ReclaimPolicy | None] = mapped_column(
+        Enum(ReclaimPolicy, native_enum=False, length=32), nullable=True
+    )
+    delete_step: Mapped[DeleteLifecycleStep] = mapped_column(
+        Enum(DeleteLifecycleStep, native_enum=False, length=64),
+        default=DeleteLifecycleStep.PENDING,
+        server_default="PENDING",
+    )
+    restore_source_status: Mapped[DBInstanceStatus | None] = mapped_column(
+        Enum(DBInstanceStatus, native_enum=False, length=32), nullable=True
+    )
+    restore_failure_reason: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )
 
     credentials: Mapped[list["InstanceCredential"]] = relationship(
         back_populates="resource",

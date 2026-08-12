@@ -34,9 +34,10 @@ from server.auth.principal import (
     user_subject,
 )
 from server.config import AppConfig
+from server.core import agent_user_token_service
 from server.core.agent_token_service import hash_agent_token
 from server.core.crypto import decrypt, encrypt
-from server.models import Agent, AgentAPIToken, AgentStatus
+from server.models import Agent, AgentAPIToken, AgentStatus, AgentUserToken
 from server.models.oauth import (
     OAuthAuthorizationCode,
     OAuthDeniedJTI,
@@ -105,6 +106,58 @@ def _schedule_agent_token_use(
             logger.warning(
                 "agent token usage telemetry task failed",
                 extra={"action": "agent_token_usage_telemetry"},
+            )
+
+    task.add_done_callback(finish)
+
+
+async def _record_agent_user_token_use(
+    session_factory: async_sessionmaker[AsyncSession],
+    token_id: str,
+    used_at: datetime,
+) -> None:
+    try:
+        async with session_factory() as session:
+            await session.execute(
+                update(AgentUserToken)
+                .where(
+                    AgentUserToken.id == token_id,
+                    (
+                        AgentUserToken.last_used_at.is_(None)
+                        | (
+                            AgentUserToken.last_used_at
+                            <= used_at - timedelta(minutes=5)
+                        )
+                    ),
+                )
+                .values(last_used_at=used_at)
+            )
+            await session.commit()
+    except Exception:
+        logger.warning(
+            "agent user token usage telemetry update failed",
+            extra={"action": "agent_user_token_usage_telemetry"},
+        )
+
+
+def _schedule_agent_user_token_use(
+    session_factory: async_sessionmaker[AsyncSession],
+    token_id: str,
+    used_at: datetime,
+) -> None:
+    task = asyncio.create_task(
+        _record_agent_user_token_use(session_factory, token_id, used_at)
+    )
+    _agent_usage_tasks.add(task)
+
+    def finish(completed: asyncio.Task[None]) -> None:
+        _agent_usage_tasks.discard(completed)
+        try:
+            completed.result()
+        except Exception:
+            logger.warning(
+                "agent user token usage telemetry task failed",
+                extra={"action": "agent_user_token_usage_telemetry"},
             )
 
     task.add_done_callback(finish)
@@ -640,6 +693,8 @@ class PASAuthProvider:
         follow the existing JWT signature, audience, and JTI deny-list path.
         Returns ``None`` for any validation failure.
         """
+        if token.startswith(agent_user_token_service.TOKEN_PREFIX):
+            return await self._load_agent_user_access_token(token)
         if token.startswith("pas_agent_"):
             return await self._load_agent_access_token(token)
 
@@ -722,6 +777,33 @@ class PASAuthProvider:
                 subject=agent_subject(row.agent_id),
             )
         _schedule_agent_token_use(self._session_factory, token_id, now)
+        return access_token
+
+    async def _load_agent_user_access_token(
+        self, token: str
+    ) -> AccessToken | None:
+        async with self._session_factory() as session:
+            context = await agent_user_token_service.resolve_token(
+                session, token
+            )
+            if context is None:
+                return None
+            row = context.token
+            expires_at = row.expires_at
+            if expires_at is not None and expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+            access_token = AccessToken(
+                token=token,
+                client_id=f"agent-user:{context.assignment.id}",
+                scopes=[],
+                expires_at=(
+                    int(expires_at.timestamp()) if expires_at else None
+                ),
+                subject=user_subject(context.user.id),
+            )
+            token_id = row.id
+        _schedule_agent_user_token_use(self._session_factory, token_id, now)
         return access_token
 
     async def revoke_token(

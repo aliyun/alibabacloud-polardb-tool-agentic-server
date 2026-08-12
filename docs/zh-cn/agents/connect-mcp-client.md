@@ -5,6 +5,10 @@
 连接客户端前先创建 Agent 并授予访问。Agent 详情页是 MCP URL 和有效 Token
 的事实来源。
 
+PolarRAG 还要求管理员先为 Agent 绑定 PolarRAG 实例并明确分配 PAS 用户。
+用户登录后，在 **My Instances > MCP connections** 中签发自己的
+`pas_user_agent_` Token。
+
 ## 复制客户端配置
 
 **Copy JSON configuration** 会生成：
@@ -24,6 +28,25 @@
 
 Server 名称默认使用 Agent 名称。使用控制台生成的 JSON 时无需手工替换字段。
 Token 应放入客户端密钥存储，而不是源代码仓库。
+
+用户专用 PolarRAG 配置包含 `type: "http"`。只有签发、查看或重新生成后才会
+展示明文 Token：
+
+```json
+{
+  "mcpServers": {
+    "AGENT_NAME": {
+      "type": "http",
+      "url": "http://PAS_HOST:18780/mcp",
+      "headers": {
+        "Authorization": "Bearer pas_user_agent_REDACTED"
+      }
+    }
+  }
+}
+```
+
+私网 HTTP 只适用于隔离的开发环境；生产环境和不可信网络必须使用 HTTPS。
 
 ## 网络与 TLS
 

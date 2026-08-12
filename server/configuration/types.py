@@ -63,6 +63,8 @@ class ValidationProof(BaseModel):
     dependency_revisions: dict[str, int]
     validator_set_version: int = 1
     message: str = "Configuration is valid"
+    warnings: tuple[str, ...] = ()
+    request_id: str | None = None
 
 
 class ModuleDocument(BaseModel):

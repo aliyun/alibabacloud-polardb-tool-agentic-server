@@ -24,23 +24,23 @@ async def _validated_command(context) -> ConfigCommand:
     saved = await context.service.execute(
         ConfigCommand(
             action=ConfigAction.SAVE_DRAFT,
-            module="agent_token_auth",
-            expected_revision=0,
-            config={"enabled": True},
+            module="observability",
+            expected_revision=1,
+            config={"log_level": "debug"},
         ),
         ADMIN,
     )
     validated = await context.service.execute(
         ConfigCommand(
             action=ConfigAction.VALIDATE,
-            module="agent_token_auth",
+            module="observability",
             expected_revision=saved.module["revision"],
         ),
         ADMIN,
     )
     return ConfigCommand(
         action=ConfigAction.ACTIVATE,
-        module="agent_token_auth",
+        module="observability",
         expected_revision=validated.module["revision"],
         validation_id=validated.validation["validation_id"],
         idempotency_key="same",
@@ -63,7 +63,7 @@ async def test_idempotency_key_reuse_with_other_body_conflicts(
         await context.service.execute(
             ConfigCommand(
                 action=ConfigAction.DISABLE,
-                module="agent_token_auth",
+                module="observability",
                 expected_revision=command.expected_revision + 1,
                 idempotency_key="same",
             ),

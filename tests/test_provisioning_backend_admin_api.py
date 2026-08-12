@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from server.core import provisioning_backend_service
@@ -20,6 +21,10 @@ from server.models import (
     InstanceTopology,
     ProvisioningBackend,
     ProvisioningBackendStatus,
+    ProvisioningBackendType,
+    DedicatedPool,
+    PermissionTemplate,
+    PermissionTemplateRevision,
 )
 
 pytest_plugins = ("tests._admin_api_fixtures",)
@@ -136,6 +141,98 @@ async def test_backend_rejects_mismatched_admin_credential(
         json={
             "instance_id": first.id,
             "admin_credential_id": credential.id,
+            "max_active_resources": 10,
+            "resource_min_cpu": 0,
+            "resource_max_cpu": 2,
+            "ddl_concurrency": 4,
+        },
+        headers=admin_headers,
+    )
+    assert response.status_code == 422
+
+
+async def test_create_dedicated_backend_uses_pool_target_without_admin_credential(
+    client,
+    setup,
+):
+    http, admin_headers, _ = client
+    factory, _, _ = setup
+    async with factory() as session:
+        template = PermissionTemplate(name="dedicated-api-template")
+        revision = PermissionTemplateRevision(
+            template=template,
+            revision=1,
+            privileges_json='["SELECT"]',
+        )
+        pool = DedicatedPool(
+            name="dedicated-api-pool",
+            target_size=1,
+            max_total_members=3,
+            max_member_purchases_per_hour=2,
+            max_create_requests_per_agent_per_hour=10,
+            max_delete_requests_per_agent_per_hour=10,
+            purchase_config_json='{"db_node_class":"test"}',
+            region_id="cn-hangzhou",
+            vpc_id="vpc-test",
+            vswitch_id="vsw-test",
+            permission_template_revision=revision,
+        )
+        session.add(pool)
+        await session.commit()
+        pool_id = pool.id
+
+    response = await http.post(
+        "/api/provisioning-backends",
+        json={
+            "backend_type": "dedicated_pool",
+            "dedicated_pool_id": pool_id,
+            "priority": 7,
+            "max_active_resources": 10,
+            "resource_min_cpu": 0,
+            "resource_max_cpu": 2,
+            "ddl_concurrency": 4,
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["backend_type"] == "dedicated_pool"
+    assert response.json()["dedicated_pool_id"] == pool_id
+    assert response.json()["instance_id"] is None
+    assert response.json()["admin_credential_id"] is None
+    assert response.json()["available_for_create"] is True
+    async with factory() as session:
+        backend = await session.get(
+            ProvisioningBackend,
+            response.json()["id"],
+        )
+        assert backend is not None
+        assert backend.backend_type == (ProvisioningBackendType.DEDICATED_POOL)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {},
+        {
+            "instance_id": "instance-id",
+            "admin_credential_id": "credential-id",
+            "dedicated_pool_id": "pool-id",
+        },
+        {"backend_type": "dedicated_pool"},
+        {
+            "backend_type": "dedicated_pool",
+            "dedicated_pool_id": "pool-id",
+            "instance_id": "instance-id",
+        },
+    ],
+)
+async def test_backend_target_must_match_backend_type(client, target):
+    http, admin_headers, _ = client
+    response = await http.post(
+        "/api/provisioning-backends",
+        json={
+            **target,
             "max_active_resources": 10,
             "resource_min_cpu": 0,
             "resource_max_cpu": 2,

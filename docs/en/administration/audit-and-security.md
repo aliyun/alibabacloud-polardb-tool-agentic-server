@@ -13,6 +13,11 @@ failure category. SQL policy records blocked or confirmed operations without
 making credentials public. Configuration audit records changed field names,
 revision, and state while excluding secret values.
 
+The console separates the same audit stream into **All**, **SQL**, and
+**PolarRAG** views. PolarRAG Tool records include resolved instance, Space, KB,
+hit-count, and partial-failure metadata. PolarRAG remains the document ACL
+authority; PAS does not record the trusted ACL context or the search text.
+
 ## Secret boundary
 
 Database passwords, Agent Tokens, bootstrap tokens, root keys, AccessKeys,

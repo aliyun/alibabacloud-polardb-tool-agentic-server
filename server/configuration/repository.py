@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
@@ -29,6 +30,13 @@ from server.models.system_config import MAX_CONFIG_DOCUMENT_BYTES
 
 class ConfigConflict(ValueError):
     """Raised when an optimistic configuration revision is stale."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModuleDocumentSnapshot:
+    document: ModuleDocument
+    created_at: datetime
+    updated_at: datetime | None
 
 
 class ConfigRepository:
@@ -77,6 +85,20 @@ class ConfigRepository:
             if row is None:
                 return None
             return ModuleDocument.model_validate_json(row.config_value)
+
+    async def get_module_snapshot(
+        self, module: str
+    ) -> ModuleDocumentSnapshot | None:
+        """Read the document and row timestamp needed by lazy migrations."""
+        async with self.session_factory() as session:
+            row = await session.get(SystemConfig, f"module.{module}")
+            if row is None:
+                return None
+            return ModuleDocumentSnapshot(
+                document=ModuleDocument.model_validate_json(row.config_value),
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
 
     async def get_config_row(self, key: str) -> SystemConfig | None:
         async with self.session_factory() as session:

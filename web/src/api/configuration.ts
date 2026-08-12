@@ -33,6 +33,7 @@ export interface ConfigModule {
   }
   dependencies: string[]
   dependents: string[]
+  configurable?: boolean
 }
 
 export interface JSONSchemaProperty {
@@ -47,6 +48,42 @@ export interface JSONSchemaProperty {
   maxLength?: number
   items?: { type?: string }
   anyOf?: JSONSchemaProperty[]
+}
+
+export interface SecretMarker {
+  configured: true
+  display_hint?: string
+  updated_at?: string
+}
+
+export interface SecretClearAction {
+  $secret_action: 'clear'
+}
+
+export type AliyunCredentialMode = 'direct_ak' | 'assume_role' | 'ecs_ram_role'
+
+export interface AliyunCredentialTransition {
+  previous_mode_action: 'clear' | 'retain'
+  selected_mode_action: 'replace' | 'reuse_retained'
+  reuse_direct_ak_as_assume_source: boolean
+  delete_retained_modes: AliyunCredentialMode[]
+}
+
+export interface AliyunAccessMutation {
+  credential_mode: AliyunCredentialMode
+  region_id?: string
+  openapi_network?: 'public' | 'vpc'
+  direct_ak?: { access_key_id: string; access_key_secret: string }
+  assume_role?: {
+    source_access_key_id?: string
+    source_access_key_secret?: string
+    role_arn: string
+    role_session_name?: string
+    duration_seconds?: number
+    external_id?: string | SecretClearAction
+  }
+  ecs_ram_role?: { role_name?: string | null; metadata_policy: 'v2_only' }
+  transition: AliyunCredentialTransition
 }
 
 export interface ConfigResponse {
@@ -64,6 +101,9 @@ export interface ConfigResponse {
     valid: boolean
     message?: string | null
     error_code?: string | null
+    confirmation_allowed?: boolean
+    confirmation_error_code?: string | null
+    request_id?: string | null
     writes: boolean
     dependencies?: string[]
     external_validation?: ExternalValidation
@@ -77,6 +117,9 @@ export interface ExternalValidation {
     network: string
     endpoint: string
     status: string
+    identity_hint?: string
+    expires_at?: number
+    request_id?: string
   }[]
 }
 

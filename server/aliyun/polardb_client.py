@@ -1,22 +1,39 @@
 from __future__ import annotations
 
 import abc
-import hashlib
 import logging
 import secrets
 import string
 import warnings
 from collections.abc import Mapping
 
+from server.aliyun.diagnostics import safe_error_detail
+
 logger = logging.getLogger(__name__)
+
+
+class AliyunCredentialsUnavailable(RuntimeError):
+    code = "ALIYUN_ACCESS_NOT_CONFIGURED"
 
 
 class OpenAPIError(Exception):
     """Exception representing an Aliyun OpenAPI error response."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        request_id: str | None = None,
+        operation: str | None = None,
+    ):
         self.code = code
-        super().__init__(f"{code}: {message}")
+        self.request_id = request_id
+        self.operation = operation
+        self.message = safe_error_detail(message) or (
+            "Alibaba Cloud OpenAPI request failed."
+        )
+        super().__init__(f"{code}: {self.message}")
 
 
 OPENAPI_DUPLICATE_CODES = frozenset({
@@ -35,7 +52,18 @@ class PolarDBClient(abc.ABC):
     async def describe_endpoints(self, cluster_id: str) -> dict: ...
 
     @abc.abstractmethod
-    async def create_account(self, cluster_id: str, account_name: str, password: str) -> dict: ...
+    async def create_account(
+        self,
+        cluster_id: str,
+        account_name: str,
+        password: str,
+        account_type: str = "Normal",
+    ) -> dict: ...
+
+    @abc.abstractmethod
+    async def describe_account(
+        self, cluster_id: str, account_name: str
+    ) -> dict | None: ...
 
     @abc.abstractmethod
     async def create_agentic_db(self, settings: Mapping[str, str]) -> dict: ...
@@ -58,7 +86,7 @@ class PolarDBClient(abc.ABC):
 
     @abc.abstractmethod
     async def create_database(
-        self, cluster_id: str, db_name: str, account_name: str,
+        self, cluster_id: str, db_name: str, account_name: str | None = None,
         character_set: str = "utf8", account_privilege: str = "ReadWrite",
     ) -> None: ...
 
@@ -66,11 +94,14 @@ class PolarDBClient(abc.ABC):
 class MockPolarDBClient(PolarDBClient):
     """Mock implementation for development and testing."""
 
+    simulation_mode = True
+
     def __init__(self) -> None:
         self._clusters: dict[str, dict] = {}
         self._endpoints: dict[str, dict] = {}
         self._should_fail_create = False
         self._duplicate_errors: dict[str, bool] = {}
+        self._purchases_by_token: dict[str, dict] = {}
 
     async def discover_clusters(self, region_id: str) -> list[dict]:
         return []
@@ -82,11 +113,31 @@ class MockPolarDBClient(PolarDBClient):
             {"connection_string": "127.0.0.1", "port": "3306"},
         ]}]}
 
-    async def create_account(self, cluster_id: str, account_name: str, password: str) -> dict:
+    async def create_account(
+        self,
+        cluster_id: str,
+        account_name: str,
+        password: str,
+        account_type: str = "Normal",
+    ) -> dict:
         if self._duplicate_errors.get("create_account"):
             self._duplicate_errors["create_account"] = False
             raise OpenAPIError("InvalidAccountName.Duplicate", "Account already exists")
-        return {"account_name": account_name, "status": "available"}
+        return {
+            "account_name": account_name,
+            "account_type": account_type,
+            "status": "available",
+        }
+
+    async def describe_account(
+        self, cluster_id: str, account_name: str
+    ) -> dict | None:
+        del cluster_id
+        return {
+            "account_name": account_name,
+            "account_type": "Normal",
+            "status": "Available",
+        }
 
     async def create_agentic_db(self, settings: Mapping[str, str]) -> dict:
         if self._should_fail_create:
@@ -115,6 +166,9 @@ class MockPolarDBClient(PolarDBClient):
         if self._should_fail_create:
             self._should_fail_create = False
             raise OpenAPIError("OperationDenied", "Mock create failure")
+        client_token = params.get("client_token")
+        if client_token and client_token in self._purchases_by_token:
+            return dict(self._purchases_by_token[client_token])
         cluster_id = "pc-mock-" + "".join(
             secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8)
         )
@@ -124,11 +178,15 @@ class MockPolarDBClient(PolarDBClient):
                 secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8)
             )
         )
-        return {
+        result = {
             "cluster_id": cluster_id,
             "agentic_db_cluster_id": returned_agentic_id,
             "agentic_db_cluster_description": agentic_db_cluster_description,
+            "request_id": "request-mock-" + cluster_id.removeprefix("pc-mock-"),
         }
+        if client_token:
+            self._purchases_by_token[client_token] = dict(result)
+        return result
 
     async def delete_cluster(self, cluster_id: str) -> None:
         self._clusters.pop(cluster_id, None)
@@ -139,7 +197,7 @@ class MockPolarDBClient(PolarDBClient):
         return {"status": info["status"]}
 
     async def create_database(
-        self, cluster_id: str, db_name: str, account_name: str,
+        self, cluster_id: str, db_name: str, account_name: str | None = None,
         character_set: str = "utf8", account_privilege: str = "ReadWrite",
     ) -> None:
         if self._duplicate_errors.get("create_database"):
@@ -168,7 +226,77 @@ class MockPolarDBClient(PolarDBClient):
 
 
 _client: PolarDBClient | None = None
-_client_credential_hash: str | None = None
+_CacheKey = tuple[int, str, str, str]
+_client_credential_hash: _CacheKey | str | None = None
+
+
+def _effective_client_key(aliyun, *, simulation_enabled: bool) -> _CacheKey | str:
+    if not aliyun.has_active_credentials():
+        if simulation_enabled:
+            return "simulation"
+        raise AliyunCredentialsUnavailable(
+            "Alibaba Cloud access is not configured"
+        )
+    return (
+        aliyun.config_revision,
+        aliyun.credential_digest,
+        aliyun.region_id,
+        aliyun.openapi_network,
+    )
+
+
+def _get_or_create_client(
+    aliyun,
+    *,
+    simulation_enabled: bool = False,
+) -> PolarDBClient:
+    """Return one client/provider per effective runtime credential key."""
+    global _client, _client_credential_hash
+
+    # Test overrides intentionally bypass runtime configuration selection.
+    if _client is not None and _client_credential_hash == "__test_override__":
+        return _client
+
+    cache_key = _effective_client_key(
+        aliyun,
+        simulation_enabled=simulation_enabled,
+    )
+    if _client is not None and cache_key == _client_credential_hash:
+        return _client
+
+    if aliyun.has_active_credentials():
+        from server.aliyun.credential_provider import build_credential_provider
+        from server.aliyun.credential_observability import (
+            CredentialMetricSample,
+            emit_credential_metric,
+        )
+        from server.aliyun.polardb_client_impl import AliyunPolarDBClient
+
+        mode = getattr(aliyun, "credential_mode", "unknown")
+        try:
+            _client = AliyunPolarDBClient(build_credential_provider(aliyun))
+        except Exception:
+            emit_credential_metric(
+                CredentialMetricSample(
+                    name="aliyun_credential_provider_rebuild",
+                    fields={"mode": mode, "outcome": "failure"},
+                )
+            )
+            raise
+        emit_credential_metric(
+            CredentialMetricSample(
+                name="aliyun_credential_provider_rebuild",
+                fields={"mode": mode, "outcome": "success"},
+            )
+        )
+    elif simulation_enabled:
+        _client = MockPolarDBClient()
+    else:  # pragma: no cover - guarded by _effective_client_key
+        raise AliyunCredentialsUnavailable(
+            "Alibaba Cloud access is not configured"
+        )
+    _client_credential_hash = cache_key
+    return _client
 
 
 def get_polardb_client() -> PolarDBClient:
@@ -177,93 +305,30 @@ def get_polardb_client() -> PolarDBClient:
         DeprecationWarning,
         stacklevel=2,
     )
-    global _client
-    if _client is None:
-        from server.config import get_config
+    from server.config import get_config
 
-        config = get_config()
-        if config.aliyun.access_key_id and config.aliyun.access_key_secret:
-            from server.aliyun.credential_provider import DirectAKProvider
-            from server.aliyun.polardb_client_impl import AliyunPolarDBClient
-
-            provider = DirectAKProvider(
-                ak=config.aliyun.access_key_id,
-                sk=config.aliyun.access_key_secret,
-                region_id=config.aliyun.region_id,
-                openapi_network=config.aliyun.openapi_network,
-            )
-            _client = AliyunPolarDBClient(provider)
-        else:
-            _client = MockPolarDBClient()
-    return _client
+    config = get_config()
+    return _get_or_create_client(
+        config.aliyun,
+        simulation_enabled=(
+            config.polardb.tenant_provisioning
+            .dedicated_pool_simulation_enabled
+        ),
+    )
 
 
 async def get_polardb_client_async(session) -> PolarDBClient:
     """Return a cached PolarDBClient, rebuilding when credentials change."""
-    global _client, _client_credential_hash
-
-    # Fast path for test overrides set via set_polardb_client()
-    if _client is not None and _client_credential_hash == "__test_override__":
-        return _client
-
     from server.config import get_config
 
-    aliyun = get_config().aliyun
-    ak = aliyun.access_key_id
-    sk = aliyun.access_key_secret
-    if ak and sk:
-        mode = aliyun.credential_mode
-        role_arn = aliyun.role_arn
-        session_name = aliyun.role_session_name
-        duration = aliyun.sts_duration_seconds
-        region = aliyun.region_id
-        network = aliyun.openapi_network
-
-        raw = (
-            f"{mode}:{ak}:{sk}:{role_arn}:{session_name}:"
-            f"{duration}:{region}:{network}"
-        )
-        h = hashlib.sha256(raw.encode()).hexdigest()
-
-        if _client is not None and h == _client_credential_hash:
-            return _client
-
-        from server.aliyun.credential_provider import (
-            AssumeRoleProvider,
-            CredentialProvider,
-            DirectAKProvider,
-        )
-        from server.aliyun.polardb_client_impl import AliyunPolarDBClient
-
-        provider: CredentialProvider
-        if mode == "assume_role":
-            provider = AssumeRoleProvider(
-                ak=ak, sk=sk, role_arn=role_arn,
-                session_name=session_name,
-                duration=duration,
-                region_id=region,
-                openapi_network=network,
-            )
-        else:
-            provider = DirectAKProvider(
-                ak=ak,
-                sk=sk,
-                region_id=region,
-                openapi_network=network,
-            )
-
-        _client = AliyunPolarDBClient(provider)
-        _client_credential_hash = h
-        return _client
-
-    # No active cloud-access module: keep the local mock client.
-    h = "mock"
-    if _client is not None and h == _client_credential_hash:
-        return _client
-
-    _client = MockPolarDBClient()
-    _client_credential_hash = h
-    return _client
+    config = get_config()
+    return _get_or_create_client(
+        config.aliyun,
+        simulation_enabled=(
+            config.polardb.tenant_provisioning
+            .dedicated_pool_simulation_enabled
+        ),
+    )
 
 
 def set_polardb_client(client: PolarDBClient) -> None:

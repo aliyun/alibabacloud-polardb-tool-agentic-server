@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -102,8 +101,18 @@ def test_compose_env_example_uses_current_image_version() -> None:
 
 
 def test_docker_compose_config_is_valid_when_cli_is_available() -> None:
-    if shutil.which("docker") is None:
+    try:
+        compose_version = subprocess.run(
+            ["docker", "compose", "version"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
         pytest.skip("Docker CLI is not installed")
+    if compose_version.returncode != 0:
+        pytest.skip("Docker Compose is not available")
     environment = {
         **os.environ,
         "PAS_ENCRYPTION_KEY": "test-only-not-a-production-root-key",

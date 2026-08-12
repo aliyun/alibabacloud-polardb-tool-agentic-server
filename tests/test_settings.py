@@ -33,6 +33,29 @@ def test_legacy_settings_route_is_absent():
     assert "/api/settings" not in router_source
 
 
+def test_legacy_web_settings_and_quota_are_retired():
+    web_root = ROOT / "web" / "src"
+    assert not (web_root / "pages" / "Settings" / "index.tsx").exists()
+    assert not (web_root / "pages" / "Quota" / "index.tsx").exists()
+    assert not (web_root / "api" / "settings.ts").exists()
+    assert not (web_root / "api" / "quota.ts").exists()
+
+    app_source = (web_root / "App.tsx").read_text(encoding="utf-8")
+    assert "./pages/Settings" not in app_source
+    assert "./pages/Quota" not in app_source
+    assert 'path="/quota"' not in app_source
+    assert re.search(
+        r'path="/settings"\s+element=\{<Navigate to="/settings/configuration" replace />\}',
+        app_source,
+    )
+
+    layout_source = (
+        web_root / "components" / "Layout" / "index.tsx"
+    ).read_text(encoding="utf-8")
+    assert "key: '/settings'" not in layout_source
+    assert "key: '/quota'" not in layout_source
+
+
 def test_runtime_server_code_has_no_legacy_settings_imports():
     offenders: list[str] = []
     for path in (ROOT / "server").rglob("*.py"):

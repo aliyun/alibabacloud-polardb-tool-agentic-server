@@ -22,6 +22,7 @@ from server.core.agent_instance_access_service import (
     AgentInstanceAccessCapability,
     upsert_agent_instance_access,
 )
+from server.core import agent_user_token_service
 from server.core.agent_token_service import get_or_create_token
 from server.core.crypto import encrypt
 from server.db import engine as engine_mod
@@ -31,6 +32,7 @@ from server.models import (
     Agent,
     AgentInstanceBinding,
     AgentInstanceBindingCapability,
+    AgentUserAssignment,
     AllocationMode,
     AuditLog,
     AuditStatus,
@@ -77,6 +79,27 @@ USER_ONLY_TOOLS = {
     "list_branches",
     "create_branch",
     "delete_branch",
+    "list_knowledge_resources",
+    "kb_search",
+    "kb_fetch_context",
+    "doc_find_by_name",
+    "doc_status",
+    "doc_recall",
+    "doc_get_original",
+    "doc_delete",
+    "doc_rechunk",
+}
+POLARRAG_TOOLS = USER_ONLY_TOOLS - {
+    "set_default_instance",
+    "list_branches",
+    "create_branch",
+    "delete_branch",
+}
+POLARRAG_UPLOAD_TOOLS = {
+    "prepare_document_upload",
+    "resume_document_upload",
+    "complete_document_upload",
+    "abort_document_upload",
 }
 
 
@@ -377,10 +400,21 @@ async def catalog_setup():
         _, owner_token = await get_or_create_token(
             session, owner_agent.id, None
         )
+        agent_user_assignment = AgentUserAssignment(
+            agent_id=direct_agent.id,
+            user_id=ungranted.id,
+            created_by_user_id=admin.id,
+        )
+        session.add(agent_user_assignment)
+        await session.flush()
+        _, agent_user_token = await agent_user_token_service.issue_token(
+            session, agent_user_assignment.id
+        )
         await session.commit()
         result = {
             "factory": factory,
             "ungranted_token": _user_token(ungranted.id),
+            "ungranted_user_id": ungranted.id,
             "granted_token": _user_token(granted.id),
             "granted_binding_id": user_binding.id,
             "direct_instance_id": direct_instance.id,
@@ -392,6 +426,7 @@ async def catalog_setup():
             "owner_token": owner_token,
             "owner_agent_id": owner_agent.id,
             "owner_resource_id": resource.id,
+            "agent_user_token": agent_user_token,
         }
     yield result
     await engine.dispose()
@@ -445,13 +480,144 @@ async def test_provisioning_agent_sees_all_four_tools_and_strict_schemas(
         "client_token",
         "name",
         "db_type",
+        "provisioning_mode",
     }
     assert create_schema["additionalProperties"] is False
     assert create_schema["properties"]["db_type"]["enum"] == [
         "polardb_mysql"
     ]
+    mode_schema = create_schema["properties"]["provisioning_mode"]
+    assert mode_schema["anyOf"][0]["$ref"] == "#/$defs/ProvisioningMode"
+    mode_values = create_schema["$defs"]["ProvisioningMode"]["enum"]
+    assert mode_values == [
+        "dedicated",
+        "multitenant",
+    ]
     for name in DB_TOOLS:
         assert by_name[name]["inputSchema"]["additionalProperties"] is False
+
+
+async def test_user_sees_polarrag_tools_and_agent_does_not(
+    client,
+    catalog_setup,
+):
+    user_names = {
+        tool["name"]
+        for tool in await _tools(
+            client,
+            catalog_setup["ungranted_token"],
+        )
+    }
+    agent_names = {
+        tool["name"]
+        for tool in await _tools(
+            client,
+            catalog_setup["direct_token"],
+        )
+    }
+
+    assert POLARRAG_TOOLS <= user_names
+    assert POLARRAG_TOOLS.isdisjoint(agent_names)
+
+
+async def test_agent_user_token_sees_exactly_polarrag_tools(
+    client,
+    catalog_setup,
+):
+    names = {
+        tool["name"]
+        for tool in await _tools(
+            client,
+            catalog_setup["agent_user_token"],
+        )
+    }
+
+    assert names == POLARRAG_TOOLS | POLARRAG_UPLOAD_TOOLS
+
+
+async def test_agent_user_token_cannot_invoke_hidden_database_tool(
+    client,
+    catalog_setup,
+):
+    result = await _call_tool(
+        client,
+        catalog_setup["agent_user_token"],
+        "list_db_instances",
+        {},
+    )
+
+    assert result["isError"] is True
+    assert "Unknown tool" in result["content"][0]["text"]
+
+
+async def test_agent_token_cannot_invoke_hidden_polarrag_tool(
+    client,
+    catalog_setup,
+):
+    result = await _call_tool(
+        client,
+        catalog_setup["direct_token"],
+        "list_knowledge_resources",
+        {},
+    )
+
+    assert result["isError"] is True
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["error"] == "AUTH_REQUIRED"
+
+
+async def test_polarrag_tool_rejects_acl_context_injection(
+    client,
+    catalog_setup,
+):
+    result = await _call_tool(
+        client,
+        catalog_setup["ungranted_token"],
+        "kb_search",
+        {
+            "query": "acl",
+            "knowledge_resource_ids": [
+                "00000000-0000-0000-0000-000000000000"
+            ],
+            "acl_context": {
+                "identity_domain": "spoofed",
+                "principals": [],
+            },
+        },
+    )
+
+    assert result["isError"] is True
+
+
+async def test_polarrag_tool_call_writes_sanitized_user_audit(
+    client,
+    catalog_setup,
+):
+    result = await _call_tool(
+        client,
+        catalog_setup["ungranted_token"],
+        "list_knowledge_resources",
+        {},
+    )
+
+    assert result.get("isError") is not True
+    async with catalog_setup["factory"]() as session:
+        row = (
+            await session.execute(
+                select(AuditLog).where(
+                    AuditLog.action
+                    == "polarrag.list_knowledge_resources"
+                )
+            )
+        ).scalar_one()
+    assert row.actor_user_id == catalog_setup["ungranted_user_id"]
+    assert row.actor_agent_id is None
+    assert row.duration_ms is not None
+    metadata = json.loads(row.metadata_json or "{}")
+    client_info = json.loads(metadata["client_info"])
+    assert client_info["polarrag_status"] == "success"
+    assert client_info["principal_count"] == 0
+    assert "acl_context" not in json.dumps(client_info)
 
 
 async def test_direct_agent_and_resource_owner_get_distinct_catalogs(

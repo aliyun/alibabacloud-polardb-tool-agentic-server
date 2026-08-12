@@ -26,7 +26,10 @@ from server.auth.principal import (
 )
 from server.config import get_config
 from server.core.connection_cache import ConnectionCache
-from server.core.db_instance_metrics import DBInstanceMetricsMiddleware
+from server.core.db_instance_metrics import (
+    DBInstanceMetricsMiddleware,
+    emit_mcp_omitted_provisioning_mode,
+)
 from server.core.sql_gateway import SQLGateway
 from server.db.engine import get_session_factory
 from server.mcp.authorized_server import AuthorizedFastMCP
@@ -50,7 +53,11 @@ from server.mcp.tools.db_instance_handler import (
     resolve_request_principal,
     reset_describe_rate_limiters,
 )
-from server.models import Agent, User
+from server.mcp.tools.polarrag import (
+    POLARRAG_TOOL_NAMES,
+    register_polarrag_tools,
+)
+from server.models import Agent, ProvisioningMode, User
 
 logger = logging.getLogger(__name__)
 
@@ -717,7 +724,11 @@ def _build_mcp_server() -> AuthorizedFastMCP:
         client_token: str,
         db_type: str,
         name: str | None = None,
+        provisioning_mode: ProvisioningMode | None = None,
     ) -> CallToolResult:
+        if provisioning_mode is None:
+            emit_mcp_omitted_provisioning_mode()
+            provisioning_mode = ProvisioningMode.MULTITENANT
         factory = get_session_factory()
         async with factory() as session:
             principal = await _resolve_db_instance_principal(session)
@@ -729,6 +740,7 @@ def _build_mcp_server() -> AuthorizedFastMCP:
                 client_token=client_token,
                 db_type=db_type,
                 name=name,
+                provisioning_mode=provisioning_mode,
             )
             logger.info(
                 "tool.create_db_instance | principal_kind=%s "
@@ -801,6 +813,7 @@ def _build_mcp_server() -> AuthorizedFastMCP:
             )
             return result
 
+    register_polarrag_tools(mcp)
     _forbid_extra_tool_arguments(mcp, {
         "list_branches",
         "create_branch",
@@ -809,7 +822,7 @@ def _build_mcp_server() -> AuthorizedFastMCP:
         "create_db_instance",
         "describe_db_instance",
         "delete_db_instance",
-    })
+    } | set(POLARRAG_TOOL_NAMES))
     _configure_db_instance_tool_schemas(mcp)
 
     return mcp

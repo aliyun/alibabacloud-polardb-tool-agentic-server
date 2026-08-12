@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         UserInstanceBinding,
     )
     from server.models.credential import InstanceCredential
+    from server.models.dedicated_pool import DedicatedPoolMember
     from server.models.provisioning_backend import ProvisioningBackend
     from server.models.user import User
 
@@ -32,6 +33,7 @@ class AllocationMode(str, enum.Enum):
     AUTO_PROVISIONED = "auto_provisioned"
     POOLED = "pooled"
     REGISTERED = "registered"
+    DEDICATED_POOL = "dedicated_pool"
 
 
 class InstanceStatus(str, enum.Enum):
@@ -108,5 +110,8 @@ class Instance(TimestampMixin, Base):
     )
     credentials: Mapped[list["InstanceCredential"]] = relationship(back_populates="instance", lazy="selectin")
     provisioning_backend: Mapped["ProvisioningBackend | None"] = relationship(
+        back_populates="instance", lazy="selectin", uselist=False
+    )
+    dedicated_pool_member: Mapped["DedicatedPoolMember | None"] = relationship(
         back_populates="instance", lazy="selectin", uselist=False
     )

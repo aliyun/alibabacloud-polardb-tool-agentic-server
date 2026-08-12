@@ -20,7 +20,6 @@ class UserResponse(BaseModel):
     email: str | None
     role: str
     status: str
-    provisioning_mode: str | None = None
     departments: list[dict] = []
 
     @classmethod
@@ -39,7 +38,6 @@ class UserResponse(BaseModel):
             email=user.email,
             role=user.role.value,
             status=user.status.value,
-            provisioning_mode=user.provisioning_mode.value if user.provisioning_mode else None,
             departments=departments,
         )
 
@@ -55,8 +53,6 @@ class UpdateUserRequest(BaseModel):
     role: str | None = None
     department_ids: list[str] | None = None
     primary_department_id: str | None = None
-    provisioning_mode: str | None = None  # "dedicated" | "multitenant"
-    department_id: str | None = None  # department transfer with quota sync
 
 
 class CreateUserRequest(BaseModel):
@@ -65,7 +61,6 @@ class CreateUserRequest(BaseModel):
     display_name: str | None = None
     email: str | None = None
     role: str = "member"
-    provisioning_mode: str | None = "dedicated"
     department_ids: list[str] | None = None
     primary_department_id: str | None = None
 
@@ -95,10 +90,6 @@ async def create_user(
         role=UserRole(body.role),
         status=UserStatus.ACTIVE,
     )
-    if body.provisioning_mode:
-        from server.models.user import ProvisioningMode
-        user.provisioning_mode = ProvisioningMode(body.provisioning_mode)
-
     session.add(user)
     await session.commit()
     await session.refresh(user)
@@ -156,26 +147,6 @@ async def update_user(
         await user_manager.update_user_departments(
             session, user_id, body.department_ids, body.primary_department_id
         )
-    if body.provisioning_mode is not None:
-        from server.models.user import ProvisioningMode
-        try:
-            mode = ProvisioningMode(body.provisioning_mode)
-        except ValueError:
-            raise HTTPException(400, f"Invalid provisioning_mode: {body.provisioning_mode}")
-        user_obj = await user_manager.get_user(session, user_id)
-        if user_obj is None:
-            raise HTTPException(status_code=404, detail="User not found")
-        user_obj.provisioning_mode = mode
-        await session.commit()
-    if body.department_id is not None:
-        from server.core.quota_manager import transfer_user_department, get_owner_department_id
-
-        old_dept_id = await get_owner_department_id(session, user_id)
-        new_dept_id = body.department_id if body.department_id != "" else None
-
-        if old_dept_id != new_dept_id:
-            await transfer_user_department(session, user_id, old_dept_id, new_dept_id)
-            await session.commit()
     user = await user_manager.get_user(session, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -254,17 +225,6 @@ async def delete_user(
             "message": f"User owns {owned} instance(s). Set force=true to delete anyway.",
             "owned_count": owned,
         })
-
-    if owned > 0:
-        from server.core.quota_manager import decrement_quota
-        instances = (await session.execute(
-            select(Instance).where(
-                Instance.owner_user_id == user_id,
-                Instance.quota_held == True,  # noqa: E712
-            )
-        )).scalars().all()
-        for inst in instances:
-            await decrement_quota(session, inst)
 
     await session.delete(user)
     await session.commit()

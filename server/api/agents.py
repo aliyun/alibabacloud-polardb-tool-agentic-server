@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
+from server.auth.builtin import verify_password
 from server.core import agent_service, agent_token_service
 from server.core.audit_logger import log_audit
 from server.db.engine import get_session
@@ -106,7 +107,6 @@ class AgentCreatedResponse(AgentResponse):
     token_id: str
     token_prefix: str
     token_expires_at: datetime | None
-    token: str
 
 
 class TokenRequest(BaseModel):
@@ -116,7 +116,7 @@ class TokenRequest(BaseModel):
 class AgentTokenRevealRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    confirmed: Literal[True]
+    password: str = Field(min_length=1, max_length=1024)
 
 
 class TokenResponse(BaseModel):
@@ -192,7 +192,7 @@ async def create_agent(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     try:
-        token_row, plaintext = await agent_token_service.regenerate_token(
+        token_row, _plaintext = await agent_token_service.regenerate_token(
             session, agent.id, None
         )
         await log_audit(
@@ -230,7 +230,6 @@ async def create_agent(
             token_id=token_row.id,
             token_prefix=token_row.token_prefix,
             token_expires_at=token_row.expires_at,
-            token=plaintext,
         ).model_dump_json(),
         media_type="application/json",
         status_code=201,
@@ -317,7 +316,7 @@ async def regenerate_agent_token(
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        row, plaintext = await agent_token_service.regenerate_token(
+        row, _plaintext = await agent_token_service.regenerate_token(
             session, agent_id, body.expires_at if body else None
         )
         await _audit_token_action(
@@ -335,7 +334,7 @@ async def regenerate_agent_token(
             status_code=503, detail="Token regeneration unavailable"
         ) from exc
     return Response(
-        content=TokenResponse.from_model(row, plaintext=plaintext).model_dump_json(),
+        content=TokenResponse.from_model(row).model_dump_json(),
         media_type="application/json",
         headers={"Cache-Control": "no-store"},
     )
@@ -344,10 +343,15 @@ async def regenerate_agent_token(
 @router.post("/{agent_id}/token/reveal", response_model=TokenResponse)
 async def reveal_agent_token(
     agent_id: str,
-    _body: AgentTokenRevealRequest,
+    body: AgentTokenRevealRequest,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    if (
+        admin.password_hash is None
+        or not verify_password(body.password, admin.password_hash)
+    ):
+        raise HTTPException(status_code=401, detail="Password verification failed")
     try:
         await agent_token_service.consume_reveal_budget(
             session, admin.id, agent_id

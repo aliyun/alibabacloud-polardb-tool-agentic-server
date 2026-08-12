@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 from sqlalchemy import select
@@ -47,6 +48,7 @@ async def test_initialization_materializes_modules_and_encrypted_jwt(
     assert "setup.status" in keys
     assert "module.token_security" in keys
     assert "module.runtime_policy" in keys
+    assert "module.agentic_db_purchase" not in keys
     token_row = next(
         row for row in rows if row.config_key == "module.token_security"
     )
@@ -63,6 +65,28 @@ async def test_initialization_materializes_modules_and_encrypted_jwt(
     )
     assert "BEGIN PRIVATE KEY" in private_key
     assert config["active_kid"] in config["public_keys"]
+
+    agent_token_row = next(
+        row for row in rows if row.config_key == "module.agent_token_auth"
+    )
+    agent_token_document = ModuleDocument.model_validate_json(
+        agent_token_row.config_value
+    )
+    assert agent_token_document.workflow_state == ModuleState.ACTIVE
+    assert agent_token_document.effective is not None
+    assert agent_token_document.effective.config == {"enabled": True}
+
+
+async def test_fresh_bootstrap_uses_aliyun_schema_v2(initialized) -> None:
+    _, repository, _, _ = initialized
+
+    document = await repository.get_module("aliyun_access")
+    setup_status = await repository.get_config_row("setup.status")
+
+    assert document is not None
+    assert setup_status is not None
+    assert document.schema_version == 2
+    assert json.loads(setup_status.config_value)["schema_version"] == 1
 
 
 async def test_repeated_initialization_converges(initialized) -> None:
@@ -89,6 +113,72 @@ async def test_repeated_initialization_converges(initialized) -> None:
         ).scalars().all()
     assert len(claims) == 1
     assert len(token_rows) == 1
+
+
+async def test_initialization_promotes_untouched_legacy_agent_token_draft(
+    initialized,
+) -> None:
+    _, repository, crypto, _ = initialized
+    current = await repository.get_module("agent_token_auth")
+    assert current is not None
+    legacy = ModuleDocument(
+        schema_version=1,
+        revision=0,
+        workflow_state=ModuleState.DRAFT,
+        initial_state=ModuleState.DRAFT,
+        draft={"enabled": True},
+    )
+    row = await repository.get_config_row("module.agent_token_auth")
+    assert row is not None
+    async with repository.session_factory() as session:
+        async with session.begin():
+            stored = await session.get(
+                SystemConfig, "module.agent_token_auth"
+            )
+            assert stored is not None
+            stored.config_value = legacy.model_dump_json(exclude_none=True)
+
+    result = await initialize_configuration(repository, crypto)
+    promoted = await repository.get_module("agent_token_auth")
+
+    assert result.bootstrap_token is None
+    assert promoted is not None
+    assert promoted.workflow_state == ModuleState.ACTIVE
+    assert promoted.initial_state == ModuleState.ACTIVE
+    assert promoted.effective is not None
+    assert promoted.effective.config == {"enabled": True}
+
+
+async def test_initialization_converges_edited_legacy_agent_token_draft(
+    initialized,
+) -> None:
+    _, repository, crypto, _ = initialized
+    edited = ModuleDocument(
+        schema_version=1,
+        revision=4,
+        workflow_state=ModuleState.DRAFT,
+        initial_state=ModuleState.DRAFT,
+        draft={"enabled": False},
+    )
+    async with repository.session_factory() as session:
+        async with session.begin():
+            stored = await session.get(
+                SystemConfig, "module.agent_token_auth"
+            )
+            assert stored is not None
+            stored.config_value = edited.model_dump_json(exclude_none=True)
+
+    await initialize_configuration(repository, crypto)
+
+    converged = await repository.get_module("agent_token_auth")
+    assert converged is not None
+    assert converged.revision == 5
+    assert converged.workflow_state == ModuleState.ACTIVE
+    assert converged.initial_state == ModuleState.ACTIVE
+    assert converged.draft is None
+    assert converged.effective is not None
+    assert converged.effective.revision == 5
+    assert converged.effective.config == {"enabled": True}
 
 
 async def test_bootstrap_token_is_hashed_verified_and_consumed(

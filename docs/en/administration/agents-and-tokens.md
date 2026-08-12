@@ -5,6 +5,15 @@
 An Agent is a non-human MCP identity with its own status, Token, direct
 instance bindings, provisioning bindings, and owned resources.
 
+PAS has two distinct Agent-related credentials:
+
+- `pas_agent_` authenticates the machine Agent and can receive database tools;
+- `pas_user_agent_` authenticates one explicitly assigned PAS user through one
+  Agent and can receive only the seven PolarRAG tools.
+
+They are independent credentials. A `pas_agent_` Token cannot impersonate a
+user or call PolarRAG tools.
+
 ## Create and connect
 
 Create an Agent with a descriptive name and purpose. The detail page displays
@@ -32,8 +41,23 @@ access.
 
 An instance already bound to the Agent is excluded from the new-binding
 selector. Remove or edit the existing binding instead of creating a duplicate.
+The Agent detail page's **Instance access** table lists both database and
+PolarRAG bindings and identifies each row with an **Instance type** column.
+
+## PolarRAG user connections
+
+On the Agent detail page, bind the permitted PolarRAG instances and explicitly
+assign PAS users. Administrators can see assignment and Token status and can
+force-revoke a user Token, but never receive its plaintext.
+
+After signing in, an assigned user opens **My Instances**, then issues, reveals,
+regenerates, or revokes their own Token in **MCP connections**. One assignment
+has at most one active Token. Its effective knowledge scope is the intersection
+of Agent-bound PolarRAG instances, resources visible to the PAS user, and the
+document READ decision made by PolarRAG.
 
 ## Review
 
 Regularly review unused Agents, last-used timestamps, owned resources, and
-Audit Logs. Revoke Tokens before decommissioning clients or staff automation.
+the SQL and PolarRAG tabs in Audit Logs. Revoke Tokens before decommissioning
+clients or staff automation.

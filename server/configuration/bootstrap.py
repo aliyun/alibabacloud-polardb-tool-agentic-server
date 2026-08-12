@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from server.auth.jwt_manager import _generate_rsa_key_pair
 from server.configuration.registry import MODULE_REGISTRY
-from server.configuration.repository import ConfigRepository
+from server.configuration.repository import ConfigConflict, ConfigRepository
 from server.configuration.types import (
     EffectiveConfig,
     ModuleDocument,
@@ -28,8 +28,10 @@ class InitializationResult:
 def _active_document(
     module: str,
     config: dict,
+    schema_version: int,
 ) -> ModuleDocument:
     return ModuleDocument(
+        schema_version=schema_version,
         revision=1,
         workflow_state=ModuleState.ACTIVE,
         initial_state=MODULE_REGISTRY[module].initial_state,
@@ -51,7 +53,7 @@ def _initial_documents(
         private_key,
         module="token_security",
         field_path="private_key",
-        schema_version=1,
+        schema_version=MODULE_REGISTRY["token_security"].schema_version,
     )
     documents: dict[str, ModuleDocument] = {}
     for name, definition in MODULE_REGISTRY.items():
@@ -75,7 +77,7 @@ def _initial_documents(
             )
         if definition.initial_state == ModuleState.ACTIVE:
             documents[name] = _active_document(
-                name, default_config
+                name, default_config, definition.schema_version
             )
             continue
         draft = (
@@ -84,6 +86,7 @@ def _initial_documents(
             else None
         )
         documents[name] = ModuleDocument(
+            schema_version=definition.schema_version,
             revision=0,
             workflow_state=definition.initial_state,
             initial_state=definition.initial_state,
@@ -92,12 +95,58 @@ def _initial_documents(
     return documents
 
 
+def _is_active_agent_token_auth(
+    document: ModuleDocument,
+) -> bool:
+    return (
+        document.workflow_state == ModuleState.ACTIVE
+        and document.initial_state == ModuleState.ACTIVE
+        and document.desired_state == ModuleState.ACTIVE
+        and document.draft is None
+        and document.effective is not None
+        and document.effective.state == ModuleState.ACTIVE
+        and document.effective.config == {"enabled": True}
+    )
+
+
+async def _converge_agent_token_auth(
+    repository: ConfigRepository,
+) -> None:
+    document = await repository.get_module("agent_token_auth")
+    if document is not None and _is_active_agent_token_auth(document):
+        return
+
+    definition = MODULE_REGISTRY["agent_token_auth"]
+    next_revision = (document.revision if document is not None else 0) + 1
+    active = ModuleDocument(
+        schema_version=definition.schema_version,
+        workflow_state=ModuleState.ACTIVE,
+        initial_state=ModuleState.ACTIVE,
+        desired_state=ModuleState.ACTIVE,
+        effective=EffectiveConfig(
+            revision=next_revision,
+            state=ModuleState.ACTIVE,
+            config=definition.model().model_dump(mode="json"),
+        ),
+    )
+    try:
+        await repository.compare_and_set_module(
+            "agent_token_auth",
+            expected_revision=document.revision if document is not None else 0,
+            document=active,
+        )
+    except ConfigConflict:
+        # Another replica may have converged the same historical default.
+        return
+
+
 async def initialize_configuration(
     repository: ConfigRepository,
     crypto: ConfigCrypto,
 ) -> InitializationResult:
     existing = await repository.get_config_row("setup.status")
     if existing is not None:
+        await _converge_agent_token_auth(repository)
         payload = json.loads(existing.config_value)
         return InitializationResult(
             system_state=SystemState(payload["system_state"]),

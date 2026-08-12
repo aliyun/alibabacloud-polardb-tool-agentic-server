@@ -155,6 +155,14 @@
   margin-bottom: 22px;
 }
 
+.setup-dry-run-details {
+  width: 100%;
+}
+
+.setup-dry-run-details .ant-descriptions {
+  width: 100%;
+}
+
 .setup-editor form {
   max-width: 700px;
 }

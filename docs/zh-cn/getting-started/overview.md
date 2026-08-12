@@ -21,10 +21,10 @@
    - 注意：ECS 需要具备公网访问能力，用于下载部署文件与 Docker 镜像。
    - 注意：ECS 与 PolarDB MySQL 需位于同一 VPC，以便内网互通。
 2. 在 ECS 上用 Docker Compose 部署 PAS 并完成 Owner 认领。
-3. 通过引导式配置接入阿里云凭证与购买规格。
+3. 通过引导式配置接入阿里云凭证与服务运行策略。
 4. 注册已有的 PolarDB 集群，供后续授权给 Agent 使用。
 5. 创建 Agent、签发 Token、授权实例访问，并连接 MCP 客户端调用工具。
-6. 配置资源池，预建并管理实例。
+6. 创建自动供给池，再为 Agent 绑定主池与回退路由，实现热创建或池内冷创建。
 
 ## 前置条件
 
@@ -36,7 +36,8 @@
 
 - [资源要求](./cloud-resources.md)：购买 ECS 与 PolarDB MySQL 元数据库。
 - [部署（单台 ECS + Docker Compose）](./deploy-compose.md)：部署并完成接管。
-- [功能使用①：引导式配置](./configure.md)：配置云凭证与购买规格。
+- [功能使用①：引导式配置](./configure.md)：配置云凭证与服务运行策略。
 - [功能使用②：注册数据库实例](./register-instance.md)：注册已有集群。
 - [功能使用③：Agent、Token 与 MCP](./agents-and-mcp.md)：授权并调用工具。
-- [功能使用④：资源池与实例](./resource-pool.md)：预建与管理实例。
+- [自动供给池](../database-instances/dedicated-hot-pools.md)：配置供给、预热、
+  Agent 路由、冷创建和回收。

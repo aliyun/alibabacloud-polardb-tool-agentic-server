@@ -7,15 +7,23 @@ console. Agent identities are separate and are managed under **Agents**.
 
 ## Users
 
-Create a user with a unique username, display name, role, status, and optional
-department. Built-in users receive a password; SSO users are matched by the
-configured identity claim. Administrators can enable, disable, reset, or
-delete users. Disabling a user blocks new authentication and authorization.
+Open **Users** and choose **Create User** to create a built-in user. Enter a
+unique login username, an administrator-set initial password of at least eight
+characters, and a role; display name and email are optional. New users are
+active immediately. SSO users are matched by the configured identity claim.
+Administrators can enable, disable, reset, or delete users. Disabling a user
+blocks new authentication and authorization.
 
 Per-instance user access selects a registered instance, an active
 `direct_access` credential, `readonly` or `readwrite` permission, and explicit
 capabilities. Grant only the databases and operations allowed by the MySQL
 account; PAS does not elevate backend privileges.
+
+Human Users use only administrator-assigned registered instances. They do not
+claim auto-provisioning pool members, consume Agent purchase budgets, or trigger a
+physical cold purchase. If no registered instance is assigned, the request
+returns `NO_INSTANCE_ASSIGNED` and the administrator must register and assign
+one.
 
 ## Departments
 

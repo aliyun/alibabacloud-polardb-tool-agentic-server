@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -16,7 +16,10 @@ vi.mock('../../api/client', async (importOriginal) => {
   return {
     ...actual,
     default: {
+      delete: vi.fn(),
       get: vi.fn(),
+      patch: vi.fn(),
+      post: vi.fn(),
       put: vi.fn(),
     },
   }
@@ -39,7 +42,6 @@ const member = {
   email: 'reporter@example.com',
   role: 'member',
   status: 'active',
-  provisioning_mode: 'dedicated',
   departments: [],
 }
 
@@ -137,6 +139,86 @@ describe('User instance access editor', () => {
     )
   })
 
+  it('does not expose the retired provisioning mode editor', async () => {
+    render(<Users />)
+
+    expect(await screen.findByText('Production reporter')).toBeInTheDocument()
+
+    expect(screen.queryByText(/^provisioning$/i)).not.toBeInTheDocument()
+  })
+
+  it('creates a builtin user with an administrator-set initial password', async () => {
+    const user = userEvent.setup()
+    const alice = {
+      ...member,
+      id: 'user-alice',
+      external_id: 'alice',
+      display_name: 'Alice',
+      email: 'alice@example.com',
+    }
+    let created = false
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/users') {
+        return Promise.resolve({
+          data: {
+            items: created ? [alice, member] : [member],
+            total: created ? 2 : 1,
+            offset: 0,
+            limit: 20,
+          },
+        } as never)
+      }
+      if (url === '/auth/mode') {
+        return Promise.resolve({ data: { mode: 'builtin' } } as never)
+      }
+      return Promise.resolve({ data: [] } as never)
+    })
+    vi.mocked(api.post).mockImplementation(() => {
+      created = true
+      return Promise.resolve({ data: alice } as never)
+    })
+    render(<Users />)
+
+    await user.click(
+      await screen.findByRole('button', { name: /create user/i }),
+    )
+    const dialog = screen.getByRole('dialog', { name: /create user/i })
+    await user.type(within(dialog).getByLabelText(/^username$/i), 'alice')
+    await user.type(
+      within(dialog).getByLabelText(/display name/i),
+      'Alice',
+    )
+    await user.type(
+      within(dialog).getByLabelText(/^email$/i),
+      'alice@example.com',
+    )
+    await user.type(
+      within(dialog).getByLabelText(/^initial password$/i),
+      'alice-password',
+    )
+    await user.type(
+      within(dialog).getByLabelText(/^confirm password$/i),
+      'alice-password',
+    )
+    await user.click(
+      within(dialog).getByRole('button', { name: /^create$/i }),
+    )
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith('/api/users', {
+        username: 'alice',
+        display_name: 'Alice',
+        email: 'alice@example.com',
+        password: 'alice-password',
+        role: 'member',
+      }),
+    )
+    expect(await screen.findByText('Alice')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('dialog', { name: /create user/i }),
+    ).not.toBeInTheDocument()
+  })
+
   it('lists the user owned and registered instances and keeps SQL grants read-only', async () => {
     const user = userEvent.setup()
     render(<Users />)
@@ -146,6 +228,11 @@ describe('User instance access editor', () => {
         name: /instance access for production reporter/i,
       }),
     )
+    expect(
+      screen.getByRole('heading', {
+        name: /database instance access: production reporter/i,
+      }),
+    ).toBeInTheDocument()
     expect(
       (await screen.findAllByText('Personal production')).length,
     ).toBeGreaterThan(0)
@@ -172,6 +259,88 @@ describe('User instance access editor', () => {
       ),
     )
     expect(getUserInstanceAccess).toHaveBeenCalledTimes(2)
+  })
+
+  it('maintains enterprise principals from the selected user row', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/users') {
+        return Promise.resolve({
+          data: { items: [member], total: 1, offset: 0, limit: 20 },
+        } as never)
+      }
+      if (url === '/auth/mode') {
+        return Promise.resolve({ data: { mode: 'builtin' } } as never)
+      }
+      if (url === `/api/polarrag/users/${member.id}/principals`) {
+        return Promise.resolve({
+          data: {
+            items: [
+              {
+                id: 'principal-1',
+                pas_user_id: member.id,
+                identity_domain: 'tenant-a',
+                provider: 'feishu',
+                principal_type: 'user',
+                principal_id: 'ou-1',
+                source: 'admin_managed',
+                status: 'active',
+                valid_until: null,
+                created_at: '2026-07-30T12:00:00Z',
+                updated_at: null,
+              },
+            ],
+          },
+        } as never)
+      }
+      return Promise.resolve({ data: [] } as never)
+    })
+    vi.mocked(api.post).mockResolvedValue({ data: {} } as never)
+    render(<Users />)
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: /enterprise identity for production reporter/i,
+      }),
+    )
+    expect(
+      await screen.findByRole('heading', {
+        name: /enterprise identity: production reporter/i,
+      }),
+    ).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledWith(
+      `/api/polarrag/users/${member.id}/principals`,
+    )
+    expect(screen.getByText('ou-1')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('combobox', { name: /pas user/i }),
+    ).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /add principal/i }))
+    const dialog = screen.getByRole('dialog', {
+      name: /add enterprise principal/i,
+    })
+    await user.type(
+      within(dialog).getByLabelText(/identity domain/i),
+      'tenant-b',
+    )
+    await user.type(within(dialog).getByLabelText(/principal id/i), 'group-2')
+    await user.click(
+      within(dialog).getByRole('button', { name: /^add$/i }),
+    )
+
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith(
+        `/api/polarrag/users/${member.id}/principals`,
+        {
+          identity_domain: 'tenant-b',
+          provider: 'feishu',
+          principal_type: 'user',
+          principal_id: 'group-2',
+          valid_until: null,
+        },
+      ),
+    )
   })
 
   it('grants describe and credentials independently with dependency expansion', async () => {

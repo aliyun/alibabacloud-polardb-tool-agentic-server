@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from server.aliyun.endpoints import POLARDB_ENDPOINTS
+
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGLISH_DOCS = tuple(
@@ -61,6 +63,8 @@ REQUIRED_GUIDES = {
     "agents/sql-access-model.md",
     "database-instances/registration.md",
     "database-instances/multitenant-provisioning.md",
+    "database-instances/agent-rest-provisioning.md",
+    "database-instances/dedicated-hot-pools.md",
     "operations/health-and-readiness.md",
     "operations/logs-and-observability.md",
     "operations/backup-and-restore.md",
@@ -70,6 +74,105 @@ REQUIRED_GUIDES = {
     "reference/rest-api.md",
     "reference/compatibility.md",
 }
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/database-instances/agent-rest-provisioning.md",
+        "docs/zh-cn/database-instances/agent-rest-provisioning.md",
+    ),
+)
+def test_agent_rest_guides_cover_shipped_lifecycle_contract(path: str):
+    text = _read(path)
+    required = {
+        "/mcp/rest/db-instances",
+        "/mcp/rest/openapi.json",
+        "Cache-Control: no-store",
+        "client_token",
+        "provisioning_mode",
+        "multitenant",
+        "dedicated",
+        "CREATING",
+        "READY",
+        "FAILED",
+        "DELETING",
+        "COOLING_DOWN",
+        "RESTORING",
+        "DELETED",
+        "DELETE_FAILED",
+        "POOL_CAPACITY_LIMIT_REACHED",
+        "RATE_LIMITED",
+        "RESOURCE_NOT_FOUND",
+    }
+    assert not [term for term in required if term not in text]
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/database-instances/dedicated-hot-pools.md",
+        "docs/zh-cn/database-instances/dedicated-hot-pools.md",
+    ),
+)
+def test_dedicated_hot_pool_guides_cover_cost_and_recovery_guards(path: str):
+    text = _read(path)
+    required = {
+        "dedicated_pool_enabled",
+        "target_size",
+        "max_total_members",
+        "max_member_purchases_per_hour",
+        "delete_cooldown_duration_hours",
+        "24",
+        "FRESH",
+        "STALE",
+        "CHECKING",
+        "QUARANTINED",
+        "CREATE USER",
+        "dry_run",
+        "apply",
+        "PAS_ENCRYPTION_KEY",
+        "agentic-dedicated-mysql",
+        "DBMinorVersion=8.0.2",
+        "essdpl1",
+        "https://vpc.console.aliyun.com/vpc/",
+        "DEDICATED_WORKER_NOT_RUNNING",
+        "ALIYUN_ACCESS_NOT_CONFIGURED",
+        "dedicated_pool_simulation_enabled",
+        "NOT_STARTED",
+        "PREWARMING",
+        "PARTIALLY_READY",
+        "CAPACITY_LIMITED",
+        "routing_order",
+        "primary",
+        "fallback",
+        "PURCHASE_PROFILE_UPGRADE_REQUIRED",
+    }
+    assert not [term for term in required if term not in text]
+    assert (
+        "Agent MySQL default permissions" in text
+        or "为 Agent 分配的默认 MySQL 权限" in text
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/reference/configuration-modules.md",
+        "docs/zh-cn/reference/configuration-modules.md",
+    ),
+)
+def test_configuration_guides_cover_dedicated_runtime_safety(path: str):
+    text = _read(path)
+    required = {
+        "dedicated_pool_enabled",
+        "dedicated_pool_simulation_enabled",
+        "dedicated_worker_heartbeat_interval_seconds",
+        "dedicated_worker_heartbeat_stale_after_seconds",
+        "10",
+        "30",
+    }
+    assert not [term for term in required if term not in text]
 
 
 def _read(path: str) -> str:
@@ -288,6 +391,130 @@ def test_public_docs_exclude_internal_and_placeholder_content():
     ]
 
 
+def test_aliyun_access_docs_cover_temporary_credential_operations():
+    """Catch a release that exposes a credential mode without safe guidance."""
+    required_by_guide = {
+        "configuration/guided-configuration.md": {
+            "direct_ak",
+            "assume_role",
+            "ecs_ram_role",
+            "_from_env",
+            "--dry-run",
+            "confirmation",
+        },
+        "reference/configuration-modules.md": {
+            "direct_ak",
+            "assume_role",
+            "ecs_ram_role",
+            "IMDSv2",
+            "OPENAPI_PERMISSION_DENIED",
+            "temporary credentials",
+        },
+        "deployment/networking.md": {
+            "sts:AssumeRole",
+            "trust policy",
+            "IMDSv2",
+            "no HTTP proxy",
+        },
+        "deployment/upgrade-and-rollback.md": {
+            "operator-enforced",
+            "configuration writes",
+            "version 2",
+            "PAS_ENCRYPTION_KEY",
+            "direct mode",
+        },
+        "operations/credential-and-key-rotation.md": {
+            "Clear the previous credential",
+            "Retain it, but keep it disabled",
+            "Use retained credential",
+            "Delete retained credential",
+            "display mask",
+        },
+        "operations/troubleshooting.md": {
+            "OPENAPI_STS_SOURCE_CREDENTIAL_INVALID",
+            "OPENAPI_STS_ASSUME_ROLE_DENIED",
+            "OPENAPI_STS_ROLE_TRUST_REJECTED",
+            "OPENAPI_STS_EXTERNAL_ID_MISMATCH",
+            "OPENAPI_ECS_RAM_ROLE_NOT_ATTACHED",
+            "OPENAPI_ECS_METADATA_DISABLED",
+            "OPENAPI_ECS_IMDSV2_UNAVAILABLE",
+            "OPENAPI_TEMPORARY_CREDENTIAL_EXPIRED",
+        },
+    }
+
+    for relative_path, terms in required_by_guide.items():
+        english = re.sub(r"\s+", " ", _read(f"docs/en/{relative_path}"))
+        chinese = re.sub(r"\s+", " ", _read(f"docs/zh-cn/{relative_path}"))
+        assert not [term for term in terms if term not in english]
+        assert not [term for term in terms if term not in chinese]
+
+
+def test_aliyun_access_docs_keep_error_migration_and_endpoint_contracts_aligned():
+    temporary_credential_codes = {
+        "OPENAPI_STS_SOURCE_CREDENTIAL_INVALID",
+        "OPENAPI_STS_ASSUME_ROLE_DENIED",
+        "OPENAPI_STS_ROLE_TRUST_REJECTED",
+        "OPENAPI_STS_EXTERNAL_ID_MISMATCH",
+        "OPENAPI_ECS_RAM_ROLE_NOT_ATTACHED",
+        "OPENAPI_ECS_METADATA_DISABLED",
+        "OPENAPI_ECS_IMDSV2_UNAVAILABLE",
+        "OPENAPI_TEMPORARY_CREDENTIAL_EXPIRED",
+    }
+    for locale in ("en", "zh-cn"):
+        guided = _read(f"docs/{locale}/configuration/guided-configuration.md")
+        troubleshooting = _read(f"docs/{locale}/operations/troubleshooting.md")
+        upgrade = _read(f"docs/{locale}/deployment/upgrade-and-rollback.md")
+        networking = _read(f"docs/{locale}/deployment/networking.md")
+
+        assert temporary_credential_codes <= set(
+            re.findall(r"`(OPENAPI_[A-Z0-9_]+)`", guided)
+        )
+        assert temporary_credential_codes <= set(
+            re.findall(r"`(OPENAPI_[A-Z0-9_]+)`", troubleshooting)
+        )
+        first_write = (
+            "first version 2 write"
+            if locale == "en"
+            else "首次 version 2 写入"
+        )
+        draft_save = "draft save" if locale == "en" else "草稿保存"
+        activation_boundary = (
+            "After activation of version 2"
+            if locale == "en"
+            else "version 2 激活后"
+        )
+        assert first_write in upgrade
+        assert draft_save in upgrade
+        assert activation_boundary not in upgrade
+        assert "polardb.aliyuncs.com" in networking
+        assert "polardb.<region>.aliyuncs.com" in networking
+        assert "polardb-vpc.<region>.aliyuncs.com" in networking
+        assert "sts.<region>.aliyuncs.com" in networking
+
+
+def test_networking_docs_list_exactly_the_resolver_global_polardb_regions():
+    resolver_global_regions = {
+        region_id
+        for region_id, (public_endpoint, _) in POLARDB_ENDPOINTS.items()
+        if public_endpoint == "polardb.aliyuncs.com"
+    }
+
+    for locale in ("en", "zh-cn"):
+        networking = _read(f"docs/{locale}/deployment/networking.md")
+        global_region_clause = re.search(
+            r"central regions \(([^)]*)\)"
+            if locale == "en"
+            else r"中央地域（([^）]*)）",
+            networking,
+            flags=re.DOTALL,
+        )
+        assert global_region_clause is not None
+        documented_regions = set(
+            re.findall(r"`(cn-[a-z0-9-]+)`", global_region_clause.group(1))
+        )
+        assert documented_regions == resolver_global_regions
+
+
 def test_example_configuration_contains_only_bootstrap_settings():
     env_example = _read(".env.example")
 
@@ -445,12 +672,71 @@ def test_guided_configuration_covers_modules_and_workflows(path: str):
         "agent_token_auth",
         "user_sso",
         "aliyun_access",
-        "agentic_db_purchase",
-        "resource_pool",
+        "runtime_policy",
+        "CreateDBCluster",
+        "Dedicated",
         "SKIPPED",
         "external_base_url",
     }
     assert not [term for term in required if term not in text]
+    assert "pas config export --module resource_pool" not in text
+    assert "agentic_db_purchase" not in text
+
+
+def test_public_docs_do_not_advertise_retired_agentic_purchase_module():
+    public_paths = [Path("README.md")]
+    public_paths.extend(Path("docs/en").rglob("*.md"))
+    public_paths.extend(Path("docs/zh-cn").rglob("*.md"))
+
+    references = [
+        str(path)
+        for path in public_paths
+        if "agentic_db_purchase" in path.read_text(encoding="utf-8")
+    ]
+    assert references == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/database-instances/dedicated-hot-pools.md",
+        "docs/zh-cn/database-instances/dedicated-hot-pools.md",
+    ),
+)
+def test_dedicated_pool_guides_explain_unified_supply(path: str):
+    text = _read(path)
+    required = {
+        "ALLOCATED_PREPARING",
+        "NO_INSTANCE_ASSIGNED",
+        "LEGACY_POOL_CONFIG_PRESENT",
+        "LEGACY_POOL_INSTANCE_PRESENT",
+        "multitenant",
+        "single-tenant",
+        "agentic-dedicated-mysql",
+    }
+    assert not [term for term in required if term not in text]
+    assert (
+        "Auto-provisioning pool" in text
+        or "自动供给池" in text
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/reference/rest-api.md",
+        "docs/zh-cn/reference/rest-api.md",
+    ),
+)
+def test_rest_api_does_not_advertise_retired_pool_or_quota_routes(path: str):
+    text = _read(path)
+    assert "/api/pool" not in text
+    assert "/api/quota" not in text
+
+
+def test_legacy_resource_pool_guides_are_retired():
+    assert not (ROOT / "docs/en/getting-started/resource-pool.md").exists()
+    assert not (ROOT / "docs/zh-cn/getting-started/resource-pool.md").exists()
 
 
 def test_relative_markdown_links_resolve():

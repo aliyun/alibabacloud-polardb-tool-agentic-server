@@ -92,11 +92,20 @@ class ProvisioningBindingUpdateRequest(BaseModel):
     enabled: bool
 
 
+class DedicatedRouteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    binding_ids: list[str]
+
+
 class ProvisioningBindingResponse(BaseModel):
     id: str
     agent_id: str
     backend_id: str
     enabled: bool
+    routing_order: int | None
+    backend_type: str
+    dedicated_pool_id: str | None
     backend_status: ProvisioningBackendStatus
     allow_create: bool
     created_by_user_id: str
@@ -111,6 +120,9 @@ class ProvisioningBindingResponse(BaseModel):
             agent_id=binding.agent_id,
             backend_id=binding.backend_id,
             enabled=binding.enabled,
+            routing_order=binding.routing_order,
+            backend_type=binding.backend.backend_type.value,
+            dedicated_pool_id=binding.backend.dedicated_pool_id,
             backend_status=backend_status,
             allow_create=(binding.enabled and backend_status == ProvisioningBackendStatus.ACTIVE),
             created_by_user_id=binding.created_by_user_id,
@@ -361,6 +373,35 @@ async def create_provisioning_binding(
             target_id=row.id,
         )
         return ProvisioningBindingResponse.from_model(row)
+    except Exception as exc:
+        await session.rollback()
+        raise _binding_error(exc) from exc
+
+
+@router.put(
+    "/provisioning-bindings/dedicated-order",
+    response_model=list[ProvisioningBindingResponse],
+)
+async def reorder_dedicated_provisioning_bindings(
+    agent_id: str,
+    body: DedicatedRouteRequest,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        rows = await admin_binding_service.reorder_dedicated_routes(
+            session,
+            agent_id=agent_id,
+            binding_ids=body.binding_ids,
+        )
+        await _commit_mutation(
+            session,
+            admin=admin,
+            action="binding.dedicated_order.update",
+            target_type="agent",
+            target_id=agent_id,
+        )
+        return [ProvisioningBindingResponse.from_model(row) for row in rows]
     except Exception as exc:
         await session.rollback()
         raise _binding_error(exc) from exc

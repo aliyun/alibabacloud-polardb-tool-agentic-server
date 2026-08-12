@@ -73,6 +73,9 @@ export interface ProvisioningBinding {
   agent_id: string
   backend_id: string
   enabled: boolean
+  routing_order: number | null
+  backend_type: 'multitenant' | 'dedicated_pool'
+  dedicated_pool_id: string | null
   backend_status: 'active' | 'draining' | 'disabled'
   allow_create: boolean
   created_by_user_id: string
@@ -196,6 +199,15 @@ export const updateProvisioningBinding = (
   api.put<ProvisioningBinding>(
     `/api/agents/${encodeURIComponent(agentId)}/provisioning-bindings/${encodeURIComponent(bindingId)}`,
     { enabled },
+  )
+
+export const reorderDedicatedProvisioningBindings = (
+  agentId: string,
+  bindingIds: string[],
+) =>
+  api.put<ProvisioningBinding[]>(
+    `/api/agents/${encodeURIComponent(agentId)}/provisioning-bindings/dedicated-order`,
+    { binding_ids: bindingIds },
   )
 
 export const deleteProvisioningBinding = (

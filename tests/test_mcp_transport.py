@@ -21,10 +21,13 @@ from tests._helpers import init_test_jwt_keys
 from server.core.sql_executor import reset_rate_limiters
 from server.db import engine as engine_mod
 from server.models import (
-    AllocationMode, AuthProvider, Base, CredentialCapability, CredentialPurpose,
-    Instance, InstanceCredential, InstanceStatus, InstanceTopology, Permission,
-    User, UserInstanceBinding, UserRole,
+    Agent, AgentPolarRAGInstanceBinding, AgentUserAssignment, AllocationMode,
+    AuthProvider, Base, CredentialCapability, CredentialPurpose, Instance,
+    InstanceCredential, InstanceStatus, InstanceTopology, Permission,
+    PolarRAGInstance, PolarRAGInstanceStatus, User, UserInstanceBinding,
+    UserRole,
 )
+from server.core.agent_user_token_service import issue_token
 from server.core.crypto import encrypt
 from server.mcp.transport import mcp_lifespan, reset_mcp
 
@@ -302,6 +305,93 @@ class TestMCPTransportTools:
         assert "list_branches" in names
         assert "create_branch" in names
         assert "delete_branch" in names
+        assert not {
+            "prepare_document_upload",
+            "resume_document_upload",
+            "complete_document_upload",
+            "abort_document_upload",
+        } & set(names)
+
+    async def test_user_agent_token_lists_and_calls_upload_tools(
+        self,
+        client,
+        setup_data,
+    ):
+        async with engine_mod._session_factory() as session:
+            member = User(
+                external_id="upload-member",
+                display_name="Upload Member",
+                auth_provider=AuthProvider.BUILTIN,
+            )
+            agent = Agent(name="upload-agent")
+            session.add_all([member, agent])
+            await session.flush()
+            instance = PolarRAGInstance(
+                name="upload-rag",
+                scheme="http",
+                host="rag.example.test",
+                port=9200,
+                username_ciphertext=encrypt("service-user"),
+                password_ciphertext=encrypt("service-password"),
+                status=PolarRAGInstanceStatus.ACTIVE,
+                created_by=setup_data["admin"].id,
+            )
+            session.add(instance)
+            await session.flush()
+            assignment = AgentUserAssignment(
+                agent_id=agent.id,
+                user_id=member.id,
+                created_by_user_id=setup_data["admin"].id,
+            )
+            session.add_all(
+                [
+                    AgentPolarRAGInstanceBinding(
+                        agent_id=agent.id,
+                        polarrag_instance_id=instance.id,
+                        created_by_user_id=setup_data["admin"].id,
+                    ),
+                    assignment,
+                ]
+            )
+            await session.flush()
+            _row, plaintext = await issue_token(session, assignment.id)
+            await session.commit()
+
+        auth_headers = {"Authorization": f"Bearer {plaintext}"}
+        session_id = await self._initialize(client, auth_headers)
+        headers = {**MCP_HEADERS, **auth_headers}
+        if session_id:
+            headers["mcp-session-id"] = session_id
+        listed = await client.post(
+            "/mcp",
+            json=_jsonrpc("tools/list", req_id=92),
+            headers=headers,
+        )
+        names = {
+            tool["name"]
+            for tool in _parse_sse_response(listed.text)[0]["result"]["tools"]
+        }
+        from server.mcp.tools.polarrag import POLARRAG_TOOL_NAMES
+
+        assert names == POLARRAG_TOOL_NAMES
+
+        called = await client.post(
+            "/mcp",
+            json=_jsonrpc(
+                "tools/call",
+                {
+                    "name": "resume_document_upload",
+                    "arguments": {"upload_session_id": str(uuid.uuid4())},
+                },
+                req_id=93,
+            ),
+            headers=headers,
+        )
+        result = _parse_sse_response(called.text)[0]["result"]
+        assert result["isError"] is True
+        assert json.loads(result["content"][0]["text"])["error"] == (
+            "UPLOAD_SESSION_NOT_ACCESSIBLE"
+        )
 
     async def test_branch_tool_schemas(self, client, auth_headers):
         session_id = await self._initialize(client, auth_headers)

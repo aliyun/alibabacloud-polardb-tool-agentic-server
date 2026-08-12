@@ -202,6 +202,7 @@ async def test_create_list_describe_and_delete_resource(
     assert created["isError"] is False
     created_payload = _payload(created)
     assert created_payload["status"] == "CREATING"
+    assert created_payload["provisioning_mode"] == "multitenant"
     resource_id = created_payload["db_instance_id"]
     assert "password" not in created_payload
 
@@ -254,6 +255,7 @@ async def test_create_list_describe_and_delete_resource(
         "db_type": "polardb_mysql",
         "source": "provisioned",
         "status": "DELETING",
+        "provisioning_mode": "multitenant",
     }
 
 
@@ -293,6 +295,39 @@ async def test_idempotency_and_stable_validation_errors(client, tool_setup):
     )
     assert invalid["isError"] is True
     assert _payload(invalid)["error"] == "INVALID_CLIENT_TOKEN"
+
+
+async def test_explicit_mode_conflicts_with_legacy_omitted_mode_replay(
+    client, tool_setup, caplog
+):
+    omitted = {
+        "client_token": "legacy-mode",
+        "db_type": "polardb_mysql",
+    }
+    first = _payload(
+        await _call(
+            client,
+            tool_setup["owner_token"],
+            "create_db_instance",
+            omitted,
+        )
+    )
+    assert first["provisioning_mode"] == "multitenant"
+    assert any(
+        getattr(record, "metric", None)
+        == "agentic_db_mcp_omitted_provisioning_mode_total"
+        for record in caplog.records
+    )
+
+    conflict = await _call(
+        client,
+        tool_setup["owner_token"],
+        "create_db_instance",
+        {**omitted, "provisioning_mode": "dedicated"},
+        req_id=2,
+    )
+    assert conflict["isError"] is True
+    assert _payload(conflict)["error"] == "IDEMPOTENCY_CONFLICT"
 
 
 async def test_other_agent_cannot_describe_or_delete_owned_resource(

@@ -5,6 +5,7 @@ import { schemaFieldLabel } from '../../i18n/schema'
 
 interface Props {
   module: ConfigModule
+  moduleLabel?: string
   disabled?: boolean
   onSubmit: (values: Record<string, unknown>) => void | Promise<void>
   onValuesChange?: () => void
@@ -31,6 +32,7 @@ function trimStrings(values: Record<string, unknown>): Record<string, unknown> {
 
 export default function ConfigModuleForm({
   module,
+  moduleLabel,
   disabled,
   onSubmit,
   onValuesChange,
@@ -65,7 +67,9 @@ export default function ConfigModuleForm({
       onFinish={(values) => onSubmit(trimStrings(values))}
       onValuesChange={onValuesChange}
       requiredMark="optional"
-      aria-label={t('components.configuration.formLabel', { module: module.name })}
+      aria-label={t('components.configuration.formLabel', {
+        module: moduleLabel ?? module.name,
+      })}
     >
       {docs.length > 0 && (
         <Alert
@@ -120,7 +124,9 @@ export default function ConfigModuleForm({
             <Select
               options={schema.enum.map((value) => ({
                 value,
-                label: String(value),
+                label: t(`components.configuration.enumValues.${String(value)}`, {
+                  defaultValue: String(value),
+                }),
               }))}
             />
           )

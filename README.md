@@ -18,6 +18,8 @@ persistent logical database resources.
 - Direct access to multiple registered PolarDB MySQL instances.
 - Database-backed multitenant provisioning backends with health, capacity,
   draining, cleanup, and recovery controls.
+- Auto-provisioning pools with typed AgenticDB Dedicated purchasing, prewarming, pool-owned cold
+  creation, Agent primary/fallback routing, cooldown, restore, and reclamation.
 - Four authorization-aware instance Tools: `list_db_instances`,
   `create_db_instance`, `describe_db_instance`, and `delete_db_instance`.
 - FastAPI backend and React/Vite administration console.
@@ -59,8 +61,9 @@ npm run dev
 
 Open `http://localhost:18761`. On an empty database, the setup console asks for
 the one-time bootstrap token and guides creation of the first administrator.
-Optional modules such as SSO, Alibaba Cloud access, purchasing, and resource
-pooling may be skipped and configured later.
+Optional modules such as SSO and Alibaba Cloud access may be skipped and
+configured later. Auto-provisioning pools are managed separately on the
+**Pool** page.
 
 Terminal-only deployments can use the interactive or declarative workflow:
 
@@ -85,7 +88,7 @@ operators should begin with the
 
 Codex, Claude Code, Cursor, and compatible Agent Skills clients can use the
 explicitly invoked [agent-assisted deployment skill](docs/en/deployment/agent-assisted-deployment.md).
-It validates a Linux target before mutation and pins PAS to release `0.0.6`.
+It validates a Linux target before mutation and pins PAS to release `0.0.7`.
 
 ## Administration workflow
 
@@ -112,6 +115,14 @@ The web console is the source of truth for runtime instance access:
    creation is off by default and can be granted without direct SQL access.
 5. Under **Users**, administrators can also edit each User's per-instance
    credential, `readonly` or `readwrite` permission, and capabilities.
+6. Under **Pool**, create one or more auto-provisioning pools. Configure target and
+   hard capacity, network placement, permissions, reclaim policy, and purchase
+   budgets; then bind one primary pool and optional fallback pools to each
+   Agent.
+
+Human Users use only assigned registered instances and never trigger physical
+cluster purchases. Auto-provisioning cold creation first creates a member inside the
+selected pool, so every PAS-purchased cluster remains pool-managed.
 
 Provisioning backends and their credentials are stored in the metadata
 database. No deployment-time environment variable selects a single
@@ -125,9 +136,11 @@ bindings and owned resources:
 - `list_db_instances` lists authorized physical instances and non-deleted
   resources, with cursor pagination, filters, and their optional `usage`
   description.
-- `create_db_instance(client_token, db_type, name?)` is Agent-only and
-  currently accepts `db_type="polardb_mysql"`. It creates a persistent logical
-  database through an authorized multitenant backend.
+- `create_db_instance(client_token, db_type, name?, provisioning_mode?)` is
+  Agent-only and currently accepts `db_type="polardb_mysql"`. It creates a
+  persistent database through an authorized `multitenant` or `dedicated`
+  backend. Omitted mode remains compatible with `multitenant` and emits a
+  deprecation metric; new callers should always send it explicitly.
 - `describe_db_instance(db_instance_id)` returns authorized metadata and only
   includes connection credentials when the caller has credential-read access
   and the resource is ready. Its `usage` field matches the registered physical
@@ -144,6 +157,11 @@ the same normalized request returns the original resource, including after
 Resources have no automatic lifetime in this release—call
 `delete_db_instance` explicitly.
 
+Agents can use the same lifecycle through the Bearer-only REST endpoints at
+`/mcp/rest/db-instances`; their canonical schema is
+`/mcp/rest/openapi.json`. Dedicated delete first disconnects access, then uses
+the configured cooldown before destroy or sanitize/reuse.
+
 See the [database instance access and provisioning guide](docs/en/database-instances/access-and-provisioning.md)
 for the complete UI workflow, security model, Tool examples, and lifecycle.
 
@@ -155,6 +173,9 @@ for the complete UI workflow, security model, Tool examples, and lifecycle.
 - [Initial setup](docs/en/setup/initial-setup.md)
 - [Guided modular configuration](docs/en/configuration/guided-configuration.md)
 - [Database instance access and provisioning](docs/en/database-instances/access-and-provisioning.md)
+- [Dedicated database hot pools](docs/en/database-instances/dedicated-hot-pools.md)
+- [Agent REST database provisioning](docs/en/database-instances/agent-rest-provisioning.md)
+- [PolarRAG MCP and enterprise identities](docs/en/knowledge/polarrag-mcp.md)
 - [Docker Compose deployment](docs/en/deployment/docker-compose.md)
 - [Agent-assisted single-host deployment](docs/en/deployment/agent-assisted-deployment.md)
 - [Kubernetes and Helm deployment](docs/en/deployment/kubernetes-helm.md)

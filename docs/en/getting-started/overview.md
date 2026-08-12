@@ -28,12 +28,13 @@ finishing this tutorial.
    - Note: the ECS and the PolarDB MySQL must share the same VPC for private
      connectivity.
 2. Deploy PAS on the ECS with Docker Compose and claim ownership.
-3. Configure cloud credentials and purchase settings through guided
+3. Configure cloud credentials and Service runtime policy through guided
    configuration.
 4. Register an existing PolarDB cluster for later Agent authorization.
 5. Create an Agent, issue a Token, grant instance access, and connect an MCP
    client to call tools.
-6. Configure the resource pool to pre-provision and manage instances.
+6. Create an auto-provisioning pool, then bind its primary and fallback routing to an
+   Agent for hot or pool-owned cold creation.
 
 ## Prerequisites
 
@@ -49,10 +50,10 @@ finishing this tutorial.
 - [Deployment (single ECS + Docker Compose)](./deploy-compose.md): deploy and
   claim ownership.
 - [Feature usage 1: guided configuration](./configure.md): configure cloud
-  credentials and purchase settings.
+  credentials and Service runtime policy.
 - [Feature usage 2: register a database instance](./register-instance.md):
   register an existing cluster.
 - [Feature usage 3: Agent, Token, and MCP](./agents-and-mcp.md): authorize and
   call tools.
-- [Feature usage 4: resource pool and instances](./resource-pool.md):
-  pre-provision and manage instances.
+- [Auto-provisioning pools](../database-instances/dedicated-hot-pools.md): configure
+  supply, prewarming, Agent routing, cold creation, and reclamation.

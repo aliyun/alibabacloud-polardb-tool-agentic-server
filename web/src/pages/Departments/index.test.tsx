@@ -47,7 +47,6 @@ describe('Departments page', () => {
               id: 'department-1',
               name: 'Finance',
               description: null,
-              max_instances: null,
             },
           ],
         } as never
@@ -116,5 +115,14 @@ describe('Departments page', () => {
 
     expect(await screen.findByRole('heading', { name: '部门' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /新建部门/ })).toBeInTheDocument()
+  })
+
+  it('does not expose the retired personal-instance limit', async () => {
+    const user = userEvent.setup()
+    render(<Departments />)
+
+    await user.click(await screen.findByRole('button', { name: /^edit$/i }))
+
+    expect(screen.queryByText(/max.*instances/i)).not.toBeInTheDocument()
   })
 })

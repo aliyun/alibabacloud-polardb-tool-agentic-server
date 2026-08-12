@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.auth.builtin import (
@@ -11,6 +12,7 @@ from server.config import reset_config
 from tests._helpers import init_test_jwt_keys
 from server.db.engine import reset_engine
 from server.models import Base, User, AuthProvider, UserRole, UserStatus
+from server.models.user_refresh_token import UserRefreshToken
 
 
 @pytest.fixture(autouse=True)
@@ -119,12 +121,22 @@ class TestChangePassword:
             login_resp = await client.post("/auth/login", json={"username": "admin", "password": "oldpass123"})
             token = login_resp.json()["access_token"]
             headers = {"Authorization": f"Bearer {token}"}
+            await client.post("/auth/login", json={"username": "admin", "password": "oldpass123"})
 
             resp = await client.post("/auth/change-password", json={
                 "current_password": "oldpass123",
                 "new_password": "newpass456",
             }, headers=headers)
             assert resp.status_code == 200
+            assert "session_token" not in client.cookies
+            assert "refresh_token" not in client.cookies
+
+            async with engine_mod._session_factory() as s:
+                refresh_tokens = (
+                    await s.execute(select(UserRefreshToken))
+                ).scalars().all()
+            assert len(refresh_tokens) == 2
+            assert all(record.revoked_at is not None for record in refresh_tokens)
 
             login2 = await client.post("/auth/login", json={"username": "admin", "password": "newpass456"})
             assert login2.status_code == 200

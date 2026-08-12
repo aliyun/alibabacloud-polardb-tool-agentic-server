@@ -33,6 +33,8 @@ from server.models import (
     ProvisioningBackend,
     ProvisioningBackendHealth,
     ProvisioningCapacity,
+    PermissionTemplate,
+    PermissionTemplateRevision,
     User,
 )
 from server.models.base import utc_now
@@ -139,6 +141,41 @@ async def test_create_resource_reserves_backend_and_agent_capacity(session):
     assert (
         await session.execute(select(DBInstanceResource))
     ).scalar_one().id == resource.id
+    assert resource.permission_snapshot_json is not None
+    assert '"grant_option":false' in resource.permission_snapshot_json
+    assert '"CREATE USER"' not in resource.permission_snapshot_json
+
+
+async def test_create_resource_snapshots_backend_permission_revision(session):
+    agent, backend = await _seed_backend(session)
+    template = PermissionTemplate(name="multitenant-readonly")
+    revision = PermissionTemplateRevision(
+        template=template,
+        revision=1,
+        privileges_json='["SELECT"]',
+        grant_option=False,
+    )
+    backend.permission_template_revision = revision
+    await session.commit()
+    template_id = template.id
+    revision_id = revision.id
+
+    resource = await create_db_instance_resource(
+        session,
+        agent_id=agent.id,
+        client_token="custom-permission-revision",
+        name="readonly",
+        db_type="polardb_mysql",
+    )
+
+    assert resource.permission_template_id == template_id
+    assert resource.permission_template_revision_id == revision_id
+    assert resource.permission_snapshot_json == (
+        '{"grant_option":false,"legacy":false,'
+        '"privileges":["SELECT"],'
+        f'"revision_id":"{revision_id}","scope":"tenant",'
+        f'"template_id":"{template_id}"}}'
+    )
 
 
 async def test_create_without_an_active_provisioning_binding_fails_closed(session):

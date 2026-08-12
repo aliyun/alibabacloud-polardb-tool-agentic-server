@@ -13,7 +13,9 @@ describe('BackendSelector', () => {
         backends={[
           {
             id: 'draining',
+            backend_type: 'multitenant',
             instance_id: 'instance-1',
+            dedicated_pool_id: null,
             admin_credential_id: 'credential-1',
             status: 'draining',
             priority: 0,

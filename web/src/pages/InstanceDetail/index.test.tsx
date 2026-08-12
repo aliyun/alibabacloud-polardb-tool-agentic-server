@@ -382,6 +382,7 @@ describe('Instance detail administration', () => {
 
     await waitFor(() =>
       expect(createProvisioningBackend).toHaveBeenCalledWith({
+        backend_type: 'multitenant',
         instance_id: 'instance-1',
         admin_credential_id: credential.id,
         priority: 0,

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import logging
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -599,92 +598,6 @@ async def unbind_department(
         await binding_manager.unbind_department_from_instance(session, department_id, instance_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.post("/{instance_id}/retry-provision")
-async def retry_provision(
-    instance_id: str,
-    request: Request,
-    admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    from server.core.quota_manager import reincrement_quota_for_retry
-    from server.core.provisioner import _launch_provisioning_task
-
-    inst = await session.get(Instance, instance_id)
-    if not inst:
-        raise HTTPException(404, "Instance not found")
-    if inst.status != InstanceStatus.FAILED:
-        raise HTTPException(400, "Only FAILED instances can be retried")
-
-    error = await reincrement_quota_for_retry(session, inst)
-    if error:
-        raise HTTPException(409, detail=error)
-
-    inst.status = InstanceStatus.CREATING
-    await session.commit()
-
-    session_factory = getattr(request.app.state, 'session_factory', None)
-    background_tasks = getattr(request.app.state, 'background_tasks', None)
-    if session_factory and background_tasks is not None and inst.owner_user_id:
-        _launch_provisioning_task(inst.id, inst.owner_user_id, session_factory, background_tasks)
-    return {"instance_id": inst.id, "status": "creating"}
-
-
-@router.delete("/{instance_id}/failed", status_code=204)
-async def delete_failed_instance(
-    instance_id: str,
-    admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    from sqlalchemy import select as sa_select, update as sa_update
-
-    from server.core.quota_manager import decrement_quota
-    inst = await session.get(Instance, instance_id)
-    if not inst:
-        raise HTTPException(404, "Instance not found")
-    if inst.status != InstanceStatus.FAILED:
-        raise HTTPException(400, "Only FAILED instances can be deleted via this endpoint")
-
-    cluster_id = inst.cluster_id
-
-    await decrement_quota(session, inst)
-
-    # Clear ORM-owned relationships once so the later Instance delete does not
-    # schedule the same delete-orphan rows a second time.
-    inst.user_bindings.clear()
-    inst.department_bindings.clear()
-    await session.flush()
-
-    for credential in (await session.execute(
-        sa_select(InstanceCredential).where(
-            InstanceCredential.instance_id == instance_id
-        )
-    )).scalars().all():
-        await session.delete(credential)
-
-    # Clear default_instance_id references so User FK doesn't block delete
-    await session.execute(
-        sa_update(User)
-        .where(User.default_instance_id == instance_id)
-        .values(default_instance_id=None)
-    )
-
-    await session.delete(inst)
-    await session.commit()
-
-    # Cloud cleanup last, so a cloud-side failure doesn't leave orphan DB state.
-    if cluster_id and not cluster_id.startswith(("pending-", "pool-pending-")):
-        try:
-            from server.aliyun.polardb_client import get_polardb_client_async
-            client = await get_polardb_client_async(session)
-            await client.delete_cluster(cluster_id)
-        except Exception:
-            logging.getLogger(__name__).warning(
-                "Failed to delete cloud cluster %s, may need manual cleanup",
-                cluster_id,
-            )
-
 
 class CreateTenantRequest(BaseModel):
     user_id: str

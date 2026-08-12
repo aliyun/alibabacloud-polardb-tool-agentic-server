@@ -38,13 +38,33 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection) -> None:
+    sqlite = connection.dialect.name == "sqlite"
+    if sqlite:
+        # SQLite batch migrations rebuild tables. Referencing child tables
+        # make the intermediate DROP fail while FK enforcement is enabled.
+        # Validate the finished schema before the migration connection exits.
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        connection.commit()
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
         render_as_batch=True,
     )
-    with context.begin_transaction():
-        context.run_migrations()
+    try:
+        with context.begin_transaction():
+            context.run_migrations()
+        if sqlite:
+            violations = connection.exec_driver_sql(
+                "PRAGMA foreign_key_check"
+            ).all()
+            if violations:
+                raise RuntimeError(
+                    "SQLite migration produced foreign-key violations"
+                )
+    finally:
+        if sqlite:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+            connection.commit()
 
 
 async def run_async_migrations() -> None:

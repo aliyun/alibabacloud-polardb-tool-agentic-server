@@ -76,13 +76,14 @@ Agent、Token 与绑定的管理细节见
 
 ## 查看访问审计日志
 
-Agent 通过 SQL 代理执行的每条语句都会记录审计。在控制台打开
-**Audit Logs** 页面，可按用户、SQL 类型、实例与执行结果检视 Agent 的
-访问行为。审计范围与保留策略见
+Agent 通过 SQL 代理执行的每条语句以及每次 PolarRAG MCP Tool 调用都会记录
+审计。在 **Audit Logs** 页面可选择 **All**、**SQL** 或 **PolarRAG**。
+PolarRAG 视图展示 Action、用户、PolarRAG 实例、Space、KB、命中数、部分失败
+数、结果和耗时，但不保存用户搜索文本或可信 ACL 上下文。审计范围与保留策略见
 [审计与安全](../administration/audit-and-security.md)。
 
 <p align="center">
   <img src="images/audit-logs.png" alt="Agent SQL 访问审计日志" width="820">
 </p>
 
-下一步：[功能使用④：资源池与实例](./resource-pool.md)。
+下一步：[自动供给池](../database-instances/dedicated-hot-pools.md)。

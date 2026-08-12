@@ -80,13 +80,16 @@ For managing Agents, Tokens, and bindings, see
 
 ## Review the access audit logs
 
-Every statement an Agent executes through the SQL proxy is audited. Open the
-**Audit Logs** page in the console to review Agent access by user, SQL type,
-instance, and result. For audit scope and retention, see
+Every statement an Agent executes through the SQL proxy and every PolarRAG MCP
+Tool call is audited. Open **Audit Logs** and select **All**, **SQL**, or
+**PolarRAG**. The PolarRAG view shows the action, user, PolarRAG instance,
+Space, KB, hit count, partial-failure count, result, and duration. It does not
+store the user's search text or trusted ACL context. For audit scope and
+retention, see
 [Audit and security](../administration/audit-and-security.md).
 
 <p align="center">
   <img src="../../zh-cn/getting-started/images/audit-logs.png" alt="Agent SQL access audit logs" width="820">
 </p>
 
-Next: [Feature usage 4: resource pool and instances](./resource-pool.md).
+Next: [Auto-provisioning pools](../database-instances/dedicated-hot-pools.md).

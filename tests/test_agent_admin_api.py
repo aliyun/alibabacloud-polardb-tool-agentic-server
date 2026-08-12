@@ -109,9 +109,14 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
     )
     assert created.status_code == 201
     agent_id = created.json()["id"]
-    assert created.json()["token"].startswith("pas_agent_")
+    assert "token" not in created.json()
     assert created.headers["cache-control"] == "no-store"
-    initial_plaintext = created.json()["token"]
+    initial_reveal = await http.post(
+        f"/api/agents/{agent_id}/token/reveal",
+        json={"password": "password"},
+        headers=headers,
+    )
+    initial_plaintext = initial_reveal.json()["token"]
     initial_hash = hashlib.sha256(initial_plaintext.encode()).hexdigest()
 
     first = await http.post(
@@ -122,10 +127,16 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
     )
     assert first.status_code == second.status_code == 200
     assert first.json()["id"] == second.json()["id"]
-    assert first.json()["token"] != second.json()["token"]
+    assert first.json()["token"] is None
+    assert second.json()["token"] is None
     assert first.headers["cache-control"] == "no-store"
-    first_hash = hashlib.sha256(first.json()["token"].encode()).hexdigest()
-    second_hash = hashlib.sha256(second.json()["token"].encode()).hexdigest()
+    second_reveal = await http.post(
+        f"/api/agents/{agent_id}/token/reveal",
+        json={"password": "password"},
+        headers=headers,
+    )
+    second_plaintext = second_reveal.json()["token"]
+    second_hash = hashlib.sha256(second_plaintext.encode()).hexdigest()
     async with factory() as session:
         active_row = (
             await session.execute(
@@ -137,12 +148,12 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
 
     reveal = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"confirmed": True},
+        json={"password": "password"},
         headers=headers,
     )
     assert reveal.status_code == 200
     assert reveal.headers["cache-control"] == "no-store"
-    assert reveal.json()["token"] == second.json()["token"]
+    assert reveal.json()["token"] == second_plaintext
 
     revoked = await http.post(
         f"/api/agents/{agent_id}/token/revoke", headers=headers
@@ -150,7 +161,7 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
     assert revoked.status_code == 200
     denied = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"confirmed": True},
+        json={"password": "password"},
         headers=headers,
     )
     assert denied.status_code == 409
@@ -169,23 +180,17 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
                 )
             )
         ).scalars().all()
-        assert len(rows) == 5
+        assert len(rows) == 7
         serialized = json.dumps(
             [row.metadata_json for row in rows], ensure_ascii=False
         )
-        assert first.json()["token"] not in serialized
-        assert second.json()["token"] not in serialized
         assert initial_plaintext not in serialized
         assert initial_hash not in serialized
-        assert first_hash not in serialized
         assert second_hash not in serialized
         assert second_ciphertext not in serialized
         log_text = caplog.text
-        assert first.json()["token"] not in log_text
-        assert second.json()["token"] not in log_text
         assert initial_plaintext not in log_text
         assert initial_hash not in log_text
-        assert first_hash not in log_text
         assert second_hash not in log_text
         assert second_ciphertext not in log_text
 
@@ -201,16 +206,34 @@ async def test_reveal_is_rate_limited_per_admin_and_agent(client):
         assert (
             await http.post(
                 f"/api/agents/{agent_id}/token/reveal",
-                json={"confirmed": True},
+                json={"password": "password"},
                 headers=headers,
             )
         ).status_code == 200
     limited = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"confirmed": True},
+        json={"password": "password"},
         headers=headers,
     )
     assert limited.status_code == 429
+
+
+async def test_reveal_requires_current_admin_password(client) -> None:
+    http, headers, _ = client
+    created = await http.post(
+        "/api/agents",
+        json={"name": "password-protected"},
+        headers=headers,
+    )
+
+    denied = await http.post(
+        f"/api/agents/{created.json()['id']}/token/reveal",
+        json={"password": "wrong-password"},
+        headers=headers,
+    )
+
+    assert denied.status_code == 401
+    assert "pas_agent_" not in denied.text
 
 
 async def test_reveal_limit_is_shared_in_database_across_app_instances(setup):
@@ -237,14 +260,14 @@ async def test_reveal_limit_is_shared_in_database_across_app_instances(setup):
             assert (
                 await client.post(
                     f"/api/agents/{agent_id}/token/reveal",
-                    json={"confirmed": True},
+                    json={"password": "password"},
                     headers=headers,
                 )
             ).status_code == 200
         assert (
             await second.post(
                 f"/api/agents/{agent_id}/token/reveal",
-                json={"confirmed": True},
+                json={"password": "password"},
                 headers=headers,
             )
         ).status_code == 429
@@ -269,10 +292,10 @@ async def test_required_token_audit_ignores_optional_sql_audit_disable(client, s
         "/api/agents", json={"name": "required-audit"}, headers=headers
     )
     assert created.status_code == 201
-    assert created.json()["token"].startswith("pas_agent_")
+    assert "token" not in created.json()
     revealed = await http.post(
         f"/api/agents/{created.json()['id']}/token/reveal",
-        json={"confirmed": True},
+        json={"password": "password"},
         headers=headers,
     )
     assert revealed.status_code == 200
@@ -294,7 +317,13 @@ async def test_audit_failure_rolls_back_regeneration_and_keeps_old_token_valid(
         "/api/agents", json={"name": "audit-rollback"}, headers=headers
     )
     agent_id = created.json()["id"]
-    old_plaintext = created.json()["token"]
+    old_plaintext = (
+        await http.post(
+            f"/api/agents/{agent_id}/token/reveal",
+            json={"password": "password"},
+            headers=headers,
+        )
+    ).json()["token"]
     provider = PASAuthProvider(
         session_factory=factory, config=AppConfig(server={"dev_mode": True})
     )
@@ -311,7 +340,7 @@ async def test_audit_failure_rolls_back_regeneration_and_keeps_old_token_valid(
     assert await provider._load_agent_access_token(old_plaintext) is not None
     reveal_failed = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"confirmed": True},
+        json={"password": "password"},
         headers=headers,
     )
     assert reveal_failed.status_code == 503
@@ -511,7 +540,7 @@ async def test_agent_routes_require_admin_and_old_user_token_routes_are_gone(
     assert (
         await http.post(
             f"/api/agents/{agent_id}/token/reveal",
-            json={"confirmed": True},
+            json={"password": "password"},
             headers=member_headers,
         )
     ).status_code == 403
@@ -541,8 +570,8 @@ async def test_duplicate_agent_name_is_conflict(client):
     "body",
     [
         None,
-        {"confirmed": False},
-        {"confirmed": True, "unexpected": "field"},
+        {"password": ""},
+        {"password": "password", "unexpected": "field"},
     ],
 )
 async def test_reveal_requires_strict_confirmation_before_sensitive_work(
@@ -615,7 +644,7 @@ async def test_agent_detail_reports_token_lifecycle_independent_of_agent_status(
     assert disabled.json()["token_summary"]["status"] == "active"
     revealed = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"confirmed": True},
+        json={"password": "password"},
         headers=headers,
     )
     assert revealed.status_code == 200
@@ -632,7 +661,7 @@ async def test_agent_detail_reports_token_lifecycle_independent_of_agent_status(
 
     denied_expired = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"confirmed": True},
+        json={"password": "password"},
         headers=headers,
     )
     assert denied_expired.status_code == 409

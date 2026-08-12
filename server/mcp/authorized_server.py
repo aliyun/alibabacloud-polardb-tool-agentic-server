@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Sequence
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ContentBlock
 from mcp.types import Tool as MCPTool
 
 from server.auth.principal import (
@@ -20,6 +24,7 @@ from server.core.access_control import (
     resolve_agent_instance_access,
     resolve_user_instance_access,
 )
+from server.core.agent_user_token_service import TOKEN_PREFIX
 from server.core.credential_policy import (
     is_valid_direct_access_credential,
 )
@@ -38,7 +43,12 @@ from server.models import (
     InstanceEngine,
     InstanceCredential,
     ProvisioningBackend,
+    ProvisioningMode,
     UserInstanceBinding,
+)
+from server.mcp.tools.polarrag import (
+    POLARRAG_TOOL_NAMES,
+    POLARRAG_UPLOAD_TOOL_NAMES,
 )
 
 DB_INSTANCE_TOOL_NAMES = frozenset(
@@ -56,7 +66,7 @@ USER_ONLY_TOOL_NAMES = frozenset(
         "create_branch",
         "delete_branch",
     }
-)
+) | POLARRAG_TOOL_NAMES
 AGENT_SQL_TOOL_NAMES = frozenset(
     {
         "run_sql",
@@ -131,11 +141,21 @@ async def has_eligible_provisioning_backend(
     session: AsyncSession,
     agent_id: str,
 ) -> bool:
+    dedicated_candidates = await list_candidates(
+        session,
+        agent_id,
+        InstanceEngine.POLARDB_MYSQL,
+        "tool-catalog",
+        mode=ProvisioningMode.DEDICATED,
+    )
+    if dedicated_candidates:
+        return True
     candidates = await list_candidates(
         session,
         agent_id,
         InstanceEngine.POLARDB_MYSQL,
         "tool-catalog",
+        mode=ProvisioningMode.MULTITENANT,
     )
     candidate_ids = [candidate.backend_id for candidate in candidates]
     if not candidate_ids:
@@ -243,6 +263,14 @@ class AuthorizedFastMCP(FastMCP):
 
     async def list_tools(self) -> list[MCPTool]:
         tools = await super().list_tools()
+        access_token = get_access_token()
+        if (
+            access_token is not None
+            and access_token.token.startswith(TOKEN_PREFIX)
+        ):
+            return [
+                tool for tool in tools if tool.name in POLARRAG_TOOL_NAMES
+            ]
         principal, allowed = await _request_catalog_policy()
         visible = [
             tool
@@ -251,6 +279,7 @@ class AuthorizedFastMCP(FastMCP):
                 tool.name not in DB_INSTANCE_TOOL_NAMES
                 or tool.name in allowed
             )
+            and tool.name not in POLARRAG_UPLOAD_TOOL_NAMES
             and not (
                 principal is not None
                 and principal.kind == PrincipalKind.AGENT
@@ -287,3 +316,22 @@ class AuthorizedFastMCP(FastMCP):
                 tool.model_copy(update={"inputSchema": schema})
             )
         return rewritten
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
+        access_token = get_access_token()
+        if (
+            access_token is not None
+            and access_token.token.startswith(TOKEN_PREFIX)
+            and name not in POLARRAG_TOOL_NAMES
+        ):
+            raise ToolError(f"Unknown tool: {name}")
+        if (
+            access_token is None
+            or not access_token.token.startswith(TOKEN_PREFIX)
+        ) and name in POLARRAG_UPLOAD_TOOL_NAMES:
+            raise ToolError(f"Unknown tool: {name}")
+        return await super().call_tool(name, arguments)

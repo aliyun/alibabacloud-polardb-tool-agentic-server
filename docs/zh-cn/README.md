@@ -12,14 +12,14 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
   元数据库，并拼出连接串。
 - [部署（单台 ECS + Docker Compose）](getting-started/deploy-compose.md)：
   安装 Docker、准备 `.env`、迁移、启动并完成接管。
-- [功能使用：引导式配置](getting-started/configure.md)：配置云凭证、购买
-  规格与资源池网络位置。
+- [功能使用：引导式配置](getting-started/configure.md)：配置云凭证和服务运行策略，
+  然后创建自动供给池。
 - [功能使用：注册数据库实例](getting-started/register-instance.md)：注册
   已有 PolarDB 集群并验证连通性。
 - [功能使用：Agent、Token 与 MCP](getting-started/agents-and-mcp.md)：创建
   Agent、签发 Token、授权并调用工具。
-- [功能使用：资源池与实例](getting-started/resource-pool.md)：设置目标容量、
-  补货并管理池中实例。
+- [自动供给池](database-instances/dedicated-hot-pools.md)：设置目标容量、
+  Agent 路由并管理热创建与冷创建成员。
 
 ## 初始化
 
@@ -52,11 +52,16 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 - [SQL 访问模型](agents/sql-access-model.md)：可选 SQL 代理、能力、资源自洽
   和后端权限限制。
 
+## 知识
+
+- [PolarRAG MCP 与企业身份](knowledge/polarrag-mcp.md)：实例注册、身份主体、
+  知识发现、仅用户可用的 Tool、ACL 边界和所需上游能力。
+
 ## 部署
 
 - [Agent 辅助的单机部署](deployment/agent-assisted-deployment.md)：显式调用
   Codex、Claude Code、Cursor 和兼容 Agent Skills 的工作流，并固定到 PAS
-  0.0.6。
+  0.0.7。
 - [生产部署前提](deployment/prerequisites.md)：支持的平台、元数据库、根密钥
   管理、可写目录与镜像仓库访问要求。
 - [Docker Compose](deployment/docker-compose.md)：使用固定 MySQL、一次性迁移、
@@ -93,6 +98,10 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
   Token、授权访问、调用四个数据库实例 Tool，以及运维清理流程。
 - [多租户供应](database-instances/multitenant-provisioning.md)：前提、后端
   策略、Agent 供应和恢复。
+- [自动供给池](database-instances/dedicated-hot-pools.md)：自动供给池容量、生命周期
+  凭证、预热、就绪、权限模板、冷却、恢复、回收和发布安全。
+- [Agent REST 数据库供应](database-instances/agent-rest-provisioning.md)：Bearer
+  认证、独立 OpenAPI、创建/轮询/删除工作流、状态、幂等、错误和凭证安全。
 
 ## 运维
 

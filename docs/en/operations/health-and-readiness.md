@@ -25,9 +25,24 @@ swaps its runtime snapshot, and becomes ready only when its loaded version is
 current. The default interval is five seconds. Optional module reload failures
 are reported separately from required failures.
 
+## Dedicated member readiness
+
+The application readiness endpoint does not mean every hot-pool member is
+allocatable. Dedicated members carry separate `FRESH`, `STALE`, or `CHECKING`
+evidence. PAS allocates only `AVAILABLE` + `FRESH` members whose evidence age
+is within the pool maximum.
+
+Expired evidence excludes a member and schedules a recheck. It does not by
+itself quarantine the member or trigger a replacement purchase. Only a
+conclusive failed recheck moves it to `QUARANTINED`; inconclusive worker or
+network failure stays stale and retries. The maximum evidence age must be at
+least twice the check interval.
+
 ## Alerting
 
 Alert on sustained readiness failure, restart loops, migration Job failure,
 database connection exhaustion, provisioning failures, and repeated
-authentication rejection. Capture response codes and sanitized categories,
-not secrets or full connection strings.
+authentication rejection. For auto-provisioning pools also alert on sustained
+planning deficit, stale/checking or quarantined growth, failed verification,
+hard-member exhaustion, and replenishment velocity. Capture response codes and
+sanitized categories, not secrets or full connection strings.

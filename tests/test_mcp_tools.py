@@ -1151,10 +1151,10 @@ class TestDefaultInstanceRouting:
         assert result["instance_id"] == setup_multi_instance["shared"].id
 
 
-    async def test_zero_instances_returns_no_instance_available(
+    async def test_zero_instances_returns_no_instance_assigned(
         self, test_engine, encryption_key
     ):
-        """User with no instance bindings gets NO_INSTANCE_AVAILABLE error."""
+        """A user without an admin assignment gets deterministic guidance."""
         engine_mod._engine = test_engine
         engine_mod._session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
 
@@ -1183,7 +1183,7 @@ class TestDefaultInstanceRouting:
         data = resp.json()
         assert data.get("isError") is True
         content = json.loads(data["content"][0]["text"])
-        assert content["error"] == "NO_INSTANCE_AVAILABLE"
+        assert content["error"] == "NO_INSTANCE_ASSIGNED"
 
     async def test_stale_default_cleared_and_falls_back_to_personal(
         self, multi_client, multi_auth_headers, setup_multi_instance, test_engine

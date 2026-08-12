@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
   Button,
-  Descriptions,
   Empty,
   Form,
   Input,
@@ -22,7 +21,6 @@ import {
   listAgents,
   updateAgent,
   type Agent,
-  type AgentCreated,
 } from '../../api/agents'
 import { getAPIErrorMessage } from '../../api/client'
 import PageContainer from '../../components/PageContainer'
@@ -43,7 +41,6 @@ export default function Agents() {
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
-  const [freshAgent, setFreshAgent] = useState<AgentCreated | null>(null)
   const [statusTarget, setStatusTarget] = useState<Agent | null>(null)
   const [statusLoading, setStatusLoading] = useState(false)
   const [reconnectNotice, setReconnectNotice] = useState(false)
@@ -64,19 +61,17 @@ export default function Agents() {
 
   useEffect(() => {
     void loadAgents()
-    return () => setFreshAgent(null)
   }, [loadAgents])
 
   const handleCreate = async (values: CreateAgentForm) => {
     setCreateLoading(true)
     setError(null)
     try {
-      const response = await createAgent({
+      await createAgent({
         name: values.name.trim(),
         description: values.description?.trim() || null,
         max_active_resources: values.max_active_resources ?? null,
       })
-      setFreshAgent(response.data)
       setCreateOpen(false)
       form.resetFields()
       await loadAgents()
@@ -323,42 +318,6 @@ export default function Agents() {
             message={t('agents.sessionWarning')}
           />
         </Space>
-      </Modal>
-
-      <Modal
-        title={t('agents.createdTitle')}
-        open={freshAgent !== null}
-        closable={false}
-        maskClosable={false}
-        footer={
-          <Button
-            type="primary"
-            aria-label={t('agents.closeToken')}
-            onClick={() => setFreshAgent(null)}
-          >
-            {t('agents.close')}
-          </Button>
-        }
-        destroyOnHidden
-      >
-        {freshAgent && (
-          <Space direction="vertical" size={16} style={{ width: '100%' }}>
-            <Alert
-              type="warning"
-              showIcon
-              message={t('agents.storeToken')}
-              description={t('agents.tokenMemory')}
-            />
-            <Title level={5}>{t('agents.mcpToken')}</Title>
-            <Descriptions column={1} size="small">
-              <Descriptions.Item label={t('agents.token')}>
-                <Text code copyable style={{ wordBreak: 'break-all' }}>
-                  {freshAgent.token}
-                </Text>
-              </Descriptions.Item>
-            </Descriptions>
-          </Space>
-        )}
       </Modal>
     </PageContainer>
   )

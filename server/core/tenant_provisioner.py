@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.binding_manager import is_valid_direct_access_credential
 from server.core.crypto import decrypt, encrypt
-from server.core.provisioner import generate_db_password
+from server.core.polardb_provisioning_helpers import generate_db_password
 from server.models import (
     BindingCapability,
     BindingOrigin,

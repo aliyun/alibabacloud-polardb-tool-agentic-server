@@ -20,6 +20,7 @@ from server.models import (
     AuditStatus,
     ProvisioningBackend,
     ProvisioningBackendStatus,
+    ProvisioningBackendType,
     User,
 )
 
@@ -32,8 +33,10 @@ router = APIRouter(
 class CreateBackendRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    instance_id: str
-    admin_credential_id: str
+    backend_type: ProvisioningBackendType = ProvisioningBackendType.MULTITENANT
+    instance_id: str | None = None
+    dedicated_pool_id: str | None = None
+    admin_credential_id: str | None = None
     priority: int = 0
     max_active_resources: int = Field(gt=0)
     resource_min_cpu: Decimal = Field(ge=0)
@@ -54,6 +57,22 @@ class CreateBackendRequest(BaseModel):
             )
         ):
             raise ValueError("CPU values must be whole units")
+        if self.backend_type == ProvisioningBackendType.MULTITENANT:
+            if (
+                self.instance_id is None
+                or self.admin_credential_id is None
+                or self.dedicated_pool_id is not None
+            ):
+                raise ValueError(
+                    "Multitenant backend requires instance_id and "
+                    "admin_credential_id only"
+                )
+        elif (
+            self.dedicated_pool_id is None
+            or self.instance_id is not None
+            or self.admin_credential_id is not None
+        ):
+            raise ValueError("Dedicated backend requires dedicated_pool_id only")
         return self
 
 
@@ -92,8 +111,10 @@ class UpdateBackendRequest(BaseModel):
 
 class BackendResponse(BaseModel):
     id: str
-    instance_id: str
-    admin_credential_id: str
+    backend_type: ProvisioningBackendType
+    instance_id: str | None
+    dedicated_pool_id: str | None
+    admin_credential_id: str | None
     status: ProvisioningBackendStatus
     priority: int
     max_active_resources: int
@@ -114,7 +135,9 @@ class BackendResponse(BaseModel):
         health = backend.health
         return cls(
             id=backend.id,
+            backend_type=backend.backend_type,
             instance_id=backend.instance_id,
+            dedicated_pool_id=backend.dedicated_pool_id,
             admin_credential_id=backend.admin_credential_id,
             status=backend.status,
             priority=backend.priority,
@@ -210,7 +233,9 @@ async def create_provisioning_backend(
     try:
         backend = await provisioning_backend_service.create_backend(
             session,
+            backend_type=body.backend_type,
             instance_id=body.instance_id,
+            dedicated_pool_id=body.dedicated_pool_id,
             admin_credential_id=body.admin_credential_id,
             priority=body.priority,
             max_active_resources=body.max_active_resources,

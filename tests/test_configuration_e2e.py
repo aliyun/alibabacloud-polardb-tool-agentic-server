@@ -22,15 +22,15 @@ from tests._configuration_helpers import (
 
 
 ACTOR = ConfigActor(scope="admin:test", actor_type="admin")
-CANDIDATE = {"enabled": False}
+CANDIDATE = {"log_level": "debug"}
 
 
 async def _apply_direct(context: ConfigTestContext) -> None:
     saved = await context.service.execute(
         ConfigCommand(
             action=ConfigAction.SAVE_DRAFT,
-            module="agent_token_auth",
-            expected_revision=0,
+            module="observability",
+            expected_revision=1,
             config=CANDIDATE,
         ),
         ACTOR,
@@ -38,7 +38,7 @@ async def _apply_direct(context: ConfigTestContext) -> None:
     validated = await context.service.execute(
         ConfigCommand(
             action=ConfigAction.VALIDATE,
-            module="agent_token_auth",
+            module="observability",
             expected_revision=saved.module["revision"],
         ),
         ACTOR,
@@ -46,7 +46,7 @@ async def _apply_direct(context: ConfigTestContext) -> None:
     await context.service.execute(
         ConfigCommand(
             action=ConfigAction.ACTIVATE,
-            module="agent_token_auth",
+            module="observability",
             expected_revision=validated.module["revision"],
             validation_id=validated.validation["validation_id"],
             idempotency_key="direct-activation",
@@ -81,7 +81,7 @@ async def _apply_cli(context: ConfigTestContext) -> None:
     protocol = _LoopProtocol(context, asyncio.get_running_loop())
     declaration = {
         "protocol_version": 1,
-        "agent_token_auth": {
+        "observability": {
             "desired_state": "active",
             "config": CANDIDATE,
         },
@@ -111,8 +111,8 @@ async def _apply_ui_sequence(context: ConfigTestContext) -> None:
             json={
                 "protocol_version": 1,
                 "action": "save_draft",
-                "module": "agent_token_auth",
-                "expected_revision": 0,
+                "module": "observability",
+                "expected_revision": 1,
                 "config": CANDIDATE,
             },
         )
@@ -122,7 +122,7 @@ async def _apply_ui_sequence(context: ConfigTestContext) -> None:
             json={
                 "protocol_version": 1,
                 "action": "validate",
-                "module": "agent_token_auth",
+                "module": "observability",
                 "expected_revision": saved.json()["module"][
                     "revision"
                 ],
@@ -134,7 +134,7 @@ async def _apply_ui_sequence(context: ConfigTestContext) -> None:
             json={
                 "protocol_version": 1,
                 "action": "activate",
-                "module": "agent_token_auth",
+                "module": "observability",
                 "expected_revision": validated.json()["module"][
                     "revision"
                 ],
@@ -156,12 +156,59 @@ async def test_api_cli_and_ui_sequence_store_equivalent_documents() -> None:
         await _apply_ui_sequence(ui)
 
         documents = [
-            await context.repository.get_module("agent_token_auth")
+            await context.repository.get_module("observability")
             for context in contexts
         ]
         assert documents[0] == documents[1] == documents[2]
-        assert documents[0].effective.config == CANDIDATE
+        assert documents[0].effective.config["log_level"] == "debug"
         assert documents[0].workflow_state.value == "ACTIVE"
     finally:
         for context in contexts:
             await context.close()
+
+
+async def test_cli_applies_nested_assume_role_external_id_from_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("STS_AK", "TEST0987654321WXYZ")
+    monkeypatch.setenv("STS_SK", "source-secret")
+    monkeypatch.setenv("STS_EXTERNAL_ID", "external-id-secret")
+    context = await create_config_context()
+    declaration = {
+        "protocol_version": 1,
+        "aliyun_access": {
+            "desired_state": "active",
+            "config": {
+                "credential_mode": "assume_role",
+                "assume_role": {
+                    "source_access_key_id_from_env": "STS_AK",
+                    "source_access_key_secret_from_env": "STS_SK",
+                    "external_id_from_env": "STS_EXTERNAL_ID",
+                    "role_arn": "acs:ram::123456789012:role/polardb",
+                    "role_session_name": "pas-session",
+                },
+            },
+        },
+    }
+    try:
+        await asyncio.to_thread(
+            apply_declaration,
+            _LoopProtocol(context, asyncio.get_running_loop()),
+            declaration,
+            dry_run=False,
+            stdin=io.StringIO(),
+        )
+
+        document = await context.repository.get_module("aliyun_access")
+        assert document is not None
+        assert document.effective is not None
+        assert document.effective.config["assume_role"]["external_id"] != (
+            "external-id-secret"
+        )
+        exported = await context.service.execute(
+            ConfigCommand(action=ConfigAction.EXPORT, module="aliyun_access"),
+            ACTOR,
+        )
+        assert "external-id-secret" not in str(exported.export)
+    finally:
+        await context.close()

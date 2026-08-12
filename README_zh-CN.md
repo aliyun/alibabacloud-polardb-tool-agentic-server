@@ -14,6 +14,8 @@
 - 通过 Web 控制台管理独立 Agent 身份及其一对一 API Token。
 - 支持一个 Agent 直接访问多个已注册的 PolarDB MySQL 实例。
 - 提供存储在数据库中的多租户供应后端，以及健康、容量、排空、清理和恢复控制。
+- 提供类型化 PolarDB 购买、预热、池内冷创建、Agent 主池/回退路由、冷却、恢复和
+  回收能力的自动供给池（AgenticDB Dedicated）。
 - 提供四个按授权动态展示的实例 Tool：`list_db_instances`、
   `create_db_instance`、`describe_db_instance` 和 `delete_db_instance`。
 - 提供 FastAPI 后端和 React/Vite 管理控制台。
@@ -54,8 +56,8 @@ npm run dev
 ```
 
 打开 `http://localhost:18761`。元数据库为空时，初始化控制台会要求输入一次性
-bootstrap token，并引导创建首个管理员。SSO、阿里云访问、购买和资源池等
-可选模块均可跳过，以后再配置。
+bootstrap token，并引导创建首个管理员。SSO、阿里云访问和购买等可选模块均可
+跳过，以后再配置；自动供给池在独立的 **Pool** 页面管理。
 
 只能使用终端的部署环境可采用交互式或声明式流程：
 
@@ -78,7 +80,7 @@ bootstrap token 交付、Docker 与 Kubernetes 命令和恢复方式详见
 
 Codex、Claude Code、Cursor 和兼容 Agent Skills 的客户端可以使用显式调用的
 [Agent 辅助部署 SKILL](docs/zh-cn/deployment/agent-assisted-deployment.md)。
-它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.6`。
+它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.7`。
 
 ## 管理流程
 
@@ -102,6 +104,11 @@ Web 控制台是运行时实例访问配置的事实来源：
    访问而单独启用。
 5. 在 **Users** 中，管理员还可以调整每个 User 的实例凭证、`readonly` 或
    `readwrite` 权限和能力。
+6. 在 **Pool** 中创建一个或多个自动供给池，配置目标容量与硬上限、网络
+   位置、权限、回收策略和购买预算，再为每个 Agent 绑定一个主池和可选回退池。
+
+人类 User 只使用已分配的注册实例，永不触发物理集群购买。Dedicated 冷创建会先在
+所选自动供给池内创建成员，因此 PAS 购买的每个集群始终由自动供给池管理。
 
 供应后端和凭证存储在元数据库中。不再通过部署时环境变量指定唯一多租户实例，
 调整绑定也不需要重新部署服务。
@@ -112,8 +119,10 @@ Web 控制台是运行时实例访问配置的事实来源：
 
 - `list_db_instances` 使用游标分页和过滤条件，列出已授权的物理实例和未删除
   资源，并返回可选的 `usage` 用途说明。
-- `create_db_instance(client_token, db_type, name?)` 仅供 Agent 使用，当前接受
-  `db_type="polardb_mysql"`，通过已授权的多租户后端创建持久逻辑数据库。
+- `create_db_instance(client_token, db_type, name?, provisioning_mode?)` 仅供
+  Agent 使用，当前接受 `db_type="polardb_mysql"`，通过已授权的 `multitenant`
+  或 `dedicated` 后端创建持久数据库。省略模式时为兼容性继续使用
+  `multitenant` 并发出弃用指标；新调用方应始终显式传入。
 - `describe_db_instance(db_instance_id)` 返回已授权的元数据；只有调用方拥有
   凭证读取能力且资源已就绪时，才会包含连接凭证。`usage` 对注册物理实例返回
   已填写内容；未填写或供应的逻辑资源返回 `null`。
@@ -126,6 +135,10 @@ Web 控制台是运行时实例访问配置的事实来源：
 会返回原资源，即使资源已经 `DELETED`；使用不同参数会返回幂等冲突。本版本
 不提供资源自动过期，请显式调用 `delete_db_instance`。
 
+Agent 也可以通过仅接受 Bearer Token 的 `/mcp/rest/db-instances` REST 端点使用
+同一生命周期；规范 Schema 位于 `/mcp/rest/openapi.json`。Dedicated 删除先断开
+访问，再等待配置的冷却时间，随后执行 destroy 或 sanitize/reuse。
+
 完整 UI 流程、安全模型、Tool 示例和生命周期参见
 [数据库实例访问与供应指南](docs/zh-cn/database-instances/access-and-provisioning.md)。
 
@@ -137,6 +150,9 @@ Web 控制台是运行时实例访问配置的事实来源：
 - [初始化设置](docs/zh-cn/setup/initial-setup.md)
 - [引导式模块化配置](docs/zh-cn/configuration/guided-configuration.md)
 - [数据库实例访问与供应](docs/zh-cn/database-instances/access-and-provisioning.md)
+- [自动供给池（AgenticDB Dedicated）](docs/zh-cn/database-instances/dedicated-hot-pools.md)
+- [Agent REST 数据库供应](docs/zh-cn/database-instances/agent-rest-provisioning.md)
+- [PolarRAG MCP 与企业身份](docs/zh-cn/knowledge/polarrag-mcp.md)
 - [Docker Compose 部署](docs/zh-cn/deployment/docker-compose.md)
 - [Agent 辅助的单机部署](docs/zh-cn/deployment/agent-assisted-deployment.md)
 - [Kubernetes 与 Helm 部署](docs/zh-cn/deployment/kubernetes-helm.md)

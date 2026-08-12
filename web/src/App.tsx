@@ -17,10 +17,15 @@ const Instances = lazy(() => import('./pages/Instances'))
 const InstanceDetail = lazy(() => import('./pages/InstanceDetail'))
 const MyInstances = lazy(() => import('./pages/MyInstances'))
 const AuditLogs = lazy(() => import('./pages/AuditLogs'))
-const Settings = lazy(() => import('./pages/Settings'))
 const Pool = lazy(() => import('./pages/Pool'))
 const Agents = lazy(() => import('./pages/Agents'))
 const AgentDetail = lazy(() => import('./pages/AgentDetail'))
+const DedicatedPoolCreate = lazy(
+  () => import('./pages/Pool/DedicatedPoolCreatePage'),
+)
+const DedicatedPoolDetail = lazy(
+  () => import('./pages/Pool/DedicatedPoolDetailPage'),
+)
 
 function PageLoading() {
   return (
@@ -53,19 +58,40 @@ function ReadyRoutes({
           </AuthGuard>
         }
       >
-        <Route path="/dashboard" element={<Dashboard />} />
+        <Route
+          path="/dashboard"
+          element={<Dashboard isAdmin={user?.role === 'admin'} />}
+        />
         <Route path="/users" element={<Users />} />
         <Route path="/departments" element={<Departments />} />
         <Route path="/instances" element={<Instances />} />
         <Route path="/instances/:id" element={<InstanceDetail />} />
-        <Route path="/my-instances" element={<MyInstances />} />
+        <Route
+          path="/my-instances"
+          element={<MyInstances isAdmin={user?.role === 'admin'} />}
+        />
         <Route path="/audit-logs" element={<AuditLogs />} />
-        <Route path="/settings" element={<Settings />} />
+        <Route
+          path="/settings"
+          element={<Navigate to="/settings/configuration" replace />}
+        />
         <Route path="/pool" element={<Pool />} />
         {(loading || user?.role === 'admin') && (
           <>
             <Route path="/agents" element={<Agents />} />
             <Route path="/agents/:id" element={<AgentDetail />} />
+            <Route
+              path="/pool/dedicated/new"
+              element={<DedicatedPoolCreate />}
+            />
+            <Route
+              path="/pool/dedicated/:poolId"
+              element={<DedicatedPoolDetail />}
+            />
+            <Route
+              path="/polarrag"
+              element={<Navigate to="/instances?type=polarrag" replace />}
+            />
             <Route
               path="/settings/configuration"
               element={<Setup mode="admin" />}

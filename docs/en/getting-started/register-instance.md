@@ -2,9 +2,11 @@
 
 **English** | [简体中文](../../zh-cn/getting-started/register-instance.md)
 
-Besides instances created automatically by the resource pool, you can also
-register an existing PolarDB MySQL cluster and then authorize it for Agents.
-This page walks through one manual registration.
+Registering an existing PolarDB MySQL cluster is separate from auto-provisioning pool
+purchasing. A registered multitenant instance can provide automatic logical
+resources through a provisioning backend; a registered single-tenant instance
+is assigned directly to an Agent and is never replenished by PAS. This page
+walks through one manual registration.
 
 ## Open the instance list
 

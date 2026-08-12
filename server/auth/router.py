@@ -267,6 +267,8 @@ class ChangePasswordRequest(BaseModel):
 @router.post("/change-password")
 async def change_password(
     body: ChangePasswordRequest,
+    request: Request,
+    response: Response,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -291,5 +293,26 @@ async def change_password(
         )
 
     user.password_hash = hash_password(body.new_password)
+    await session.execute(
+        update(UserRefreshToken)
+        .where(
+            UserRefreshToken.user_id == user.id,
+            UserRefreshToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
     await session.commit()
+
+    response.delete_cookie(
+        "session_token",
+        httponly=True,
+        secure=_secure_cookie(request),
+        samesite="lax",
+    )
+    response.delete_cookie(
+        "refresh_token",
+        httponly=True,
+        secure=_secure_cookie(request),
+        samesite="lax",
+    )
     return {"message": "Password changed successfully"}

@@ -15,9 +15,17 @@ from mcp.shared.auth import OAuthClientInformationFull
 
 from server.auth.jwt_manager import reset_keys
 from server.config import AppConfig, reset_config
+from server.core import agent_user_token_service
 from tests._helpers import init_test_jwt_keys
 from server.db import engine as engine_mod
-from server.models import Agent, AgentStatus, Base
+from server.models import (
+    Agent,
+    AgentStatus,
+    AgentUserAssignment,
+    AuthProvider,
+    Base,
+    User,
+)
 from server.models.oauth import OAuthAuthorizationCode
 from server.auth.oauth_provider import PASAuthProvider
 from server.models.base import utc_now
@@ -577,6 +585,42 @@ class TestAccessToken:
         assert loaded.subject == f"agent:{row.agent_id}"
         assert loaded.client_id == "agent-token"
         assert loaded.scopes == []
+
+    async def test_load_active_agent_user_token(
+        self, provider, session_factory
+    ):
+        async with session_factory() as session:
+            user = User(
+                external_id="alice",
+                display_name="Alice",
+                auth_provider=AuthProvider.BUILTIN,
+            )
+            agent = Agent(name="knowledge-agent")
+            session.add_all([user, agent])
+            await session.flush()
+            assignment = AgentUserAssignment(
+                agent_id=agent.id,
+                user_id=user.id,
+            )
+            session.add(assignment)
+            await session.flush()
+            _, plaintext = await agent_user_token_service.issue_token(
+                session, assignment.id
+            )
+            await session.commit()
+
+        loaded = await provider.load_access_token(plaintext)
+        assert loaded is not None
+        assert loaded.subject == f"user:{user.id}"
+        assert loaded.client_id == f"agent-user:{assignment.id}"
+        assert loaded.scopes == []
+
+        async with session_factory() as session:
+            await agent_user_token_service.revoke_token(
+                session, assignment.id
+            )
+            await session.commit()
+        assert await provider.load_access_token(plaintext) is None
 
     async def test_load_rejects_disabled_agent_owner(
         self, provider, session_factory

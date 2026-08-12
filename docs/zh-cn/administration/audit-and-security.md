@@ -11,6 +11,10 @@ PAS 记录与安全相关的管理、认证、SQL、绑定、凭证和供应事�
 记录被阻止或确认的操作，但不会公开凭证。配置审计记录变化字段名、revision
 和状态，同时排除密钥值。
 
+控制台将同一条审计流分为 **All**、**SQL** 和 **PolarRAG** 三个视图。
+PolarRAG Tool 记录会解析实例、Space、KB、命中数和部分失败元数据。PolarRAG
+仍是文档 ACL 的最终权威；PAS 不记录可信 ACL 上下文或搜索文本。
+
 ## 密钥边界
 
 数据库密码、Agent Token、bootstrap token、根密钥、AccessKey、OIDC

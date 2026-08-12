@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -32,6 +33,7 @@ from server.models import (
     CredentialStatus,
     DBInstanceResource,
     DBInstanceStatus,
+    DeleteLifecycleStep,
     Instance,
     InstanceCredential,
     InstanceStatus,
@@ -81,8 +83,29 @@ class LifecycleAdapter:
                 LeaseCleanupStep.RESIDUE_VERIFIED,
         }[resource.cleanup_step]
 
+    async def disconnect(self, resource: DBInstanceResource) -> None:
+        resource.delete_step = {
+            DeleteLifecycleStep.PENDING:
+                DeleteLifecycleStep.ACCOUNT_LOCKED,
+            DeleteLifecycleStep.ACCOUNT_LOCKED:
+                DeleteLifecycleStep.SESSIONS_TERMINATED,
+            DeleteLifecycleStep.SESSIONS_TERMINATED:
+                DeleteLifecycleStep.DISCONNECTED,
+        }[resource.delete_step]
+
     async def health_check(self, _backend: ProvisioningBackend) -> None:
         return None
+
+
+class LifecycleClock:
+    def __init__(self) -> None:
+        self.now = datetime(2026, 8, 10, tzinfo=timezone.utc)
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, *, hours: int) -> None:
+        self.now += timedelta(hours=hours)
 
 
 def _jsonrpc(tool: str, arguments: dict, request_id: int = 1) -> dict:
@@ -185,6 +208,7 @@ async def e2e_env():
         instance.topology,
         LifecycleAdapter(),
     )
+    lifecycle_clock = LifecycleClock()
     dispatcher = DBInstanceDispatcher(
         factory,
         TenantProvisioningConfig(
@@ -193,6 +217,7 @@ async def e2e_env():
         ),
         registry,
         worker_id="e2e-worker",
+        clock=lifecycle_clock,
     )
     app = create_app()
     async with mcp_lifespan():
@@ -246,8 +271,17 @@ async def test_create_metric_covers_mcp_boundary_without_sensitive_labels(
     )
 
     assert result["isError"] is False
-    assert len(samples) == 1
-    sample = samples[0]
+    tool_samples = [
+        sample
+        for sample in samples
+        if sample.name == "agentic_db_tool_duration_seconds"
+    ]
+    assert len(tool_samples) == 1
+    assert any(
+        sample.name == "agentic_db_mcp_omitted_provisioning_mode_total"
+        for sample in samples
+    )
+    sample = tool_samples[0]
     assert sample.name == "agentic_db_tool_duration_seconds"
     assert sample.labels == {
         "tool": "create_db_instance",
@@ -275,7 +309,12 @@ async def test_tool_metric_records_structured_error_outcome(e2e_env):
     )
 
     assert result["isError"] is True
-    assert samples[0].labels["outcome"] == "error"
+    tool_sample = next(
+        sample
+        for sample in samples
+        if sample.name == "agentic_db_tool_duration_seconds"
+    )
+    assert tool_sample.labels["outcome"] == "error"
 
 
 async def test_tool_metric_includes_authentication_failure(e2e_env):
@@ -430,15 +469,24 @@ async def test_full_agent_lifecycle_reaches_ready_then_deleted(e2e_env):
     assert "password" not in deleting
     assert await dispatcher.run_once() is True
 
-    deleted = _payload(
-        await _call_tool(
-            client,
-            token,
-            "describe_db_instance",
-            {"db_instance_id": resource_id},
-            request_id=4,
-        )
+    async with factory() as session:
+        cooling = await session.get(DBInstanceResource, resource_id)
+        assert cooling is not None
+        assert cooling.status == DBInstanceStatus.COOLING_DOWN
+        assert cooling.cooldown_until is not None
+
+    dispatcher._clock.advance(hours=24)
+    assert await dispatcher.run_once() is True
+
+    deleted_result = await _call_tool(
+        client,
+        token,
+        "describe_db_instance",
+        {"db_instance_id": resource_id},
+        request_id=4,
     )
+    assert deleted_result["isError"] is False, deleted_result
+    deleted = _payload(deleted_result)
     assert deleted["status"] == "DELETED"
     assert "password" not in deleted
 

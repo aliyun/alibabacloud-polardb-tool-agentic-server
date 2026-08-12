@@ -293,7 +293,9 @@ async def list_agent_instance_access(
         row.instance_id: row for row in direct_rows
     }
     provisioning_by_instance = {
-        row.backend.instance_id: row for row in provisioning_rows
+        row.backend.instance_id: row
+        for row in provisioning_rows
+        if row.backend.instance_id is not None
     }
     instance_ids = sorted(
         set(direct_by_instance) | set(provisioning_by_instance)

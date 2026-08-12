@@ -90,6 +90,7 @@ def test_instance_dimensions_and_status_are_separate():
     }
     assert {item.value for item in models.AllocationMode} == {
         "auto_provisioned",
+        "dedicated_pool",
         "pooled",
         "registered",
     }

@@ -22,15 +22,135 @@ class DBInstanceMetricSample:
     name: str
     duration_seconds: float
     labels: dict[str, str]
+    value: float = 1.0
 
 
 MetricSink = Callable[[DBInstanceMetricSample], None]
 _metric_sink: MetricSink | None = None
 
+_DEDICATED_SIGNAL_OUTCOMES = {
+    "allocation": frozenset(
+        {"hot_hit", "cold_miss", "idempotent_replay", "failed"}
+    ),
+    "capacity": frozenset(
+        {
+            "snapshot",
+            "planning_deficit",
+            "capacity_limited",
+            "rate_limited",
+        }
+    ),
+    "readiness": frozenset(
+        {
+            "stale_excluded",
+            "check_started",
+            "fresh",
+            "failed",
+            "inconclusive",
+        }
+    ),
+    "replenishment": frozenset(
+        {
+            "purchase_reserved",
+            "not_required",
+            "capacity_limited",
+            "rate_limited",
+            "succeeded",
+            "failed",
+        }
+    ),
+    "lifecycle": frozenset(
+        {
+            "delete_requested",
+            "disconnected",
+            "cooling_down",
+            "restored",
+            "sanitized",
+            "destroyed",
+            "failed",
+        }
+    ),
+    "permission_sync": frozenset(
+        {"dry_run", "succeeded", "failed"}
+    ),
+}
+_DEDICATED_CAPACITY_KINDS = frozenset(
+    {
+        "allocatable",
+        "planning",
+        "billable_total",
+        "surplus",
+        "stale",
+        "checking",
+        "quarantined",
+    }
+)
+
 
 def set_db_instance_metric_sink(sink: MetricSink | None) -> None:
     global _metric_sink
     _metric_sink = sink
+
+
+def _publish(sample: DBInstanceMetricSample, message: str) -> None:
+    logger.info(
+        message,
+        extra={
+            "metric": sample.name,
+            "metric_value": sample.value,
+            "duration_seconds": sample.duration_seconds,
+            **sample.labels,
+        },
+    )
+    if _metric_sink is not None:
+        try:
+            _metric_sink(sample)
+        except Exception:
+            logger.exception("agentic database metric sink failed")
+
+
+def emit_dedicated_pool_signal(
+    *,
+    signal: str,
+    outcome: str,
+    value: float = 1.0,
+    duration_seconds: float = 0.0,
+) -> None:
+    """Emit a Dedicated lifecycle signal with strictly bounded labels.
+
+    Pool, member, Agent, database, account, endpoint, token, and exception
+    values are deliberately absent. Operators correlate individual requests
+    through the structured request/resource logs instead of metric labels.
+    """
+    outcomes = _DEDICATED_SIGNAL_OUTCOMES.get(signal)
+    if outcomes is None or outcome not in outcomes:
+        raise ValueError("Unsupported Dedicated metric signal or outcome")
+    sample = DBInstanceMetricSample(
+        name="agentic_db_dedicated_pool_event_total",
+        duration_seconds=max(0.0, duration_seconds),
+        labels={
+            "signal": signal,
+            "outcome": outcome,
+            "backend_type": "dedicated_pool",
+        },
+        value=max(0.0, value),
+    )
+    _publish(sample, "dedicated pool lifecycle signal")
+
+
+def emit_dedicated_pool_capacity(*, kind: str, value: float) -> None:
+    if kind not in _DEDICATED_CAPACITY_KINDS:
+        raise ValueError("Unsupported Dedicated capacity metric kind")
+    sample = DBInstanceMetricSample(
+        name="agentic_db_dedicated_pool_capacity",
+        duration_seconds=0.0,
+        labels={
+            "kind": kind,
+            "backend_type": "dedicated_pool",
+        },
+        value=max(0.0, value),
+    )
+    _publish(sample, "dedicated pool capacity snapshot")
 
 
 def _emit(tool: str, outcome: str, duration_seconds: float) -> None:
@@ -43,19 +163,51 @@ def _emit(tool: str, outcome: str, duration_seconds: float) -> None:
             "backend_type": "multitenant",
         },
     )
-    logger.info(
-        "agentic database tool completed",
+    _publish(sample, "agentic database tool completed")
+
+
+def emit_mcp_omitted_provisioning_mode() -> None:
+    sample = DBInstanceMetricSample(
+        name="agentic_db_mcp_omitted_provisioning_mode_total",
+        duration_seconds=0.0,
+        labels={
+            "surface": "mcp",
+            "default_mode": "multitenant",
+        },
+    )
+    logger.warning(
+        "MCP create_db_instance omitted provisioning_mode; defaulting to "
+        "multitenant. Removal requires zero omitted-mode calls in every "
+        "active environment for four consecutive weeks and one announced "
+        "release cycle.",
         extra={
             "metric": sample.name,
-            "duration_seconds": sample.duration_seconds,
+            "deprecation": "mcp_omitted_provisioning_mode",
             **sample.labels,
         },
     )
-    if _metric_sink is not None:
-        try:
-            _metric_sink(sample)
-        except Exception:
-            logger.exception("agentic database metric sink failed")
+    _publish(sample, "MCP provisioning mode compatibility signal")
+
+
+def emit_dedicated_pool_guard_metric(
+    *,
+    guard: str,
+    outcome: str,
+) -> None:
+    sample = DBInstanceMetricSample(
+        name="agentic_db_dedicated_pool_guard_total",
+        duration_seconds=0.0,
+        labels={
+            "guard": guard,
+            "outcome": outcome,
+            "backend_type": "dedicated_pool",
+        },
+    )
+    logger.info(
+        "dedicated pool guard evaluated",
+        extra={"metric": sample.name, **sample.labels},
+    )
+    _publish(sample, "dedicated pool guard signal")
 
 
 def _tool_name(body: bytes) -> str | None:

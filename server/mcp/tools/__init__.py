@@ -12,9 +12,7 @@ from server.core.binding_manager import get_accessible_instances
 from server.core.instance_manager import instance_category
 from server.core.responses import error_response
 from server.core.sql_gateway import SQLGateway
-from server.models import (
-    BindingCapability, Instance, InstanceStatus, InstanceTopology, User,
-)
+from server.models import BindingCapability, Instance, InstanceTopology, User
 
 logger = logging.getLogger(__name__)
 
@@ -84,56 +82,14 @@ async def resolve_target_instance(
         accessible = await get_accessible_instances(session, user)
         return target, accessible
 
-    # Check for a CREATING personal instance before querying accessible
-    creating = (await session.execute(
-        select(Instance).where(
-            Instance.owner_user_id == user.id,
-            Instance.topology == InstanceTopology.SINGLE_TENANT,
-            Instance.status == InstanceStatus.CREATING,
-        )
-    )).scalar_one_or_none()
-    if creating:
-        from server.config import get_config
-        retry_after = get_config().polardb.resource_pool.retry_after_seconds
-        return error_response("INSTANCE_CREATING",
-            "Instance is being provisioned, please retry later.",
-            retry_after_seconds=retry_after)
-
     accessible = await get_accessible_instances(session, user)
 
     if len(accessible) == 0:
-        # Check FAILED before auto-provision
-        failed = (await session.execute(
-            select(Instance).where(
-                Instance.owner_user_id == user.id,
-                Instance.topology == InstanceTopology.SINGLE_TENANT,
-                Instance.status == InstanceStatus.FAILED,
-            )
-        )).scalar_one_or_none()
-        if failed:
-            return error_response("INSTANCE_PROVISION_FAILED",
-                "Instance provisioning failed. Contact admin for assistance.",
-                instance_id=failed.id)
-
-        # Check if user expects multitenant but has no instance bound
-        from server.core.provisioner import resolve_provisioning_mode
-        from server.models.user import ProvisioningMode
-        mode = resolve_provisioning_mode(user)
-        if mode == ProvisioningMode.MULTITENANT:
-            return error_response("NO_MULTITENANT_INSTANCE",
-                "No multi-tenant instance configured. Contact admin.")
-
-        # Auto-provision via orchestrator (cross-module: quota + pool + provisioner)
-        if session_factory is not None and background_tasks is not None:
-            from server.core.orchestrator import provision_personal_instance
-            result = await provision_personal_instance(
-                user, session, session_factory, background_tasks,
-            )
-            if isinstance(result, dict):
-                return result
-            return result, accessible
-
-        return error_response("NO_INSTANCE_AVAILABLE", "No instances available. Contact admin to get access.")
+        return error_response(
+            "NO_INSTANCE_ASSIGNED",
+            "No administrator-assigned instance is available. "
+            "Contact an administrator to register and assign an instance.",
+        )
 
     if len(accessible) == 1:
         inst: Instance = accessible[0]["instance"]
@@ -200,7 +156,6 @@ from server.mcp.tools.db_instance_handler import (  # noqa: E402
     require_agent_principal,
     resolve_request_principal,
     serialize_db_instance_page,
-    serialize_resource,
 )
 
 __all__ = [
@@ -223,5 +178,4 @@ __all__ = [
     "resolve_request_principal",
     "require_agent_principal",
     "serialize_db_instance_page",
-    "serialize_resource",
 ]

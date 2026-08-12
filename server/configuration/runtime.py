@@ -11,9 +11,10 @@ from server.configuration.registry import (
     MODULE_REGISTRY,
     topological_modules,
 )
+from server.configuration.module_migrations import decrypt_effective_config
 from server.configuration.repository import ConfigRepository
 from server.configuration.types import ModuleDocument, ModuleState
-from server.core.config_crypto import ConfigCrypto, SecretEnvelope
+from server.core.config_crypto import ConfigCrypto
 
 logger = logging.getLogger(__name__)
 
@@ -79,22 +80,7 @@ def _decrypt_effective(
     document: ModuleDocument,
     crypto: ConfigCrypto,
 ) -> dict[str, Any]:
-    if (
-        document.effective is None
-        or document.effective.state != ModuleState.ACTIVE
-    ):
-        return {}
-    config = dict(document.effective.config)
-    for field in MODULE_REGISTRY[module].secret_fields:
-        value = config.get(field)
-        if isinstance(value, dict) and "$secret" in value:
-            config[field] = crypto.decrypt_field(
-                SecretEnvelope.model_validate(value["$secret"]),
-                module=module,
-                field_path=field,
-                schema_version=document.schema_version,
-            )
-    return config
+    return decrypt_effective_config(module, document, crypto)
 
 
 def project_app_config(
@@ -106,6 +92,7 @@ def project_app_config(
     effective = {
         module: _decrypt_effective(module, document, crypto)
         for module, document in documents.items()
+        if module in MODULE_REGISTRY
     }
 
     runtime = effective.get("runtime_policy", {})
@@ -134,11 +121,32 @@ def project_app_config(
     provisioning = config.polardb.tenant_provisioning
     for field in (
         "worker_poll_interval_seconds",
+        "dedicated_worker_heartbeat_interval_seconds",
+        "dedicated_worker_heartbeat_stale_after_seconds",
         "worker_claim_ttl_seconds",
         "worker_claim_renew_seconds",
+        "delete_cooldown_duration_hours",
     ):
         if field in runtime:
             setattr(provisioning, field, int(runtime[field]))
+    provisioning.dedicated_pool_enabled = bool(
+        runtime.get(
+            "dedicated_pool_enabled",
+            provisioning.dedicated_pool_enabled,
+        )
+    )
+    provisioning.dedicated_pool_simulation_enabled = bool(
+        runtime.get(
+            "dedicated_pool_simulation_enabled",
+            provisioning.dedicated_pool_simulation_enabled,
+        )
+    )
+    provisioning.dedicated_pool_preparation_mode = str(
+        runtime.get(
+            "dedicated_pool_preparation_mode",
+            provisioning.dedicated_pool_preparation_mode,
+        )
+    )
 
     observability = effective.get("observability", {})
     config.server.log_level = str(
@@ -236,28 +244,26 @@ def project_app_config(
             )
 
     aliyun = effective.get("aliyun_access", {})
-    for field in (
-        "credential_mode",
-        "access_key_id",
-        "access_key_secret",
-        "role_arn",
-        "role_session_name",
-        "sts_duration_seconds",
-        "region_id",
-        "openapi_network",
-    ):
-        if field in aliyun:
-            setattr(config.aliyun, field, aliyun[field])
+    aliyun_document = documents.get("aliyun_access")
+    if aliyun and aliyun_document is not None:
+        mode = aliyun.get("credential_mode")
+        active_config: dict[str, Any] = {
+            field: aliyun[field]
+            for field in ("credential_mode", "region_id", "openapi_network")
+            if field in aliyun
+        }
+        if mode in {"direct_ak", "assume_role", "ecs_ram_role"}:
+            block = aliyun.get(mode)
+            if isinstance(block, dict):
+                active_config[mode] = block
+        active_config["credential_digest"] = crypto.digest(active_config)
+        active_config["config_revision"] = (
+            aliyun_document.effective.revision
+            if aliyun_document.effective is not None
+            else 0
+        )
+        config.aliyun = config.aliyun.__class__.model_validate(active_config)
 
-    purchase = effective.get("agentic_db_purchase", {})
-    for field, value in purchase.items():
-        if hasattr(config.polardb.agentic_db, field):
-            setattr(config.polardb.agentic_db, field, value)
-
-    resource_pool = effective.get("resource_pool", {})
-    for field, value in resource_pool.items():
-        if hasattr(config.polardb.resource_pool, field):
-            setattr(config.polardb.resource_pool, field, value)
     return config
 
 

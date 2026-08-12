@@ -19,6 +19,7 @@ from server.models import (
     CredentialStatus,
     DBInstanceResource,
     DBInstanceStatus,
+    DeleteLifecycleStep,
     Instance,
     InstanceCredential,
     InstanceEngine,
@@ -59,6 +60,20 @@ class StepAdapter:
 
     async def verify(self, resource):
         resource.provisioning_step = LeaseProvisioningStep.VERIFIED
+
+    async def disconnect(self, resource):
+        resource.delete_step = {
+            DeleteLifecycleStep.PENDING: DeleteLifecycleStep.ACCOUNT_LOCKED,
+            DeleteLifecycleStep.ACCOUNT_LOCKED: (
+                DeleteLifecycleStep.SESSIONS_TERMINATED
+            ),
+            DeleteLifecycleStep.SESSIONS_TERMINATED: (
+                DeleteLifecycleStep.DISCONNECTED
+            ),
+        }[resource.delete_step]
+
+    async def restore(self, resource):
+        del resource
 
     async def delete(self, resource):
         self.delete_calls.append(resource.id)
@@ -198,6 +213,13 @@ async def test_concurrent_delete_wins_over_inflight_forward_step(race_env):
 
     async with factory() as session:
         resource = await session.get(DBInstanceResource, resource_id)
+        assert resource.status == DBInstanceStatus.COOLING_DOWN
+        resource.cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+    assert await dispatcher("worker-b").run_once() is True
+
+    async with factory() as session:
+        resource = await session.get(DBInstanceResource, resource_id)
         assert resource.status == DBInstanceStatus.DELETED
         assert resource.provisioning_step == LeaseProvisioningStep.PENDING
         assert resource.worker_id is None
@@ -232,6 +254,12 @@ async def test_forward_failure_after_delete_does_not_consume_cleanup_retry(
         await dispatcher("worker-b", max_retries=0).run_once()
         is True
     )
+    async with factory() as session:
+        cooling = await session.get(DBInstanceResource, resource_id)
+        assert cooling.status == DBInstanceStatus.COOLING_DOWN
+        cooling.cooldown_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await session.commit()
+    assert await dispatcher("worker-b", max_retries=0).run_once() is True
     async with factory() as session:
         deleted = await session.get(DBInstanceResource, resource_id)
         assert deleted.status == DBInstanceStatus.DELETED
@@ -296,6 +324,7 @@ async def test_two_dispatchers_finish_cleanup_exactly_once(race_env):
     async with factory() as session:
         resource = await session.get(DBInstanceResource, resource_id)
         resource.status = DBInstanceStatus.DELETING
+        resource.delete_step = DeleteLifecycleStep.LOGICAL_CLEANUP
         resource.cleanup_required = True
         resource.cleanup_step = LeaseCleanupStep.RESOURCE_CONFIG_DROPPED
         await session.commit()
@@ -385,6 +414,7 @@ async def test_cleanup_finalization_resumes_from_residue_verified(race_env):
     async with factory() as session:
         resource = await session.get(DBInstanceResource, resource_id)
         resource.status = DBInstanceStatus.DELETING
+        resource.delete_step = DeleteLifecycleStep.LOGICAL_CLEANUP
         resource.cleanup_required = True
         resource.cleanup_step = LeaseCleanupStep.RESIDUE_VERIFIED
         await session.commit()

@@ -9,20 +9,40 @@ import unicodedata
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.principal import Principal, PrincipalKind
 from server.core.crypto import encrypt
+from server.config import get_config
+from server.core.dedicated_pool_repository import (
+    PoolCapacityLimitReached,
+    PurchaseProfileUpgradeRequired,
+    activate_dedicated_member,
+    claim_fresh_member,
+    consume_agent_operation_budget,
+    reserve_member_purchase,
+)
 from server.core.db_instance_contract import (
     resource_connection_details,
     resource_capabilities,
 )
-from server.core.provisioner import generate_db_password
+from server.core.polardb_provisioning_helpers import generate_db_password
 from server.core.provisioning_backend_repository import list_candidates
+from server.core.provisioning_backend_repository import (
+    backend_is_fresh_and_healthy,
+)
+from server.core.permission_template_service import (
+    PermissionScope,
+    default_permission_snapshot,
+    effective_delete_cooldown_hours,
+    permission_snapshot_to_json,
+)
+from server.core.provisioning_operation_budget import RateLimited
 from server.core.provisioning_capacity import (
     CapacityUnavailable,
+    reserve_active_capacity_counters,
     reserve_capacity_and_insert,
 )
 from server.core.resource_write_guard import (
@@ -31,21 +51,36 @@ from server.core.resource_write_guard import (
 )
 from server.models import (
     Agent,
+    AgentProvisioningBinding,
     AgentStatus,
     CredentialCapability,
     CredentialPurpose,
+    CredentialStatus,
     DBInstanceResource,
     DBInstanceStatus,
+    DedicatedMemberStatus,
+    DedicatedPoolMember,
+    DedicatedPoolStatus,
+    DedicatedPreparationStep,
+    DeleteLifecycleStep,
     Instance,
     InstanceCredential,
     InstanceEngine,
+    InstanceStatus,
+    InstanceTopology,
+    ProvisioningMode,
     ProvisioningBackend,
+    ProvisioningBackendStatus,
+    ProvisioningBackendType,
+    ReadinessStatus,
+    AllocationMode,
+    ReclaimPolicy,
 )
 from server.models.base import utc_now
 
 CLIENT_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 _RESOURCE_ALPHABET = string.ascii_lowercase + string.digits
-_FINGERPRINT_VERSION = 1
+_FINGERPRINT_VERSION = 2
 
 
 class DBInstanceServiceError(Exception):
@@ -109,13 +144,29 @@ def normalize_resource_name(name: str | None) -> str | None:
 def request_fingerprint(
     db_type: str,
     name: str | None,
+    provisioning_mode: ProvisioningMode = ProvisioningMode.MULTITENANT,
     version: int = _FINGERPRINT_VERSION,
 ) -> str:
-    if version != _FINGERPRINT_VERSION:
+    if version not in {1, _FINGERPRINT_VERSION}:
         raise ValueError(f"Unsupported request fingerprint version: {version}")
     normalized_name = normalize_resource_name(name)
+    if version == 1:
+        if provisioning_mode != ProvisioningMode.MULTITENANT:
+            raise IdempotencyConflict(
+                "Legacy idempotency keys support multitenant mode only"
+            )
+        fingerprint_payload = {
+            "db_type": db_type,
+            "name": normalized_name,
+        }
+    else:
+        fingerprint_payload = {
+            "db_type": db_type,
+            "name": normalized_name,
+            "provisioning_mode": provisioning_mode.value,
+        }
     payload = json.dumps(
-        {"db_type": db_type, "name": normalized_name},
+        fingerprint_payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -168,6 +219,7 @@ async def _commit_idempotent_replay(
     agent_id: str,
     client_token: str,
     fingerprint: str,
+    fingerprint_version: int,
     before_commit: (
         Callable[[AsyncSession, DBInstanceResource], Awaitable[None]] | None
     ),
@@ -184,7 +236,7 @@ async def _commit_idempotent_replay(
         resource = _return_if_same_request(
             resource,
             fingerprint=fingerprint,
-            fingerprint_version=_FINGERPRINT_VERSION,
+            fingerprint_version=fingerprint_version,
         )
         if before_commit is not None:
             await before_commit(session, resource)
@@ -209,6 +261,7 @@ def _build_resource(
     fingerprint: str,
     normalized_name: str | None,
     engine: InstanceEngine,
+    provisioning_mode: ProvisioningMode = ProvisioningMode.MULTITENANT,
 ) -> DBInstanceResource:
     tenant_name, resource_config_name, account_name, database_name = (
         _new_database_identity()
@@ -224,9 +277,13 @@ def _build_resource(
         fingerprint_version=_FINGERPRINT_VERSION,
         name=normalized_name,
         engine=engine,
+        provisioning_mode=provisioning_mode,
         tenant_name=tenant_name,
         resource_config_name=resource_config_name,
         database_name=database_name,
+        permission_snapshot_json=permission_snapshot_to_json(
+            default_permission_snapshot(PermissionScope.MULTITENANT)
+        ),
     )
     resource.credentials.append(
         InstanceCredential(
@@ -242,6 +299,179 @@ def _build_resource(
     return resource
 
 
+def _build_dedicated_resource(
+    *,
+    agent_id: str,
+    backend_id: str,
+    client_token: str,
+    fingerprint: str,
+    normalized_name: str | None,
+    engine: InstanceEngine,
+) -> DBInstanceResource:
+    return DBInstanceResource(
+        owner_agent_id=agent_id,
+        backend_id=backend_id,
+        client_token=client_token,
+        request_fingerprint=fingerprint,
+        fingerprint_version=_FINGERPRINT_VERSION,
+        name=normalized_name,
+        engine=engine,
+        provisioning_mode=ProvisioningMode.DEDICATED,
+    )
+
+
+async def _reserve_dedicated_candidate(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    backend_id: str,
+    engine: InstanceEngine,
+    client_token: str,
+    fingerprint: str,
+    normalized_name: str | None,
+    allow_cold_purchase: bool,
+    before_commit: (
+        Callable[[AsyncSession, DBInstanceResource], Awaitable[None]] | None
+    ),
+) -> DBInstanceResource:
+    agent = await session.get(Agent, agent_id)
+    backend = await session.get(ProvisioningBackend, backend_id)
+    binding = await session.scalar(
+        select(AgentProvisioningBinding.id).where(
+            AgentProvisioningBinding.agent_id == agent_id,
+            AgentProvisioningBinding.backend_id == backend_id,
+            AgentProvisioningBinding.enabled.is_(True),
+        )
+    )
+    if (
+        agent is None
+        or agent.status != AgentStatus.ACTIVE
+        or backend is None
+        or backend.backend_type != ProvisioningBackendType.DEDICATED_POOL
+        or backend.status != ProvisioningBackendStatus.ACTIVE
+        or not backend_is_fresh_and_healthy(backend)
+        or binding is None
+        or backend.dedicated_pool is None
+        or backend.dedicated_pool.status != DedicatedPoolStatus.ACTIVE
+        or engine != InstanceEngine.POLARDB_MYSQL
+    ):
+        raise CapacityUnavailable
+    pool = backend.dedicated_pool
+    await consume_agent_operation_budget(
+        session,
+        pool=pool,
+        agent_id=agent_id,
+        operation="create",
+        now=utc_now(),
+    )
+    default_agent_limit = (
+        get_config()
+        .polardb.tenant_provisioning.effective_max_active_resources_per_agent
+    )
+    await reserve_active_capacity_counters(
+        session,
+        agent_id=agent_id,
+        backend_id=backend_id,
+        agent_limit=agent.max_active_resources or default_agent_limit,
+        backend_limit=backend.max_active_resources,
+    )
+    resource = _build_dedicated_resource(
+        agent_id=agent_id,
+        backend_id=backend_id,
+        client_token=client_token,
+        fingerprint=fingerprint,
+        normalized_name=normalized_name,
+        engine=engine,
+    )
+    session.add(resource)
+    await session.flush()
+    member = await claim_fresh_member(
+        session,
+        pool_id=pool.id,
+        resource_id=resource.id,
+        now=utc_now(),
+    )
+    if member is not None:
+        activate_dedicated_member(member, resource)
+    elif not allow_cold_purchase:
+        raise CapacityUnavailable
+    elif await reserve_member_purchase(
+        session,
+        pool_id=pool.id,
+        now=utc_now(),
+        intent="request",
+    ):
+        token = secrets.token_hex(16)
+        instance = Instance(
+            cluster_id=f"pending-dedicated-{token}",
+            name=f"Dedicated request member {token[:8]}",
+            topology=InstanceTopology.SINGLE_TENANT,
+            allocation_mode=AllocationMode.DEDICATED_POOL,
+            status=InstanceStatus.CREATING,
+            region=pool.region_id,
+        )
+        session.add(instance)
+        await session.flush()
+        session.add(
+            DedicatedPoolMember(
+                pool_id=pool.id,
+                instance_id=instance.id,
+                status=DedicatedMemberStatus.ALLOCATED_PREPARING,
+                readiness_status=ReadinessStatus.STALE,
+                preparation_step=DedicatedPreparationStep.PENDING,
+                allocated_resource_id=resource.id,
+            )
+        )
+        resource.allocated_instance_id = instance.id
+    if before_commit is not None:
+        await before_commit(session, resource)
+    await session.commit()
+    return resource
+
+
+async def _reserve_dedicated_capacity_and_insert(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    engine: InstanceEngine,
+    candidate_ids: list[str],
+    client_token: str,
+    fingerprint: str,
+    normalized_name: str | None,
+    before_commit: (
+        Callable[[AsyncSession, DBInstanceResource], Awaitable[None]] | None
+    ),
+) -> DBInstanceResource:
+    async with serialized_resource_write(session):
+        for allow_cold_purchase in (False, True):
+            for backend_id in candidate_ids:
+                try:
+                    return await _reserve_dedicated_candidate(
+                        session,
+                        agent_id=agent_id,
+                        backend_id=backend_id,
+                        engine=engine,
+                        client_token=client_token,
+                        fingerprint=fingerprint,
+                        normalized_name=normalized_name,
+                        allow_cold_purchase=allow_cold_purchase,
+                        before_commit=before_commit,
+                    )
+                except CapacityUnavailable:
+                    await session.rollback()
+                    if session.get_bind().dialect.name == "sqlite":
+                        await session.execute(text("BEGIN IMMEDIATE"))
+                except (
+                    PoolCapacityLimitReached,
+                    PurchaseProfileUpgradeRequired,
+                    RateLimited,
+                ):
+                    await session.rollback()
+                    if session.get_bind().dialect.name == "sqlite":
+                        await session.execute(text("BEGIN IMMEDIATE"))
+        raise CapacityUnavailable
+
+
 async def create_db_instance_resource(
     session: AsyncSession,
     *,
@@ -249,6 +479,7 @@ async def create_db_instance_resource(
     client_token: str,
     name: str | None,
     db_type: str,
+    provisioning_mode: ProvisioningMode = ProvisioningMode.MULTITENANT,
     before_commit: (
         Callable[[AsyncSession, DBInstanceResource], Awaitable[None]] | None
     ) = None,
@@ -260,15 +491,22 @@ async def create_db_instance_resource(
     fingerprint = request_fingerprint(
         db_type,
         normalized_name,
+        provisioning_mode,
         version=_FINGERPRINT_VERSION,
     )
 
     existing = await _find_by_client_token(session, agent_id, client_token)
     if existing is not None:
+        existing_fingerprint = request_fingerprint(
+            db_type,
+            normalized_name,
+            provisioning_mode,
+            version=existing.fingerprint_version,
+        )
         _return_if_same_request(
             existing,
-            fingerprint=fingerprint,
-            fingerprint_version=_FINGERPRINT_VERSION,
+            fingerprint=existing_fingerprint,
+            fingerprint_version=existing.fingerprint_version,
         )
         if before_commit is None:
             return existing
@@ -276,7 +514,8 @@ async def create_db_instance_resource(
             session,
             agent_id=agent_id,
             client_token=client_token,
-            fingerprint=fingerprint,
+            fingerprint=existing_fingerprint,
+            fingerprint_version=existing.fingerprint_version,
             before_commit=before_commit,
         )
 
@@ -285,6 +524,7 @@ async def create_db_instance_resource(
         agent_id,
         engine,
         client_token,
+        mode=provisioning_mode,
     )
     candidate_ids = [candidate.backend_id for candidate in candidates]
     if not candidate_ids:
@@ -297,6 +537,17 @@ async def create_db_instance_resource(
 
     for attempt in range(3):
         try:
+            if provisioning_mode == ProvisioningMode.DEDICATED:
+                return await _reserve_dedicated_capacity_and_insert(
+                    session,
+                    agent_id=agent_id,
+                    engine=engine,
+                    candidate_ids=candidate_ids,
+                    client_token=client_token,
+                    fingerprint=fingerprint,
+                    normalized_name=normalized_name,
+                    before_commit=before_commit,
+                )
             return await reserve_capacity_and_insert(
                 session,
                 agent_id=agent_id,
@@ -309,6 +560,7 @@ async def create_db_instance_resource(
                     fingerprint=fingerprint,
                     normalized_name=normalized_name,
                     engine=engine,
+                    provisioning_mode=provisioning_mode,
                 ),
                 before_commit=before_commit,
             )
@@ -332,6 +584,7 @@ async def create_db_instance_resource(
                     agent_id=agent_id,
                     client_token=client_token,
                     fingerprint=fingerprint,
+                    fingerprint_version=_FINGERPRINT_VERSION,
                     before_commit=before_commit,
                 )
             raise CapacityExhausted(
@@ -357,6 +610,7 @@ async def create_db_instance_resource(
                     agent_id=agent_id,
                     client_token=client_token,
                     fingerprint=fingerprint,
+                    fingerprint_version=_FINGERPRINT_VERSION,
                     before_commit=before_commit,
                 )
             if attempt == 2:
@@ -390,7 +644,14 @@ async def describe_db_instance_resource(
                 ProvisioningBackend,
                 ProvisioningBackend.id == DBInstanceResource.backend_id,
             )
-            .join(Instance, Instance.id == ProvisioningBackend.instance_id)
+            .outerjoin(
+                Instance,
+                Instance.id
+                == func.coalesce(
+                    DBInstanceResource.allocated_instance_id,
+                    ProvisioningBackend.instance_id,
+                ),
+            )
             .join(Agent, Agent.id == DBInstanceResource.owner_agent_id)
             .where(
                 DBInstanceResource.id == db_instance_id,
@@ -402,6 +663,8 @@ async def describe_db_instance_resource(
     if row is None:
         raise DBInstanceNotFound("Database instance not found")
     resource, instance = row
+    if resource.status == DBInstanceStatus.READY and instance is None:
+        raise DBInstanceNotFound("Database instance not found")
     connection = (
         resource_connection_details(resource)
         if resource.status == DBInstanceStatus.READY
@@ -425,6 +688,20 @@ async def describe_db_instance_resource(
         "provisioning_step": resource.provisioning_step.value.upper(),
         "cleanup_step": resource.cleanup_step.value.upper(),
         "cleanup_required": resource.cleanup_required,
+        "delete_step": resource.delete_step.value.upper(),
+        "delete_requested_at": _serialized_timestamp(
+            resource.delete_requested_at
+        ),
+        "disconnected_at": _serialized_timestamp(resource.disconnected_at),
+        "cooldown_until": _serialized_timestamp(resource.cooldown_until),
+        "delete_cooldown_duration_hours": (
+            resource.effective_delete_cooldown_duration_hours
+        ),
+        "reclaim_policy": (
+            resource.reclaim_policy.value
+            if resource.reclaim_policy is not None
+            else None
+        ),
     }
     if connection is not None:
         payload.update(
@@ -441,6 +718,8 @@ async def describe_db_instance_resource(
         DBInstanceStatus.DELETE_FAILED,
     }:
         payload["failure_reason"] = resource.failure_reason
+    if resource.restore_failure_reason:
+        payload["restore_failure_reason"] = resource.restore_failure_reason
     return payload
 
 
@@ -469,6 +748,62 @@ async def delete_db_instance_resource(
             DBInstanceStatus.DELETE_FAILED,
         }:
             previous_status = resource.status
+            backend = await session.get(
+                ProvisioningBackend, resource.backend_id
+            )
+            if backend is None:
+                raise NoProvisioningBackend(
+                    "Provisioning backend is unavailable"
+                )
+            if resource.delete_requested_at is None:
+                resource.delete_requested_at = utc_now()
+                pool = backend.dedicated_pool
+                resource.effective_delete_cooldown_duration_hours = (
+                    effective_delete_cooldown_hours(
+                        resource_override=(
+                            resource.effective_delete_cooldown_duration_hours
+                        ),
+                        pool_or_backend_override=(
+                            pool.delete_cooldown_duration_hours
+                            if pool is not None
+                            else backend.delete_cooldown_duration_hours
+                        ),
+                        global_default=(
+                            get_config()
+                            .polardb.tenant_provisioning
+                            .delete_cooldown_duration_hours
+                        ),
+                    )
+                )
+                resource.reclaim_policy = (
+                    pool.reclaim_policy
+                    if pool is not None
+                    else ReclaimPolicy.DESTROY
+                )
+            for credential in resource.credentials:
+                if credential.purpose == CredentialPurpose.RESOURCE_ACCESS:
+                    credential.status = CredentialStatus.REVOKED
+            if resource.provisioning_mode == ProvisioningMode.DEDICATED:
+                member = await session.scalar(
+                    select(DedicatedPoolMember).where(
+                        DedicatedPoolMember.allocated_resource_id
+                        == resource.id
+                    )
+                )
+                if member is not None:
+                    member.status = DedicatedMemberStatus.DELETING
+                    try:
+                        await consume_agent_operation_budget(
+                            session,
+                            pool=member.pool,
+                            agent_id=agent_id,
+                            operation="delete",
+                            now=utc_now(),
+                        )
+                    except RateLimited:
+                        # Revocation and disconnection are safety operations;
+                        # throttling must never leave access active.
+                        pass
             live_claim = False
             if resource.worker_id and resource.worker_lease_until is not None:
                 lease_until = resource.worker_lease_until
@@ -489,5 +824,46 @@ async def delete_db_instance_resource(
         await session.flush()
         if before_commit is not None:
             await before_commit(session, resource)
+        await session.commit()
+        return resource
+
+
+async def restore_db_instance_resource(
+    session: AsyncSession,
+    db_instance_id: str,
+) -> DBInstanceResource:
+    async with serialized_resource_write(session):
+        statement = select(DBInstanceResource).where(
+            DBInstanceResource.id == db_instance_id
+        )
+        if session.get_bind().dialect.name != "sqlite":
+            statement = statement.with_for_update()
+        resource = (await session.execute(statement)).scalar_one_or_none()
+        if resource is None:
+            raise DBInstanceNotFound("Database instance not found")
+        if resource.status not in {
+            DBInstanceStatus.DELETING,
+            DBInstanceStatus.DELETE_FAILED,
+            DBInstanceStatus.COOLING_DOWN,
+        }:
+            raise DBInstanceServiceError(
+                "Database instance cannot be restored from its current state"
+            )
+        if resource.delete_step in {
+            DeleteLifecycleStep.LOGICAL_CLEANUP,
+            DeleteLifecycleStep.PHYSICAL_DESTROY,
+            DeleteLifecycleStep.SANITIZE_DISPATCH,
+            DeleteLifecycleStep.COMPLETE,
+        }:
+            raise DBInstanceServiceError(
+                "Database cleanup has crossed the irreversible boundary"
+            )
+        resource.restore_source_status = resource.status
+        resource.status = DBInstanceStatus.RESTORING
+        resource.restore_failure_reason = None
+        resource.worker_id = None
+        resource.worker_lease_until = None
+        resource.next_retry_at = None
+        resource.retry_count = 0
         await session.commit()
         return resource

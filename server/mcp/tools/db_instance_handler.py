@@ -26,6 +26,10 @@ from server.core.audit_logger import log_audit
 from server.core.credential_policy import (
     is_valid_direct_access_credential,
 )
+from server.core.db_instance_application_service import (
+    CreateDBInstanceCommand,
+    DBInstanceApplicationService,
+)
 from server.core.db_instance_query import (
     DBInstancePage,
     DBInstanceView,
@@ -34,9 +38,6 @@ from server.core.db_instance_query import (
 from server.core.db_instance_service import (
     DBInstanceNotFound,
     DBInstanceServiceError,
-    create_db_instance_resource,
-    delete_db_instance_resource,
-    describe_db_instance_resource,
 )
 from server.core.signed_cursor import InvalidCursor
 from server.core.tool_rate_limit import (
@@ -45,15 +46,13 @@ from server.core.tool_rate_limit import (
     check_list_rate_limit,
     reset_tool_rate_limiters,
 )
-from server.mcp.authorized_server import (
-    has_eligible_provisioning_backend,
-)
 from server.models import (
     AgentInstanceBinding,
     AllocationMode,
     BindingCapability,
     DBInstanceResource,
     InstanceCredential,
+    ProvisioningMode,
     UserInstanceBinding,
     AuditStatus,
 )
@@ -221,16 +220,6 @@ def serialize_db_instance_page(page: DBInstancePage) -> dict[str, Any]:
         "instances": [_serialize_view(item) for item in page.instances],
         "has_more": page.has_more,
         "next_cursor": page.next_cursor,
-    }
-
-
-def serialize_resource(resource: DBInstanceResource) -> dict[str, Any]:
-    return {
-        "db_instance_id": resource.id,
-        "name": resource.name,
-        "db_type": resource.engine.value,
-        "source": "provisioned",
-        "status": resource.status.value.upper(),
     }
 
 
@@ -432,6 +421,7 @@ async def handle_create_db_instance(
     client_token: str,
     db_type: str,
     name: str | None,
+    provisioning_mode: ProvisioningMode,
 ) -> CallToolResult:
     started_at = time.perf_counter()
     if principal.kind != PrincipalKind.AGENT:
@@ -458,26 +448,6 @@ async def handle_create_db_instance(
             )
         ).scalar_one_or_none()
         audit_target_id = existing_id
-        if (
-            existing_id is None
-            and not await has_eligible_provisioning_backend(
-                session, principal.id
-            )
-        ):
-            if not await _required_error_audit(
-                session,
-                principal,
-                action="db_instance.create",
-                status=AuditStatus.ERROR,
-                error_code="NO_PROVISIONING_BACKEND",
-                started_at=started_at,
-            ):
-                return _audit_unavailable()
-            return _error(
-                "NO_PROVISIONING_BACKEND",
-                "Agent has no active, healthy provisioning backend",
-            )
-
         async def audit_before_commit(
             audit_session: AsyncSession,
             resource: DBInstanceResource,
@@ -501,15 +471,20 @@ async def handle_create_db_instance(
         # the service reauthorizes the agent and backend under the guard.
         if session.in_transaction():
             await session.rollback()
-        resource = await create_db_instance_resource(
+        service = DBInstanceApplicationService(
             session,
-            agent_id=principal.id,
-            client_token=client_token,
-            db_type=db_type,
-            name=name,
-            before_commit=audit_before_commit,
+            create_before_commit=audit_before_commit,
         )
-        return db_instance_result(serialize_resource(resource))
+        view = await service.create(
+            CreateDBInstanceCommand(
+                agent_id=principal.id,
+                mode=provisioning_mode,
+                idempotency_key=client_token,
+                db_type=db_type,
+                name=name,
+            )
+        )
+        return db_instance_result(view.summary_payload())
     except RequiredDBInstanceAuditUnavailable:
         await session.rollback()
         return _audit_unavailable()
@@ -542,9 +517,12 @@ async def handle_describe_db_instance(
         await check_describe_rate_limit(principal, db_instance_id)
         resource = await session.get(DBInstanceResource, db_instance_id)
         payload = (
-            await describe_db_instance_resource(
-                session, principal, db_instance_id
-            )
+            (
+                await DBInstanceApplicationService(session).describe(
+                    agent_id=principal.id,
+                    resource_id=db_instance_id,
+                )
+            ).describe_payload()
             if resource is not None
             else await _describe_physical(
                 session, principal, db_instance_id
@@ -625,13 +603,14 @@ async def handle_delete_db_instance(
 
         if session.in_transaction():
             await session.rollback()
-        resource = await delete_db_instance_resource(
+        view = await DBInstanceApplicationService(
             session,
-            principal.id,
-            db_instance_id,
-            before_commit=audit_before_commit,
+            delete_before_commit=audit_before_commit,
+        ).delete(
+            agent_id=principal.id,
+            resource_id=db_instance_id,
         )
-        return db_instance_result(serialize_resource(resource))
+        return db_instance_result(view.summary_payload())
     except RequiredDBInstanceAuditUnavailable:
         await session.rollback()
         return _audit_unavailable()

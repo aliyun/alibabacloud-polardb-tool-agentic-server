@@ -3,10 +3,9 @@ from __future__ import annotations
 import pytest
 
 from server import config as config_module
-from server.aliyun.credential_provider import AliyunCredentials
+from server.aliyun.credential_provider import DirectAKProvider
 from server.aliyun.polardb_client_impl import AliyunPolarDBClient
 from server.config import AppConfig, reset_config
-from server.core.provisioner import _preflight_check
 
 
 @pytest.fixture(autouse=True)
@@ -16,39 +15,38 @@ def clean():
     reset_config()
 
 
-class _StaticProvider:
+class _StaticProvider(DirectAKProvider):
     def __init__(
         self,
         region_id: str,
         openapi_network: str = "public",
     ) -> None:
-        self._cred = AliyunCredentials(
+        super().__init__(
             access_key_id="TEST_ACCESS_KEY_ID",
             access_key_secret="TEST_CREDENTIAL_VALUE_123",
             region_id=region_id,
             openapi_network=openapi_network,
         )
 
-    async def get_credentials(self) -> AliyunCredentials:
-        return self._cred
-
     def set_network(self, openapi_network: str) -> None:
-        self._cred = AliyunCredentials(
-            access_key_id=self._cred.access_key_id,
-            access_key_secret=self._cred.access_key_secret,
-            region_id=self._cred.region_id,
-            openapi_network=openapi_network,
-        )
+        self.openapi_network = openapi_network
 
 
-def _install_config(**pool: object) -> None:
+def _install_config() -> None:
     config_module._config = AppConfig(
         aliyun={
             "access_key_id": "TEST_ACCESS_KEY_ID",
             "access_key_secret": "TEST_CREDENTIAL_VALUE_123",
         },
-        polardb={"resource_pool": pool},
     )
+
+
+def test_endpoint_static_provider_uses_current_credentials_sdk_contract():
+    provider = _StaticProvider("cn-hangzhou")
+
+    assert provider.credential_client is not None
+    provider.set_network("vpc")
+    assert provider.openapi_network == "vpc"
 
 
 class TestOpenAPIEndpointResolution:
@@ -105,26 +103,3 @@ class TestOpenAPIEndpointResolution:
         second = await client._get_sdk()
         assert first is not second
         assert second._endpoint == "polardb-vpc.cn-hangzhou.aliyuncs.com"
-
-
-class TestPreflightNetworkCheck:
-    async def test_region_and_zone_required(self):
-        _install_config(region_id="", zone_id="")
-        result = await _preflight_check(None)
-        assert result is not None
-        assert "Region/Zone" in result["message"]
-
-    async def test_vpc_and_vswitch_are_required(self):
-        _install_config(region_id="cn-hangzhou", zone_id="cn-hangzhou-j")
-        result = await _preflight_check(None)
-        assert result is not None
-        assert "VPC/VSwitch" in result["message"]
-
-    async def test_explicit_vpc_and_vswitch_pass(self):
-        _install_config(
-            region_id="cn-hangzhou",
-            zone_id="cn-hangzhou-j",
-            vpc_id="vpc-bp-example",
-            vswitch_id="vsw-bp-example",
-        )
-        assert await _preflight_check(None) is None

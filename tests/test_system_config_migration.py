@@ -12,7 +12,7 @@ from sqlalchemy.dialects import mysql
 from server.models import SystemConfig
 
 
-HEAD_REVISION = "d4e5f6a7b8c9"
+HEAD_REVISION = "a6b7c8d9e0f1"
 KEY = base64.b64encode(b"01234567890123456789012345678901").decode()
 
 

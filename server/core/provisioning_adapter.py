@@ -21,6 +21,7 @@ from server.models import (
     Instance,
     InstanceCredential,
     LeaseCleanupStep,
+    DeleteLifecycleStep,
     LeaseProvisioningStep,
     ProvisioningBackend,
 )
@@ -38,6 +39,10 @@ class ProvisioningAdapter(Protocol):
     async def delete(self, resource: DBInstanceResource) -> None: ...
 
     async def verify(self, resource: DBInstanceResource) -> None: ...
+
+    async def disconnect(self, resource: DBInstanceResource) -> None: ...
+
+    async def restore(self, resource: DBInstanceResource) -> None: ...
 
     async def health_check(self, backend: ProvisioningBackend) -> HealthResult: ...
 
@@ -251,6 +256,75 @@ class PolarDBMySQLMultitenantAdapter:
             return
         else:
             raise RuntimeError("Unsupported cleanup step")
+
+    async def disconnect(self, resource: DBInstanceResource) -> None:
+        ddl = await self._cleanup_ddl(resource)
+        if resource.delete_step == DeleteLifecycleStep.PENDING:
+            await ddl.lock_account(resource)
+            resource.delete_step = DeleteLifecycleStep.ACCOUNT_LOCKED
+        elif resource.delete_step == DeleteLifecycleStep.ACCOUNT_LOCKED:
+            await ddl.terminate_sessions(resource)
+            resource.delete_step = DeleteLifecycleStep.SESSIONS_TERMINATED
+        elif resource.delete_step == DeleteLifecycleStep.SESSIONS_TERMINATED:
+            if not await ddl.verify_disconnected(resource):
+                raise RuntimeError("Database sessions remain connected")
+            resource.delete_step = DeleteLifecycleStep.DISCONNECTED
+        elif resource.delete_step in {
+            DeleteLifecycleStep.DISCONNECTED,
+            DeleteLifecycleStep.COOLING_DOWN,
+        }:
+            return
+        else:
+            raise RuntimeError("Unsupported disconnect step")
+
+    async def restore(self, resource: DBInstanceResource) -> None:
+        context = await self._context(resource.backend_id)
+        credentials = [
+            credential
+            for credential in resource.credentials
+            if credential.purpose == CredentialPurpose.RESOURCE_ACCESS
+        ]
+        if len(credentials) != 1:
+            raise InvalidResourceCredential(
+                "Exactly one recovery credential is required"
+            )
+        credential = credentials[0]
+        if (
+            not credential.username_ciphertext
+            or not credential.password_ciphertext
+            or credential.database_name != resource.database_name
+        ):
+            raise InvalidResourceCredential(
+                "Recovery credential is unavailable"
+            )
+        username = decrypt(credential.username_ciphertext)
+        password = decrypt(credential.password_ciphertext)
+        ddl = MultitenantDDLAdapter(
+            self._pool_manager,
+            context.backend,
+            context.instance,
+            context.credential,
+            username,
+        )
+        await ddl.unlock_account(resource)
+        await ddl.grant_privileges(resource)
+        if not context.instance.host or not context.instance.port:
+            raise RuntimeError("Provisioning backend endpoint is incomplete")
+        connection = await asyncmy.connect(
+            host=context.instance.host,
+            port=context.instance.port,
+            user=username,
+            password=password,
+            db=resource.database_name,
+            autocommit=True,
+        )
+        try:
+            async with connection.cursor() as cursor:
+                await cursor.execute("SELECT 1")
+                if await cursor.fetchone() != (1,):
+                    raise RuntimeError("Unexpected restore verification result")
+        finally:
+            await connection.ensure_closed()
 
     async def health_check(
         self, backend: ProvisioningBackend

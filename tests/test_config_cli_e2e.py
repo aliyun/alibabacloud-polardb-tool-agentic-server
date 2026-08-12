@@ -99,6 +99,66 @@ def test_apply_active_runs_draft_validate_activate(
     assert "idempotency_key" in client.calls[-1]
 
 
+def test_apply_yaml_resolves_nested_external_id_without_echoing_it(
+    monkeypatch, capsys
+) -> None:
+    class AliyunProtocol(FakeProtocol):
+        def command(self, body: dict) -> dict:
+            if body["action"] == "describe" and body["module"] == "aliyun_access":
+                self.calls.append(body)
+                return {
+                    "module": {
+                        "revision": self.revision,
+                        "workflow_state": "SKIPPED",
+                        "ui_hints": {
+                            "secret_fields": [
+                                "assume_role.source_access_key_id",
+                                "assume_role.source_access_key_secret",
+                                "assume_role.external_id",
+                            ]
+                        },
+                    }
+                }
+            return super().command(body)
+
+    monkeypatch.setenv("STS_AK", "ak")
+    monkeypatch.setenv("STS_SK", "sk")
+    monkeypatch.setenv("STS_EXTERNAL_ID", "external-id-secret")
+    declaration = yaml.safe_load(
+        """
+protocol_version: 1
+aliyun_access:
+  desired_state: active
+  config:
+    credential_mode: assume_role
+    assume_role:
+      source_access_key_id_from_env: STS_AK
+      source_access_key_secret_from_env: STS_SK
+      external_id_from_env: STS_EXTERNAL_ID
+      role_arn: acs:ram::123456789012:role/polardb
+      role_session_name: pas-session
+"""
+    )
+    assert "external-id-secret" not in yaml.safe_dump(declaration)
+    client = AliyunProtocol()
+
+    result = apply_declaration(
+        client,
+        declaration,
+        dry_run=True,
+        stdin=io.StringIO(),
+    )
+
+    plan = client.calls[-1]
+    assert plan["config"]["assume_role"]["external_id"] == "external-id-secret"
+    assert "external_id_from_env" not in plan["config"]["assume_role"]
+
+    from server.cli import print_output
+
+    print_output(result, output="json")
+    assert "external-id-secret" not in capsys.readouterr().out
+
+
 def test_export_writes_redacted_yaml(tmp_path) -> None:
     from server.cli import write_export
 

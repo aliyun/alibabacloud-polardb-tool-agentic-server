@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
   Button,
+  Descriptions,
   Input,
+  Modal,
   Skeleton,
   Space,
   Tag,
@@ -15,17 +17,29 @@ import {
   RightOutlined,
   SafetyCertificateOutlined,
 } from '@ant-design/icons'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import api, { getAPIErrorMessage } from '../../api/client'
 import {
   executeConfig,
+  type AliyunAccessMutation,
   type ConfigModule,
   type ConfigResponse,
 } from '../../api/configuration'
+import AliyunAccessForm from '../../components/AliyunAccessForm'
 import ConfigModuleForm from '../../components/ConfigModuleForm'
 import LanguageSwitcher from '../../components/LanguageSwitcher'
+import { formatDateTime } from '../../i18n/format'
+import {
+  isConfirmableExternalFailure,
+  normalizeDryRunDetails,
+  type SafeDryRunDetails,
+} from './workflowSafety'
+import {
+  type ActivationCandidate,
+  useActivationWorkflow,
+} from './useActivationWorkflow'
 import './Setup.css'
 
 const { Title, Paragraph, Text } = Typography
@@ -51,13 +65,6 @@ function cleanCandidate(
   )
 }
 
-interface CheckedCandidate {
-  moduleName: string
-  revision: number
-  config: Record<string, unknown>
-  activationConfig?: Record<string, unknown>
-}
-
 interface SetupProps {
   mode?: 'bootstrap' | 'admin'
   onEnterConsole?: () => void
@@ -67,22 +74,34 @@ export default function Setup({
   mode = 'bootstrap',
   onEnterConsole,
 }: SetupProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const [bootstrapToken, setBootstrapToken] = useState('')
   const [verifiedToken, setVerifiedToken] = useState<string>()
   const [modules, setModules] = useState<ConfigModule[]>()
   const [selectedName, setSelectedName] = useState('core_admin')
   const [busy, setBusy] = useState(false)
   const [plan, setPlan] = useState<ConfigResponse['plan']>()
+  const [planDetails, setPlanDetails] = useState<SafeDryRunDetails>()
   const [checkedCandidate, setCheckedCandidate] =
-    useState<CheckedCandidate>()
+    useState<ActivationCandidate>()
   const [completed, setCompleted] = useState(false)
+  const [confirmationOpen, setConfirmationOpen] = useState(false)
+  const [focusTarget, setFocusTarget] = useState<'dryRun' | 'heading'>()
+  const dryRunButtonRef = useRef<HTMLButtonElement>(null)
+  const moduleHeadingRef = useRef<HTMLHeadingElement>(null)
 
   const selected = useMemo(
     () => modules?.find((module) => module.name === selectedName),
     [modules, selectedName],
   )
+
+  const moduleDisplayName = useCallback((name: string) => (
+    t(`setup.moduleNames.${name}`, {
+      defaultValue: name.replace(/_/g, ' '),
+    })
+  ), [t])
 
   const loadModules = useCallback(async (token?: string) => {
     const response = await executeConfig({ action: 'describe' }, token)
@@ -103,6 +122,45 @@ export default function Setup({
       .finally(() => setBusy(false))
   }, [loadModules, mode, t])
 
+  useEffect(() => {
+    if (mode !== 'admin' || !modules) return
+    const requestedName = searchParams.get('module')
+    if (
+      requestedName
+      && requestedName !== selectedName
+      && modules.some((module) => module.name === requestedName)
+    ) {
+      setSelectedName(requestedName)
+      invalidatePlan()
+    }
+  }, [mode, modules, searchParams, selectedName])
+
+  useEffect(() => {
+    if (mode !== 'admin' || !selected) return
+    const requestedField = searchParams.get('field')
+    if (
+      !requestedField
+      || !selected.schema.properties?.[requestedField]
+    ) return
+    const timer = window.setTimeout(() => {
+      const target = document.getElementById(requestedField)
+      target?.scrollIntoView?.({ block: 'center' })
+      target?.focus()
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [mode, searchParams, selected])
+
+  function selectModule(name: string) {
+    setSelectedName(name)
+    invalidatePlan()
+    if (mode === 'admin') {
+      const nextSearchParams = new URLSearchParams(searchParams)
+      nextSearchParams.set('module', name)
+      nextSearchParams.delete('field')
+      setSearchParams(nextSearchParams)
+    }
+  }
+
   async function verifyOwnership() {
     setBusy(true)
     try {
@@ -118,15 +176,65 @@ export default function Setup({
 
   function invalidatePlan() {
     setPlan(undefined)
+    setPlanDetails(undefined)
     setCheckedCandidate(undefined)
+    setConfirmationOpen(false)
   }
 
-  async function runDryRun(values: Record<string, unknown>) {
+  useEffect(() => {
+    if (!focusTarget || busy || confirmationOpen) return
+    const target = focusTarget === 'dryRun'
+      ? dryRunButtonRef.current
+      : moduleHeadingRef.current
+    target?.focus()
+    setFocusTarget(undefined)
+  }, [busy, confirmationOpen, focusTarget, modules, selectedName])
+
+  const activateCheckedCandidate = useActivationWorkflow({
+    candidate: checkedCandidate,
+    selected,
+    bootstrapToken: verifiedToken,
+    execute: executeConfig,
+    loadModules,
+    loginCoreAdmin: async (candidate) => {
+      await api.post(
+        '/auth/login',
+        {
+          username: String(candidate.config.username ?? 'admin'),
+          password: candidate.activationConfig?.password,
+        },
+        { pasSkipAuthRedirect: true },
+      )
+      setVerifiedToken(undefined)
+    },
+    invalidate: invalidatePlan,
+    setBusy,
+    onFailureAfterRefresh: () => setFocusTarget('dryRun'),
+    onSuccessAfterRefresh: () => setFocusTarget('heading'),
+    setCompleted,
+    showError: (error, action) => {
+      message.error(getAPIErrorMessage(
+        error,
+        action === 'refresh' ? t('setup.refreshFailed') : t('setup.activateFailed'),
+      ))
+    },
+    showProofError: () => message.error(t('setup.invalidActivationProof')),
+    showSuccess: (module) => message.success(t('setup.activeSuccess', {
+      module: moduleDisplayName(module),
+    })),
+  })
+
+  async function runDryRun(
+    values: Record<string, unknown> | AliyunAccessMutation,
+  ) {
     if (!selected) return
     setBusy(true)
     invalidatePlan()
-    const password = typeof values.password === 'string' ? values.password : undefined
-    const config = cleanCandidate(values, selected)
+    const candidateValues = values as Record<string, unknown>
+    const password = typeof candidateValues.password === 'string'
+      ? candidateValues.password
+      : undefined
+    const config = cleanCandidate(candidateValues, selected)
     const activationConfig =
       selected.name === 'core_admin' ? { password } : undefined
     try {
@@ -138,11 +246,24 @@ export default function Setup({
         },
         verifiedToken,
       )
-      setPlan(planned.plan)
-      if (!planned.plan?.valid) {
-        message.error(
-          planned.plan?.message ?? t('setup.validationFailed'),
-        )
+      const nextPlan = planned.plan
+      setPlan(nextPlan)
+      setPlanDetails(normalizeDryRunDetails(
+        nextPlan,
+        candidateValues.credential_mode,
+      ))
+      if (!nextPlan?.valid) {
+        if (nextPlan && isConfirmableExternalFailure(selected.name, nextPlan)) {
+          setCheckedCandidate({
+            moduleName: selected.name,
+            revision: selected.revision,
+            config,
+            activationConfig,
+            confirmExternalFailure: true,
+          })
+        } else {
+          message.error(t('setup.validationFailed'))
+        }
         return
       }
       setCheckedCandidate({
@@ -150,6 +271,7 @@ export default function Setup({
         revision: selected.revision,
         config,
         activationConfig,
+        confirmExternalFailure: false,
       })
     } catch (error) {
       message.error(
@@ -165,101 +287,19 @@ export default function Setup({
     }
   }
 
-  async function activateCheckedCandidate() {
-    if (
-      !checkedCandidate
-      || !selected
-      || checkedCandidate.moduleName !== selected.name
-      || checkedCandidate.revision !== selected.revision
-    ) {
-      invalidatePlan()
+  function requestActivation() {
+    if (!checkedCandidate) return
+    if (checkedCandidate.confirmExternalFailure) {
+      setConfirmationOpen(true)
       return
     }
-    setBusy(true)
-    let mutationStarted = false
-    try {
-      mutationStarted = true
-      const saved = await executeConfig(
-        {
-          action: 'save_draft',
-          module: checkedCandidate.moduleName,
-          expected_revision: checkedCandidate.revision,
-          config: checkedCandidate.config,
-        },
-        verifiedToken,
-      )
-      const validated = await executeConfig(
-        {
-          action: 'validate',
-          module: checkedCandidate.moduleName,
-          expected_revision: saved.module!.revision,
-        },
-        verifiedToken,
-      )
-      const activated = await executeConfig(
-        {
-          action: 'activate',
-          module: checkedCandidate.moduleName,
-          expected_revision: validated.module!.revision,
-          validation_id: validated.validation!.validation_id,
-          idempotency_key: crypto.randomUUID(),
-          config: checkedCandidate.activationConfig,
-          confirm_impact:
-            checkedCandidate.moduleName === 'agentic_db_purchase',
-        },
-        verifiedToken,
-      )
-      if (checkedCandidate.moduleName === 'core_admin') {
-        await api.post(
-          '/auth/login',
-          {
-            username: String(
-              checkedCandidate.config.username ?? 'admin',
-            ),
-            password: checkedCandidate.activationConfig?.password,
-          },
-          { pasSkipAuthRedirect: true },
-        )
-        setVerifiedToken(undefined)
-      }
-      message.success(t('setup.activeSuccess', { module: checkedCandidate.moduleName }))
-      invalidatePlan()
-      await loadModules(
-        checkedCandidate.moduleName === 'core_admin'
-          ? undefined
-          : verifiedToken,
-      )
-      if (
-        activated.system_state === 'READY'
-        && checkedCandidate.moduleName === 'core_admin'
-      ) {
-        setCompleted(true)
-      }
-    } catch (error) {
-      invalidatePlan()
-      message.error(
-        getAPIErrorMessage(
-          error,
-          error instanceof Error
-            ? error.message
-            : t('setup.activateFailed'),
-        ),
-      )
-      if (mutationStarted) {
-        try {
-          await loadModules(verifiedToken)
-        } catch (refreshError) {
-          message.error(
-            getAPIErrorMessage(
-              refreshError,
-              t('setup.refreshFailed'),
-            ),
-          )
-        }
-      }
-    } finally {
-      setBusy(false)
-    }
+    void activateCheckedCandidate()
+  }
+
+  function cancelExternalFailureConfirmation() {
+    if (busy) return
+    setFocusTarget('dryRun')
+    invalidatePlan()
   }
 
   async function skipModule() {
@@ -276,7 +316,9 @@ export default function Setup({
       )
       invalidatePlan()
       await loadModules(verifiedToken)
-      message.success(t('setup.skippedSuccess', { module: selected.name }))
+      message.success(t('setup.skippedSuccess', {
+        module: moduleDisplayName(selected.name),
+      }))
     } catch (error) {
       message.error(getAPIErrorMessage(error, t('setup.skipFailed')))
       invalidatePlan()
@@ -351,10 +393,13 @@ export default function Setup({
     mode === 'admin'
     && selected.name === 'core_admin'
     && selected.workflow_state === 'ACTIVE'
+  const builtInModuleLocked = selected.configurable === false
+  const moduleLocked = coreAdminLocked || builtInModuleLocked
+  const dryRunDetails = planDetails
 
   return (
     <main className="setup-shell">
-      <div className="setup-language"><LanguageSwitcher /></div>
+      {mode === 'bootstrap' && <div className="setup-language"><LanguageSwitcher /></div>}
       <header className="setup-header">
         <div>
           <Title level={2}>{t('setup.configureTitle')}</Title>
@@ -383,20 +428,23 @@ export default function Setup({
               key={module.name}
               type="button"
               className={`setup-module-row ${module.name === selectedName ? 'is-selected' : ''}`}
-              onClick={() => {
-                setSelectedName(module.name)
-                invalidatePlan()
-              }}
+              onClick={() => selectModule(module.name)}
               disabled={busy}
             >
               <span>
-                <strong>{module.name.replace(/_/g, ' ')}</strong>
+                <strong>{moduleDisplayName(module.name)}</strong>
                 <small>
                   {module.dependencies.length > 0
-                    ? t('setup.requires', { dependencies: module.dependencies.join(', ') })
+                    ? t('setup.requires', {
+                      dependencies: module.dependencies
+                        .map(moduleDisplayName)
+                        .join(', '),
+                    })
                     : module.name === 'core_admin'
                       ? t('setup.requiredRecovery')
-                      : t('setup.independentModule')}
+                      : t(`setup.moduleDescriptions.${module.name}`, {
+                        defaultValue: t('setup.independentModule'),
+                      })}
                 </small>
               </span>
               <Tag color={stateColor(module.workflow_state)}>{module.workflow_state}</Tag>
@@ -407,46 +455,79 @@ export default function Setup({
         <section className="setup-editor" aria-labelledby="module-title">
           <div className="setup-editor-heading">
             <div>
-              <Title id="module-title" level={3}>
-                {selected.name.replace(/_/g, ' ')}
+              <Title id="module-title" level={3} ref={moduleHeadingRef} tabIndex={-1}>
+                {moduleDisplayName(selected.name)}
               </Title>
               <Text type="secondary">{t('setup.revision', { revision: selected.revision })}</Text>
             </div>
             {selected.workflow_state === 'ACTIVE' && <CheckCircleOutlined className="setup-active-icon" />}
           </div>
 
-          {selected.name === 'agentic_db_purchase' && (
+          {plan && dryRunDetails && (
             <Alert
-              type="warning"
+              type={dryRunDetails.valid ? 'success' : 'error'}
               showIcon
-              message={t('setup.purchaseWarning')}
-              description={t('setup.purchaseWarningDescription')}
-            />
-          )}
-          {plan && (
-            <Alert
-              type={plan.valid ? 'success' : 'error'}
-              showIcon
-              message={plan.valid ? t('setup.dryRunPassed') : t('setup.dryRunFailed')}
-              description={plan.message}
-            />
-          )}
-          {plan?.external_validation
-            && plan.external_validation.checks.length > 0 && (
-            <Alert
-              type="info"
-              showIcon
-              message={t('setup.connectivityChecked')}
+              message={dryRunDetails.valid ? t('setup.dryRunPassed') : t('setup.dryRunFailed')}
               description={
-                <Space direction="vertical" size={2}>
-                  {plan.external_validation.checks.map((check) => (
-                    <Text
-                      key={`${check.service}:${check.endpoint}`}
-                      code
-                    >
-                      {check.service}: {check.endpoint} ({check.status})
-                    </Text>
-                  ))}
+                <Space direction="vertical" size={8} className="setup-dry-run-details">
+                  {dryRunDetails.guidance && (
+                    <Text>{t(`setup.dryRunGuidance.${dryRunDetails.guidance}`)}</Text>
+                  )}
+                  {dryRunDetails.checks.some((check) => check.service === 'polardb') && (
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message={t('setup.dryRunPermissionScopeTitle')}
+                      description={t('setup.dryRunPermissionScopeDescription')}
+                    />
+                  )}
+                  <Descriptions size="small" column={1} bordered>
+                    {dryRunDetails.credentialMode && (
+                      <Descriptions.Item label={t('setup.dryRunMode')}>
+                        {t(`components.aliyunAccess.modes.${dryRunDetails.credentialMode}.title`)}
+                      </Descriptions.Item>
+                    )}
+                    <Descriptions.Item label={t('setup.dryRunStatus')}>
+                      {dryRunDetails.valid ? t('setup.dryRunStatusPassed') : t('setup.dryRunStatusFailed')}
+                    </Descriptions.Item>
+                    {dryRunDetails.errorCode && (
+                      <Descriptions.Item label={t('setup.dryRunErrorCode')}>
+                        <Text code>{dryRunDetails.errorCode}</Text>
+                      </Descriptions.Item>
+                    )}
+                    {dryRunDetails.requestId && (
+                      <Descriptions.Item label={t('setup.dryRunRequestIdLabel')}>
+                        <Text code>{dryRunDetails.requestId}</Text>
+                      </Descriptions.Item>
+                    )}
+                    {dryRunDetails.checks.map((check) => (
+                      <Descriptions.Item
+                        key={`${check.service}:${check.endpoint}`}
+                        label={t('setup.dryRunService', { service: check.service })}
+                      >
+                        <Space direction="vertical" size={2}>
+                          <Text>{t('setup.dryRunEndpoint', { endpoint: check.endpoint })}</Text>
+                          <Text>{t('setup.dryRunCheckStatus', { status: check.status })}</Text>
+                          {check.identityHint && (
+                            <Text>{t('setup.dryRunIdentity', { identity: check.identityHint })}</Text>
+                          )}
+                          {check.expiresAt !== undefined && (
+                            <Text>
+                              {t('setup.dryRunExpiration', {
+                                expiration: formatDateTime(
+                                  check.expiresAt * 1000,
+                                  i18n.language,
+                                ),
+                              })}
+                            </Text>
+                          )}
+                          {check.requestId && (
+                            <Text>{t('setup.dryRunRequestId', { requestId: check.requestId })}</Text>
+                          )}
+                        </Space>
+                      </Descriptions.Item>
+                    ))}
+                  </Descriptions>
                 </Space>
               }
             />
@@ -469,30 +550,52 @@ export default function Setup({
               description={t('setup.adminManagedDescription')}
             />
           )}
+          {builtInModuleLocked && (
+            <Alert
+              type="info"
+              showIcon
+              message={t('setup.builtInModuleActive')}
+              description={t('setup.builtInModuleActiveDescription')}
+            />
+          )}
 
-          <ConfigModuleForm
-            key={`${selected.name}:${selected.revision}`}
-            module={selected}
-            disabled={busy || coreAdminLocked}
-            onSubmit={runDryRun}
-            onValuesChange={invalidatePlan}
-            formId="selected-module-form"
-          />
+          {!builtInModuleLocked && (selected.name === 'aliyun_access' ? (
+            <AliyunAccessForm
+              key={`${selected.name}:${selected.revision}`}
+              module={selected}
+              disabled={busy || moduleLocked}
+              onSubmit={runDryRun}
+              onValuesChange={invalidatePlan}
+              formId="selected-module-form"
+            />
+          ) : (
+            <ConfigModuleForm
+              key={`${selected.name}:${selected.revision}`}
+              module={selected}
+              moduleLabel={moduleDisplayName(selected.name)}
+              disabled={busy || moduleLocked}
+              onSubmit={runDryRun}
+              onValuesChange={invalidatePlan}
+              formId="selected-module-form"
+            />
+          ))}
 
           <div className="setup-actions">
-            {!coreAdminLocked && !checkedCandidate && (
-              <Button type="primary" htmlType="submit" form="selected-module-form" loading={busy}>
+            {!moduleLocked && !checkedCandidate && (
+              <Button ref={dryRunButtonRef} type="primary" htmlType="submit" form="selected-module-form" loading={busy}>
                 {t('setup.runDryRun')}
               </Button>
             )}
-            {!coreAdminLocked && checkedCandidate && (
+            {!moduleLocked && checkedCandidate && (
               <>
                 <Button
                   type="primary"
                   loading={busy}
-                  onClick={activateCheckedCandidate}
+                  onClick={requestActivation}
                 >
-                  {t('setup.activateModule')}
+                  {checkedCandidate.confirmExternalFailure
+                    ? t('setup.saveEnableAnyway')
+                    : t('setup.activateModule')}
                 </Button>
                 <Button
                   htmlType="submit"
@@ -503,7 +606,7 @@ export default function Setup({
                 </Button>
               </>
             )}
-            {selected.name !== 'core_admin' && selected.workflow_state !== 'ACTIVE' && (
+            {!moduleLocked && selected.name !== 'core_admin' && selected.workflow_state !== 'ACTIVE' && (
               <Button onClick={skipModule} disabled={busy}>
                 {t('setup.skipForNow')}
               </Button>
@@ -514,6 +617,41 @@ export default function Setup({
           </div>
         </section>
       </div>
+      <Modal
+        open={confirmationOpen}
+        title={t('setup.externalFailureTitle')}
+        okText={t('setup.confirmActivation')}
+        cancelText={t('common.cancel')}
+        confirmLoading={busy}
+        closable={!busy}
+        keyboard={!busy}
+        maskClosable={!busy}
+        focusTriggerAfterClose={false}
+        modalRender={(modal) => (
+          <div
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && !busy) {
+                event.preventDefault()
+                event.stopPropagation()
+                cancelExternalFailureConfirmation()
+              }
+            }}
+          >
+            {modal}
+          </div>
+        )}
+        onCancel={cancelExternalFailureConfirmation}
+        onOk={() => void activateCheckedCandidate(true)}
+      >
+        <Space direction="vertical" size={12}>
+          <Paragraph>{t('setup.externalFailureConfirmation')}</Paragraph>
+          <Alert
+            type="warning"
+            showIcon
+            message={t('setup.externalFailureRepair')}
+          />
+        </Space>
+      </Modal>
     </main>
   )
 }

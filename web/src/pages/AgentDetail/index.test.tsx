@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   getAgent,
+  listAgentPolarRAGBindings,
   regenerateAgentToken,
   revealAgentToken,
   revokeAgentToken,
@@ -17,12 +18,14 @@ import {
 } from '../../api/agents'
 import { executeConfig } from '../../api/configuration'
 import { listInstanceCredentials } from '../../api/credentials'
+import { listDedicatedPools } from '../../api/dedicatedPools'
 import {
   createAgentInstanceAccess,
   deleteAgentInstanceAccess,
   listAgentResources,
   listAgentInstanceAccess,
   listInstances,
+  listProvisioningBindings,
   updateAgentInstanceAccess,
 } from '../../api/instanceAccess'
 import { listProvisioningBackends } from '../../api/provisioningBackends'
@@ -30,6 +33,7 @@ import AgentDetail from './index'
 
 vi.mock('../../api/agents', () => ({
   getAgent: vi.fn(),
+  listAgentPolarRAGBindings: vi.fn(),
   regenerateAgentToken: vi.fn(),
   revealAgentToken: vi.fn(),
   revokeAgentToken: vi.fn(),
@@ -40,21 +44,34 @@ vi.mock('../../api/credentials', () => ({
   listInstanceCredentials: vi.fn(),
 }))
 
+vi.mock('../../api/dedicatedPools', () => ({
+  listDedicatedPools: vi.fn(),
+}))
+
 vi.mock('../../api/configuration', () => ({
   executeConfig: vi.fn(),
 }))
 
 vi.mock('../../api/instanceAccess', () => ({
   createAgentInstanceAccess: vi.fn(),
+  createProvisioningBinding: vi.fn(),
   deleteAgentInstanceAccess: vi.fn(),
+  deleteProvisioningBinding: vi.fn(),
   listAgentResources: vi.fn(),
   listAgentInstanceAccess: vi.fn(),
   listInstances: vi.fn(),
+  listProvisioningBindings: vi.fn(),
+  reorderDedicatedProvisioningBindings: vi.fn(),
   updateAgentInstanceAccess: vi.fn(),
+  updateProvisioningBinding: vi.fn(),
 }))
 
 vi.mock('../../api/provisioningBackends', () => ({
   listProvisioningBackends: vi.fn(),
+}))
+
+vi.mock('./PolarRAGAccessPanel', () => ({
+  default: () => <div>PolarRAG access panel</div>,
 }))
 
 const agent = {
@@ -179,6 +196,7 @@ describe('Agent detail page', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getAgent).mockResolvedValue({ data: agent } as never)
+    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue({ data: [] } as never)
     vi.mocked(listInstances).mockResolvedValue({
       items: [instance], total: 1, offset: 0, limit: 200,
     } as never)
@@ -192,6 +210,8 @@ describe('Agent detail page', () => {
       data: [],
     } as never)
     vi.mocked(listAgentResources).mockResolvedValue({ data: [] } as never)
+    vi.mocked(listDedicatedPools).mockResolvedValue({ data: [] } as never)
+    vi.mocked(listProvisioningBindings).mockResolvedValue({ data: [] } as never)
     vi.mocked(updateAgent).mockResolvedValue({ data: agent } as never)
     vi.mocked(revealAgentToken).mockResolvedValue({
       data: { token: 'pas_agent_default_plaintext' },
@@ -216,19 +236,17 @@ describe('Agent detail page', () => {
     })
   })
 
-  it('regenerates a token only after destructive confirmation and replaces it inline', async () => {
+  it('regenerates a token only after destructive confirmation without exposing plaintext', async () => {
     const user = userEvent.setup()
-    vi.mocked(revealAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_original_plaintext' },
-    } as never)
     vi.mocked(regenerateAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_regenerated_plaintext' },
+      data: { token: null, token_prefix: 'pas_agent_new' },
     } as never)
     renderPage()
 
     expect(
-      await screen.findByText('pas_agent_original_plaintext'),
+      await screen.findByText('pas_agent_••••••••'),
     ).toBeInTheDocument()
+    expect(revealAgentToken).not.toHaveBeenCalled()
     await user.click(
       screen.getByRole('button', { name: /regenerate token/i }),
     )
@@ -238,15 +256,11 @@ describe('Agent detail page', () => {
     ).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /^confirm regenerate$/i }))
-    expect(
-      await screen.findByText('pas_agent_regenerated_plaintext'),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
     expect(await screen.findByRole('status')).toHaveTextContent(
       /reconnect the MCP client/i,
     )
-    expect(
-      screen.queryByText('pas_agent_original_plaintext'),
-    ).not.toBeInTheDocument()
+    expect(screen.queryByText('pas_agent_regenerated_plaintext')).not.toBeInTheDocument()
     expect(
       screen.queryByRole('dialog', { name: /new agent token/i }),
     ).not.toBeInTheDocument()
@@ -254,7 +268,7 @@ describe('Agent detail page', () => {
     expect(sessionStorage).toHaveLength(0)
   })
 
-  it('uses the configured external base URL for the MCP server URL', async () => {
+  it('uses the configured external base URL for MCP and REST API access', async () => {
     vi.mocked(revealAgentToken).mockResolvedValue({
       data: { token: 'pas_agent_revealed_plaintext' },
     } as never)
@@ -279,15 +293,32 @@ describe('Agent detail page', () => {
     })
     renderPage()
 
-    expect(
-      await screen.findByText('pas_agent_revealed_plaintext'),
-    ).toBeInTheDocument()
-    expect(revealAgentToken).toHaveBeenCalledWith('agent-1', {
-      confirmed: true,
-    })
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
+    expect(revealAgentToken).not.toHaveBeenCalled()
     expect(
       await screen.findByText('http://10.0.0.8:18760/mcp'),
     ).toBeInTheDocument()
+    expect(
+      screen.getByText('http://10.0.0.8:18760/mcp/rest/db-instances'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: /open live api docs/i }),
+    ).toHaveAttribute('href', 'http://10.0.0.8:18760/mcp/rest/docs')
+    expect(
+      screen.getByRole('link', { name: /open openapi schema/i }),
+    ).toHaveAttribute(
+      'href',
+      'http://10.0.0.8:18760/mcp/rest/openapi.json',
+    )
+    expect(
+      screen.getByRole('link', { name: /view github guide/i }),
+    ).toHaveAttribute(
+      'href',
+      'https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/blob/main/docs/en/database-instances/agent-rest-provisioning.md',
+    )
+    expect(
+      screen.getAllByText(/Authorization: Bearer <agent-token>/),
+    ).toHaveLength(2)
     expect(
       screen.queryByRole('button', { name: /reveal credential/i }),
     ).not.toBeInTheDocument()
@@ -302,35 +333,22 @@ describe('Agent detail page', () => {
     ).toBeInTheDocument()
   })
 
-  it('keeps a Token reveal error visible and retries in place', async () => {
-    const user = userEvent.setup()
-    vi.mocked(revealAgentToken)
-      .mockRejectedValueOnce(new Error('unavailable'))
-      .mockResolvedValueOnce({
-        data: { token: 'pas_agent_after_retry' },
-      } as never)
+  it('does not reveal a Token while loading the page', async () => {
+    vi.mocked(revealAgentToken).mockRejectedValue(new Error('unavailable'))
     renderPage()
 
-    expect(
-      await screen.findByText(/could not load the active Agent Token/i),
-    ).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /retry/i }))
-
-    expect(await screen.findByText('pas_agent_after_retry')).toBeInTheDocument()
-    expect(revealAgentToken).toHaveBeenCalledTimes(2)
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
+    expect(revealAgentToken).not.toHaveBeenCalled()
   })
 
   it('uses the real Token state independently from disabled Agent status', async () => {
     vi.mocked(getAgent).mockResolvedValue({
       data: { ...agent, status: 'disabled' },
     } as never)
-    vi.mocked(revealAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_disabled_agent_active_token' },
-    } as never)
     renderPage()
 
     expect(
-      await screen.findByText('pas_agent_disabled_agent_active_token'),
+      await screen.findByText('pas_agent_••••••••'),
     ).toBeInTheDocument()
     expect(screen.getByText(/^Active$/)).toBeInTheDocument()
   })
@@ -355,8 +373,8 @@ describe('Agent detail page', () => {
 
       expect(await screen.findByText(new RegExp(`^${status}$`, 'i'))).toBeInTheDocument()
       expect(
-        screen.queryByRole('button', { name: /reveal credential/i }),
-      ).not.toBeInTheDocument()
+        screen.getByRole('button', { name: /copy token/i }),
+      ).toBeDisabled()
       expect(
         screen.queryByRole('button', { name: /revoke token/i }),
       ).not.toBeInTheDocument()
@@ -377,8 +395,8 @@ describe('Agent detail page', () => {
       screen.getByRole('button', { name: /regenerate token/i }),
     ).toBeEnabled()
     expect(
-      screen.queryByRole('button', { name: /reveal credential/i }),
-    ).not.toBeInTheDocument()
+      screen.getByRole('button', { name: /copy token/i }),
+    ).toBeDisabled()
   })
 
   it('does not let a late Agent A load overwrite route B', async () => {
@@ -423,7 +441,7 @@ describe('Agent detail page', () => {
     ).toBeInTheDocument()
   })
 
-  it('clears route A plaintext immediately while route B is still loading', async () => {
+  it('clears route A Token summary immediately while route B is still loading', async () => {
     const user = userEvent.setup()
     const pendingB = deferred<{ data: typeof agent }>()
     vi.mocked(getAgent).mockImplementation((agentId) =>
@@ -431,26 +449,20 @@ describe('Agent detail page', () => {
         ? Promise.resolve({ data: agent }) as never
         : pendingB.promise as never,
     )
-    vi.mocked(revealAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_route_a_secret' },
-    } as never)
     renderPage(true)
 
-    expect(await screen.findByText('pas_agent_route_a_secret')).toBeInTheDocument()
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /agent b/i }))
 
     await waitFor(() =>
-      expect(screen.queryByText('pas_agent_route_a_secret')).not.toBeInTheDocument(),
+      expect(screen.queryByText('pas_agent_••••••••')).not.toBeInTheDocument(),
     )
     expect(screen.getByText(/loading Agent access settings/i)).toBeInTheDocument()
   })
 
-  it('ignores a late route A Token reveal after navigating to B', async () => {
+  it('does not reveal either Agent Token while navigating between routes', async () => {
     const user = userEvent.setup()
-    const pendingReveal = deferred<{
-      data: { token: string }
-    }>()
     const agentB = {
       ...agent,
       id: 'agent-2',
@@ -464,20 +476,9 @@ describe('Agent detail page', () => {
     vi.mocked(getAgent).mockImplementation((agentId) =>
       Promise.resolve({ data: agentId === 'agent-1' ? agent : agentB }) as never,
     )
-    vi.mocked(revealAgentToken).mockImplementation((agentId) =>
-      agentId === 'agent-1'
-        ? pendingReveal.promise as never
-        : Promise.resolve({
-            data: { token: 'pas_agent_route_b' },
-          }) as never,
-    )
     renderPage(true)
 
-    await waitFor(() =>
-      expect(revealAgentToken).toHaveBeenCalledWith('agent-1', {
-        confirmed: true,
-      }),
-    )
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /agent b/i }))
     expect(
       await screen.findByRole('heading', {
@@ -486,10 +487,8 @@ describe('Agent detail page', () => {
       }),
     ).toBeInTheDocument()
 
-    pendingReveal.resolve({ data: { token: 'pas_agent_late_route_a' } })
-    await waitFor(() =>
-      expect(screen.queryByText('pas_agent_late_route_a')).not.toBeInTheDocument(),
-    )
+    expect(screen.getByText('pas_agent_••••••••')).toBeInTheDocument()
+    expect(revealAgentToken).not.toHaveBeenCalled()
   })
 
   it('ignores a pending route A regeneration after navigating to B', async () => {
@@ -583,72 +582,58 @@ describe('Agent detail page', () => {
     ).toBeEnabled()
   })
 
-  it('replaces the displayed Token when it is regenerated', async () => {
+  it('keeps the Token masked when it is regenerated', async () => {
     const user = userEvent.setup()
-    vi.mocked(revealAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_old_plaintext' },
-    } as never)
     vi.mocked(regenerateAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_new_plaintext' },
+      data: { token: null, token_prefix: 'pas_agent_new' },
     } as never)
     renderPage()
 
-    expect(await screen.findByText('pas_agent_old_plaintext')).toBeInTheDocument()
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: /regenerate token/i }))
     await user.click(screen.getByRole('button', { name: /^confirm regenerate$/i }))
 
-    expect(
-      await screen.findByText('pas_agent_new_plaintext'),
-    ).toBeInTheDocument()
-    expect(screen.queryByText('pas_agent_old_plaintext')).not.toBeInTheDocument()
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
+    expect(screen.queryByText('pas_agent_new_plaintext')).not.toBeInTheDocument()
   })
 
   it('keeps the independently active Token after an Agent status change', async () => {
     const user = userEvent.setup()
-    vi.mocked(revealAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_before_status_change' },
-    } as never)
     vi.mocked(updateAgent).mockResolvedValue({
       data: { ...agent, status: 'disabled' },
     } as never)
     renderPage()
 
     expect(
-      await screen.findByText('pas_agent_before_status_change'),
+      await screen.findByText('pas_agent_••••••••'),
     ).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /disable agent/i }))
     await user.click(screen.getByRole('button', { name: /^confirm disable$/i }))
     expect(
-      await screen.findByText('pas_agent_before_status_change'),
+      await screen.findByText('pas_agent_••••••••'),
     ).toBeInTheDocument()
   })
 
   it('preserves the current Token when regeneration fails', async () => {
     const user = userEvent.setup()
-    vi.mocked(revealAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_still_valid' },
-    } as never)
     vi.mocked(regenerateAgentToken).mockRejectedValue(
       new Error('regeneration failed'),
     )
     renderPage()
 
-    expect(await screen.findByText('pas_agent_still_valid')).toBeInTheDocument()
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /regenerate token/i }))
     await user.click(screen.getByRole('button', { name: /^confirm regenerate$/i }))
 
-    expect(await screen.findByText('pas_agent_still_valid')).toBeInTheDocument()
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
     expect(
       await screen.findByText(/requested change could not be saved/i),
     ).toBeInTheDocument()
   })
 
-  it('clears revealed Token plaintext and actions after revocation', async () => {
+  it('clears masked Token actions after revocation', async () => {
     const user = userEvent.setup()
-    vi.mocked(revealAgentToken).mockResolvedValue({
-      data: { token: 'pas_agent_before_revoke' },
-    } as never)
     vi.mocked(revokeAgentToken).mockResolvedValue({
       data: {
         ...agent.token_summary,
@@ -659,17 +644,15 @@ describe('Agent detail page', () => {
     } as never)
     renderPage()
 
-    expect(await screen.findByText('pas_agent_before_revoke')).toBeInTheDocument()
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /revoke token/i }))
     await user.click(screen.getByRole('button', { name: /^confirm revoke$/i }))
 
-    await waitFor(() =>
-      expect(screen.queryByText('pas_agent_before_revoke')).not.toBeInTheDocument(),
-    )
+    expect(await screen.findByText('pas_agent_••••••••')).toBeInTheDocument()
     expect(screen.getByText(/^Revoked$/)).toBeInTheDocument()
     expect(
-      screen.queryByRole('button', { name: /reveal credential/i }),
-    ).not.toBeInTheDocument()
+      screen.getByRole('button', { name: /copy token/i }),
+    ).toBeDisabled()
     expect(
       screen.queryByRole('button', { name: /revoke token/i }),
     ).not.toBeInTheDocument()
@@ -689,6 +672,38 @@ describe('Agent detail page', () => {
     ).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /^resources$/i })).toBeInTheDocument()
     expect(listInstanceCredentials).not.toHaveBeenCalled()
+  })
+
+  it('shows database and PolarRAG bindings with their instance types', async () => {
+    vi.mocked(listAgentInstanceAccess).mockResolvedValue({
+      data: [instanceAccess],
+    } as never)
+    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue({
+      data: [
+        {
+          id: 'rag-binding-1',
+          polarrag_instance_id: 'rag-1',
+          instance_name: 'Primary RAG',
+          created_at: '2026-08-05T00:00:00Z',
+        },
+      ],
+    } as never)
+    renderPage()
+
+    const heading = await screen.findByRole('heading', {
+      name: /^instance access$/i,
+    })
+    const section = heading.closest('section')
+    expect(section).not.toBeNull()
+    const accessTable = within(section as HTMLElement)
+
+    expect(accessTable.getByRole('columnheader', {
+      name: /instance type/i,
+    })).toBeInTheDocument()
+    expect(accessTable.getByText('Production')).toBeInTheDocument()
+    expect(accessTable.getByText('PolarDB for MySQL')).toBeInTheDocument()
+    expect(accessTable.getByText('Primary RAG')).toBeInTheDocument()
+    expect(accessTable.getByText('PolarRAG')).toBeInTheDocument()
   })
 
   it('prevents saving new access before an instance and capability are selected', async () => {

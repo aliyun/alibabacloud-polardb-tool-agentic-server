@@ -3,7 +3,8 @@ import {
   Alert,
   Button,
   Descriptions,
-  Skeleton,
+  Input,
+  Modal,
   Space,
   Tag,
   Typography,
@@ -16,63 +17,83 @@ import { formatDateTime } from '../../i18n/format'
 
 const { Text, Title } = Typography
 
-type CopyResult =
-  | { status: 'success'; message: string }
-  | { status: 'error'; message: string }
-  | null
+type CopyKind = 'token' | 'configuration'
+type CopyResult = { status: 'success' | 'error'; message: string } | null
 
 export interface MCPConnectionPanelProps {
   agentName: string
   mcpUrl: string
-  token: string | null
-  loading: boolean
-  error: string | null
+  tokenPrefix: string | null
   tokenStatus: AgentTokenStatus | null
   expiresAt: string | null
   lastUsedAt: string | null
-  onRetry: () => void
+  revealToken: (password: string) => Promise<string>
   onRegenerate: () => void
   onRevoke: () => void
+}
+
+function maskedToken(prefix: string | null): string | null {
+  if (!prefix) return null
+  return `${prefix.startsWith('pas_user_agent_') ? 'pas_user_agent_' : 'pas_agent_'}••••••••`
 }
 
 export default function MCPConnectionPanel({
   agentName,
   mcpUrl,
-  token,
-  loading,
-  error,
+  tokenPrefix,
   tokenStatus,
   expiresAt,
   lastUsedAt,
-  onRetry,
+  revealToken,
   onRegenerate,
   onRevoke,
 }: MCPConnectionPanelProps) {
   const { t, i18n } = useTranslation()
+  const [copyKind, setCopyKind] = useState<CopyKind | null>(null)
+  const [password, setPassword] = useState('')
+  const [copying, setCopying] = useState(false)
   const [copyResult, setCopyResult] = useState<CopyResult>(null)
-  const copyDisabled =
-    loading || !!error || tokenStatus !== 'active' || token === null
+  const copyDisabled = tokenStatus !== 'active' || tokenPrefix === null
+  const masked = maskedToken(tokenPrefix)
 
   useEffect(() => {
+    setCopyKind(null)
+    setPassword('')
     setCopyResult(null)
-  }, [agentName, mcpUrl, token])
+  }, [agentName, mcpUrl, tokenPrefix])
 
-  const copyConfiguration = async () => {
-    if (copyDisabled || !token) return
+  const closeCopy = () => {
+    setCopyKind(null)
+    setPassword('')
+  }
+
+  const copy = async () => {
+    if (!copyKind || !password || copyDisabled) return
+    setCopying(true)
+    setCopyResult(null)
     try {
       if (!navigator.clipboard) throw new Error('Clipboard unavailable')
-      await navigator.clipboard.writeText(
-        buildMCPClientConfiguration(agentName, mcpUrl, token),
-      )
+      const token = await revealToken(password)
+      const content =
+        copyKind === 'token'
+          ? token
+          : buildMCPClientConfiguration(agentName, mcpUrl, token)
+      await navigator.clipboard.writeText(content)
       setCopyResult({
         status: 'success',
-        message: t('components.mcpConnection.copied'),
+        message:
+          copyKind === 'token'
+            ? 'Agent Token copied'
+            : 'JSON configuration copied',
       })
     } catch {
       setCopyResult({
         status: 'error',
-        message: t('components.mcpConnection.copyFailed'),
+        message: 'Password verification failed or Token unavailable.',
       })
+    } finally {
+      setCopying(false)
+      closeCopy()
     }
   }
 
@@ -87,23 +108,15 @@ export default function MCPConnectionPanel({
         </Text>
       </div>
 
-      <Descriptions
-        column={1}
-        size="small"
-        style={{ marginTop: 16 }}
-      >
+      <Descriptions column={1} size="small" style={{ marginTop: 16 }}>
         <Descriptions.Item label={t('components.mcpConnection.serverUrl')}>
           <Text code copyable style={{ wordBreak: 'break-all' }}>
             {mcpUrl}
           </Text>
         </Descriptions.Item>
         <Descriptions.Item label={t('components.mcpConnection.token')}>
-          {loading ? (
-            <Skeleton.Input active size="small" />
-          ) : token ? (
-            <Text code copyable style={{ wordBreak: 'break-all' }}>
-              {token}
-            </Text>
+          {masked ? (
+            <Text code>{masked}</Text>
           ) : (
             <Text type="secondary">{t('components.mcpConnection.noToken')}</Text>
           )}
@@ -129,26 +142,17 @@ export default function MCPConnectionPanel({
         </Descriptions.Item>
       </Descriptions>
 
-      {error && (
-        <Alert
-          type="error"
-          showIcon
-          role="alert"
-          message={error}
-          style={{ marginTop: 12 }}
-          action={
-            <Button size="small" onClick={onRetry}>
-              {t('common.retry')}
-            </Button>
-          }
-        />
-      )}
-
       <Space wrap style={{ marginTop: 16 }}>
+        <Button
+          disabled={copyDisabled}
+          onClick={() => setCopyKind('token')}
+        >
+          {t('components.mcpConnection.copyToken')}
+        </Button>
         <Button
           type="primary"
           disabled={copyDisabled}
-          onClick={() => void copyConfiguration()}
+          onClick={() => setCopyKind('configuration')}
         >
           {t('components.mcpConnection.copyConfiguration')}
         </Button>
@@ -169,6 +173,31 @@ export default function MCPConnectionPanel({
           style={{ marginTop: 12 }}
         />
       )}
+
+      <Modal
+        title={copyKind === 'token'
+          ? t('components.mcpConnection.copyTokenTitle')
+          : t('components.mcpConnection.copyConfigurationTitle')}
+        open={copyKind !== null}
+        okText={t('components.mcpConnection.copy')}
+        confirmLoading={copying}
+        okButtonProps={{ disabled: password.length === 0 }}
+        onCancel={closeCopy}
+        onOk={() => void copy()}
+        destroyOnHidden
+      >
+        <Text type="secondary">
+          {t('components.mcpConnection.passwordPrompt')}
+        </Text>
+        <Input.Password
+          aria-label={t('components.mcpConnection.currentPassword')}
+          autoComplete="current-password"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          onPressEnter={() => void copy()}
+          style={{ marginTop: 16 }}
+        />
+      </Modal>
     </>
   )
 }

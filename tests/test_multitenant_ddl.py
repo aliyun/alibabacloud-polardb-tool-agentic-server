@@ -101,6 +101,62 @@ def test_builders_match_polardb_multitenant_syntax():
     )
 
 
+def test_default_permission_snapshot_builds_safe_multitenant_grant():
+    from server.core.permission_template_service import (
+        PermissionScope,
+        default_permission_snapshot,
+    )
+
+    snapshot = default_permission_snapshot(PermissionScope.MULTITENANT)
+
+    assert build_grant_sql(
+        "t123456789",
+        "agentic@t123456789",
+        snapshot,
+    ) == (
+        "GRANT CREATE, DROP, ALTER, INDEX, REFERENCES, CREATE VIEW, "
+        "SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, EXECUTE, SELECT, "
+        "INSERT, UPDATE, DELETE, CREATE TEMPORARY TABLES, LOCK TABLES "
+        "ON `%@t123456789`.* TO 'agentic@t123456789'@'%'"
+    )
+    assert "CREATE USER" not in build_grant_sql(
+        "t123456789",
+        "agentic@t123456789",
+        snapshot,
+    )
+    assert "GRANT OPTION" not in build_grant_sql(
+        "t123456789",
+        "agentic@t123456789",
+        snapshot,
+    )
+
+
+async def test_adapter_uses_resource_permission_snapshot_for_grant():
+    from server.core.permission_template_service import (
+        PermissionScope,
+        default_permission_snapshot,
+        permission_snapshot_to_json,
+    )
+
+    adapter = _adapter()
+    adapter._execute = AsyncMock()
+    adapter.verify_grants = AsyncMock(return_value=True)
+    resource = _resource()
+    resource.permission_snapshot_json = permission_snapshot_to_json(
+        default_permission_snapshot(PermissionScope.MULTITENANT)
+    )
+
+    await adapter.grant_privileges(resource)
+
+    adapter._execute.assert_awaited_once_with(
+        build_grant_sql(
+            resource.tenant_name,
+            "agentic@t123456789",
+            default_permission_snapshot(PermissionScope.MULTITENANT),
+        )
+    )
+
+
 @pytest.mark.parametrize(
     "builder,args",
     [
@@ -188,6 +244,57 @@ async def test_grant_verification_accepts_official_backtick_form():
         ]
     )
     assert await adapter.verify_grants(_resource()) is True
+
+
+async def test_grant_verification_rejects_legacy_overgrant_for_default_template():
+    from server.core.permission_template_service import (
+        PermissionScope,
+        default_permission_snapshot,
+        permission_snapshot_to_json,
+    )
+
+    resource = _resource()
+    resource.permission_snapshot_json = permission_snapshot_to_json(
+        default_permission_snapshot(PermissionScope.MULTITENANT)
+    )
+    adapter = _adapter()
+    adapter._fetchall = AsyncMock(
+        return_value=[
+            (
+                "GRANT ALL PRIVILEGES ON `%@t123456789`.* "
+                "TO `agentic@t123456789`@`%` WITH GRANT OPTION",
+            )
+        ]
+    )
+
+    assert await adapter.verify_grants(resource) is False
+
+
+async def test_grant_verification_accepts_reordered_safe_template_privileges():
+    from server.core.permission_template_service import (
+        PermissionScope,
+        default_permission_snapshot,
+        permission_snapshot_to_json,
+    )
+
+    resource = _resource()
+    resource.permission_snapshot_json = permission_snapshot_to_json(
+        default_permission_snapshot(PermissionScope.MULTITENANT)
+    )
+    adapter = _adapter()
+    adapter._fetchall = AsyncMock(
+        return_value=[
+            (
+                "GRANT SELECT, CREATE, DROP, ALTER, INDEX, REFERENCES, "
+                "CREATE VIEW, SHOW VIEW, CREATE ROUTINE, ALTER ROUTINE, "
+                "EXECUTE, INSERT, UPDATE, DELETE, "
+                "CREATE TEMPORARY TABLES, LOCK TABLES "
+                "ON `%@t123456789`.* TO `agentic@t123456789`@`%`",
+            )
+        ]
+    )
+
+    assert await adapter.verify_grants(resource) is True
 
 
 async def test_residue_verification_requires_every_object_to_be_absent():

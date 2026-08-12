@@ -35,7 +35,7 @@ describe('Agents page', () => {
     } as never)
   })
 
-  it('creates an Agent and keeps its initial token only in visible memory', async () => {
+  it('creates an Agent without returning or rendering its plaintext Token', async () => {
     const user = userEvent.setup()
     vi.mocked(createAgent).mockResolvedValue({
       data: {
@@ -45,7 +45,6 @@ describe('Agents page', () => {
         token_id: 'token-2',
         token_prefix: 'pas_agent_abcd',
         token_expires_at: null,
-        token: 'pas_agent_initial_plaintext',
       },
     } as never)
 
@@ -61,12 +60,11 @@ describe('Agents page', () => {
     await user.type(screen.getByLabelText(/^name$/i), 'reporting-agent')
     await user.click(screen.getByRole('button', { name: /save agent/i }))
 
-    expect(await screen.findByText('pas_agent_initial_plaintext')).toBeInTheDocument()
+    await waitFor(() => expect(createAgent).toHaveBeenCalledOnce())
+    expect(screen.queryByText('pas_agent_initial_plaintext')).not.toBeInTheDocument()
     expect(localStorage).toHaveLength(0)
     expect(sessionStorage).toHaveLength(0)
 
-    await user.click(screen.getByRole('button', { name: /close token/i }))
-    expect(screen.queryByText('pas_agent_initial_plaintext')).not.toBeInTheDocument()
   })
 
   it('changes status only after confirmation and asks clients to reconnect', async () => {

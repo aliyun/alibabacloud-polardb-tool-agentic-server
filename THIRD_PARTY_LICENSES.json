@@ -2533,6 +2533,18 @@
     },
     {
       "ecosystem": "python",
+      "name": "aliyun-python-sdk-core",
+      "version": "2.16.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "ecosystem": "python",
+      "name": "aliyun-python-sdk-kms",
+      "version": "2.16.5",
+      "license": "Apache-2.0"
+    },
+    {
+      "ecosystem": "python",
       "name": "annotated-doc",
       "version": "0.0.4",
       "license": "MIT"
@@ -2617,6 +2629,12 @@
     },
     {
       "ecosystem": "python",
+      "name": "crcmod",
+      "version": "1.7",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "python",
       "name": "cryptography",
       "version": "48.0.1",
       "license": "Apache-2.0 OR BSD-3-Clause"
@@ -2689,6 +2707,12 @@
     },
     {
       "ecosystem": "python",
+      "name": "jmespath",
+      "version": "0.10.0",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "python",
       "name": "joserfc",
       "version": "1.7.1",
       "license": "BSD-3-Clause"
@@ -2749,6 +2773,12 @@
     },
     {
       "ecosystem": "python",
+      "name": "oss2",
+      "version": "2.19.1",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "python",
       "name": "packaging",
       "version": "26.2",
       "license": "Apache-2.0 OR BSD-2-Clause"
@@ -2776,6 +2806,12 @@
       "name": "pycparser",
       "version": "3.0",
       "license": "BSD-3-Clause"
+    },
+    {
+      "ecosystem": "python",
+      "name": "pycryptodome",
+      "version": "3.23.0",
+      "license": "BSD-2-Clause"
     },
     {
       "ecosystem": "python",
@@ -2865,6 +2901,12 @@
       "ecosystem": "python",
       "name": "ruff",
       "version": "0.15.16",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "python",
+      "name": "six",
+      "version": "1.17.0",
       "license": "MIT"
     },
     {

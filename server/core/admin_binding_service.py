@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,12 +23,14 @@ from server.models import (
     CredentialCapability,
     DBInstanceResource,
     DBInstanceStatus,
+    DedicatedPoolStatus,
     Instance,
     InstanceCredential,
     InstanceStatus,
     Permission,
     ProvisioningBackend,
     ProvisioningBackendStatus,
+    ProvisioningBackendType,
     User,
     UserInstanceBinding,
     UserInstanceBindingCapability,
@@ -262,6 +264,17 @@ async def _validate_backend(
         raise BindingNotFound("Provisioning backend not found")
     if allow_create and backend.status != ProvisioningBackendStatus.ACTIVE:
         raise BindingValidationError("Provisioning backend must be active to allow creation")
+    if backend.backend_type == ProvisioningBackendType.DEDICATED_POOL:
+        pool = backend.dedicated_pool
+        if pool is None:
+            raise BindingValidationError(
+                "Dedicated provisioning backend has no pool"
+            )
+        if allow_create and pool.status != DedicatedPoolStatus.ACTIVE:
+            raise BindingValidationError(
+                "Dedicated pool must be active to allow creation"
+            )
+        return backend
     instance = backend.instance
     credential = backend.admin_credential
     try:
@@ -273,7 +286,7 @@ async def _validate_backend(
 
 async def list_agent_provisioning_bindings(session: AsyncSession, agent_id: str) -> list[AgentProvisioningBinding]:
     await _require_agent(session, agent_id)
-    return list(
+    rows = list(
         (
             await session.execute(
                 select(AgentProvisioningBinding)
@@ -287,6 +300,95 @@ async def list_agent_provisioning_bindings(session: AsyncSession, agent_id: str)
         .scalars()
         .all()
     )
+    return sorted(
+        rows,
+        key=lambda binding: (
+            0
+            if binding.backend.backend_type
+            == ProvisioningBackendType.DEDICATED_POOL
+            else 1,
+            binding.routing_order
+            if binding.routing_order is not None
+            else 2**31,
+            binding.created_at,
+            binding.id,
+        ),
+    )
+
+
+async def _enabled_dedicated_bindings(
+    session: AsyncSession,
+    agent_id: str,
+) -> list[AgentProvisioningBinding]:
+    return list(
+        (
+            await session.execute(
+                select(AgentProvisioningBinding)
+                .join(
+                    ProvisioningBackend,
+                    ProvisioningBackend.id
+                    == AgentProvisioningBinding.backend_id,
+                )
+                .where(
+                    AgentProvisioningBinding.agent_id == agent_id,
+                    AgentProvisioningBinding.enabled.is_(True),
+                    ProvisioningBackend.backend_type
+                    == ProvisioningBackendType.DEDICATED_POOL,
+                )
+                .order_by(
+                    AgentProvisioningBinding.routing_order.is_(None),
+                    AgentProvisioningBinding.routing_order,
+                    AgentProvisioningBinding.created_at,
+                    AgentProvisioningBinding.id,
+                )
+                .with_for_update()
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _lock_agent_routes(session: AsyncSession, agent_id: str) -> None:
+    found = await session.scalar(
+        select(Agent.id).where(Agent.id == agent_id).with_for_update()
+    )
+    if found is None:
+        raise BindingNotFound("Agent not found")
+
+
+async def _assign_dedicated_order(
+    session: AsyncSession,
+    bindings: Sequence[AgentProvisioningBinding],
+) -> None:
+    for binding in bindings:
+        binding.routing_order = None
+    await session.flush()
+    for routing_order, binding in enumerate(bindings):
+        binding.routing_order = routing_order
+    await session.flush()
+
+
+async def reorder_dedicated_routes(
+    session: AsyncSession,
+    *,
+    agent_id: str,
+    binding_ids: Sequence[str],
+) -> list[AgentProvisioningBinding]:
+    await _lock_agent_routes(session, agent_id)
+    if len(binding_ids) != len(set(binding_ids)):
+        raise BindingValidationError(
+            "Dedicated route order contains duplicate binding IDs"
+        )
+    bindings = await _enabled_dedicated_bindings(session, agent_id)
+    by_id = {binding.id: binding for binding in bindings}
+    if len(binding_ids) != len(bindings) or set(binding_ids) != set(by_id):
+        raise BindingValidationError(
+            "Dedicated route order must contain every enabled Dedicated binding"
+        )
+    ordered = [by_id[binding_id] for binding_id in binding_ids]
+    await _assign_dedicated_order(session, ordered)
+    return ordered
 
 
 async def create_agent_provisioning_binding(
@@ -297,7 +399,7 @@ async def create_agent_provisioning_binding(
     enabled: bool,
     admin_id: str,
 ) -> AgentProvisioningBinding:
-    await _require_agent(session, agent_id)
+    await _lock_agent_routes(session, agent_id)
     backend = await _validate_backend(session, backend_id, allow_create=enabled)
     binding = AgentProvisioningBinding(
         agent_id=agent_id,
@@ -307,6 +409,15 @@ async def create_agent_provisioning_binding(
     )
     session.add(binding)
     await session.flush()
+    if (
+        enabled
+        and backend.backend_type
+        == ProvisioningBackendType.DEDICATED_POOL
+    ):
+        await _assign_dedicated_order(
+            session,
+            await _enabled_dedicated_bindings(session, agent_id),
+        )
     return binding
 
 
@@ -335,10 +446,18 @@ async def update_agent_provisioning_binding(
     binding_id: str,
     enabled: bool,
 ) -> AgentProvisioningBinding:
+    await _lock_agent_routes(session, agent_id)
     binding = await _agent_provisioning_binding(session, agent_id, binding_id)
     if enabled:
         await _validate_backend(session, binding.backend_id, allow_create=True)
     binding.enabled = enabled
+    if binding.backend.backend_type == ProvisioningBackendType.DEDICATED_POOL:
+        binding.routing_order = None
+        await session.flush()
+        await _assign_dedicated_order(
+            session,
+            await _enabled_dedicated_bindings(session, agent_id),
+        )
     await session.flush()
     return binding
 
@@ -346,6 +465,7 @@ async def update_agent_provisioning_binding(
 async def delete_agent_provisioning_binding(
     session: AsyncSession, *, agent_id: str, binding_id: str
 ) -> AgentProvisioningBinding:
+    await _lock_agent_routes(session, agent_id)
     binding = await _agent_provisioning_binding(session, agent_id, binding_id)
     active_resource_id = await session.scalar(
         select(DBInstanceResource.id)
@@ -358,8 +478,17 @@ async def delete_agent_provisioning_binding(
     )
     if active_resource_id is not None:
         raise BindingConflict("Provisioning binding has non-deleted Agent resources")
+    dedicated = (
+        binding.backend.backend_type
+        == ProvisioningBackendType.DEDICATED_POOL
+    )
     await session.delete(binding)
     await session.flush()
+    if dedicated:
+        await _assign_dedicated_order(
+            session,
+            await _enabled_dedicated_bindings(session, agent_id),
+        )
     return binding
 
 

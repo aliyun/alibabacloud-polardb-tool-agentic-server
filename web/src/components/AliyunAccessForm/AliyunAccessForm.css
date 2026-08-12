@@ -1,0 +1,79 @@
+.aliyun-access-form {
+  max-width: 840px;
+}
+
+.aliyun-access-form__intro,
+.aliyun-access-form__transition,
+.aliyun-access-form__retained {
+  margin-bottom: 16px;
+}
+
+.aliyun-access-form__modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.aliyun-access-form__mode {
+  display: flex;
+  min-height: 112px;
+  margin-inline-end: 0;
+  padding: 12px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-primary);
+}
+
+.aliyun-access-form__mode:focus-within {
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 2px rgba(0, 113, 227, 0.18);
+}
+
+.aliyun-access-form__mode .ant-radio {
+  margin-top: 3px;
+}
+
+.aliyun-access-form__mode .ant-radio + * {
+  padding-inline-start: 8px;
+}
+
+.aliyun-access-form__mode-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.aliyun-access-form__mode-copy .ant-typography {
+  margin-bottom: 0;
+}
+
+.aliyun-access-form__marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--surface-tertiary);
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+
+.aliyun-access-form__marker code {
+  font-family: inherit;
+}
+
+.aliyun-access-form__advanced {
+  margin-bottom: 16px;
+}
+
+.aliyun-access-form__delete-confirm {
+  margin-top: 12px;
+}
+
+@media (max-width: 760px) {
+  .aliyun-access-form__modes {
+    grid-template-columns: 1fr;
+  }
+}

@@ -14,8 +14,12 @@ import {
   Switch,
   Typography,
 } from 'antd'
-import { EditOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
+import {
+  EditOutlined,
+  IdcardOutlined,
+  PlusOutlined,
+} from '@ant-design/icons'
 import api, { getAPIErrorMessage } from '../../api/client'
 import {
   listInstanceCredentials,
@@ -33,6 +37,7 @@ import {
 } from '../../api/instanceAccess'
 import CapabilityEditor from '../../components/CapabilityEditor'
 import PageContainer from '../../components/PageContainer'
+import PrincipalsPanel from '../PolarRAG/PrincipalsPanel'
 
 const { Text, Title } = Typography
 
@@ -43,13 +48,21 @@ interface UserItem {
   email: string | null
   role: string
   status: string
-  provisioning_mode: string | null
   departments: { id: string; name: string; is_primary: boolean }[]
 }
 
 interface DeptOption {
   id: string
   name: string
+}
+
+interface CreateUserValues {
+  username: string
+  display_name?: string
+  email?: string
+  password: string
+  confirm_password: string
+  role: 'member' | 'admin'
 }
 
 interface AccessDraft {
@@ -68,6 +81,9 @@ export default function Users() {
   const [page, setPage] = useState(1)
   const [authMode, setAuthMode] = useState('builtin')
   const [departments, setDepartments] = useState<DeptOption[]>([])
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createLoading, setCreateLoading] = useState(false)
+  const [createForm] = Form.useForm<CreateUserValues>()
   const [editTarget, setEditTarget] = useState<UserItem | null>(null)
   const [editLoading, setEditLoading] = useState(false)
   const [editForm] = Form.useForm()
@@ -78,6 +94,7 @@ export default function Users() {
   const accessSelectedRef = useRef<string | null>(null)
   const mountedRef = useRef(true)
   const [accessTarget, setAccessTarget] = useState<UserItem | null>(null)
+  const [identityTarget, setIdentityTarget] = useState<UserItem | null>(null)
   const [accessInstances, setAccessInstances] = useState<InstanceSummary[]>([])
   const [accessRows, setAccessRows] = useState<
     Record<string, InstanceAccess | null>
@@ -129,18 +146,46 @@ export default function Users() {
     editForm.setFieldsValue({
       department_ids: user.departments.map(d => d.id),
       role: user.role,
-      provisioning_mode: user.provisioning_mode || 'dedicated',
     })
   }
 
-  const handleEdit = async (values: { department_ids: string[]; role: string; provisioning_mode: string }) => {
+  const closeCreate = () => {
+    setCreateOpen(false)
+    createForm.resetFields()
+  }
+
+  const handleCreate = async (values: CreateUserValues) => {
+    setCreateLoading(true)
+    try {
+      await api.post('/api/users', {
+        username: values.username,
+        display_name: values.display_name,
+        email: values.email,
+        password: values.password,
+        role: values.role,
+      })
+      message.success(`User ${values.display_name || values.username} created`)
+      closeCreate()
+      if (page === 1 && !search) {
+        await fetchUsers()
+      } else {
+        setPage(1)
+        setSearch('')
+      }
+    } catch (error: unknown) {
+      message.error(getAPIErrorMessage(error, 'Failed to create user'))
+    } finally {
+      setCreateLoading(false)
+    }
+  }
+
+  const handleEdit = async (values: { department_ids: string[]; role: string }) => {
     if (!editTarget) return
     setEditLoading(true)
     try {
       await api.put(`/api/users/${editTarget.id}`, {
         department_ids: values.department_ids,
         role: values.role,
-        provisioning_mode: values.provisioning_mode,
       })
       message.success(t('users.updated'))
       setEditTarget(null)
@@ -309,6 +354,7 @@ export default function Users() {
   )
 
   const openAccess = async (user: UserItem) => {
+    setIdentityTarget(null)
     const generation = accessGenerationRef.current + 1
     accessGenerationRef.current = generation
     setAccessTarget(user)
@@ -473,12 +519,6 @@ export default function Users() {
       ),
     },
     {
-      title: t('users.provisioning'),
-      dataIndex: 'provisioning_mode',
-      key: 'provisioning_mode',
-      render: (v: string | null) => <Tag>{v ?? 'dedicated'}</Tag>,
-    },
-    {
       title: t('users.status'),
       dataIndex: 'status',
       key: 'status',
@@ -499,6 +539,17 @@ export default function Users() {
           >
             {t('users.instanceAccess')}
           </Button>
+          <Button
+            size="small"
+            icon={<IdcardOutlined />}
+            aria-label={`Enterprise identity for ${record.display_name}`}
+            onClick={() => {
+              closeAccess()
+              setIdentityTarget(record)
+            }}
+          >
+            {t('users.enterpriseIdentity')}
+          </Button>
           <Button size="small" onClick={() => toggleStatus(record)}>
             {record.status === 'active' ? t('users.disable') : t('users.enable')}
           </Button>
@@ -516,7 +567,23 @@ export default function Users() {
     <PageContainer
       title={t('users.title')}
       description={t('users.description')}
-      actions={<Input.Search placeholder={t('users.search')} onSearch={setSearch} allowClear style={{ width: 280 }} />}
+      actions={
+        <>
+          <Input.Search
+            placeholder={t('users.search')}
+            onSearch={setSearch}
+            allowClear
+            style={{ width: 280 }}
+          />
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => setCreateOpen(true)}
+          >
+            {t('users.createUser')}
+          </Button>
+        </>
+      }
     >
       <Table
         dataSource={users}
@@ -525,6 +592,75 @@ export default function Users() {
         loading={loading}
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}
       />
+
+      <Modal
+        title={t('users.createUser')}
+        open={createOpen}
+        onCancel={closeCreate}
+        onOk={() => createForm.submit()}
+        okText={t('users.create')}
+        confirmLoading={createLoading}
+      >
+        <Form<CreateUserValues>
+          form={createForm}
+          layout="vertical"
+          initialValues={{ role: 'member' }}
+          onFinish={handleCreate}
+        >
+          <Form.Item
+            name="username"
+            label={t('users.username')}
+            rules={[{ required: true, whitespace: true }]}
+          >
+            <Input autoComplete="off" />
+          </Form.Item>
+          <Form.Item name="display_name" label={t('users.displayName')}>
+            <Input />
+          </Form.Item>
+          <Form.Item
+            name="email"
+            label={t('users.email')}
+            rules={[{ type: 'email', message: 'Enter a valid email address' }]}
+          >
+            <Input />
+          </Form.Item>
+          <Form.Item
+            name="password"
+            label={t('users.initialPassword')}
+            rules={[
+              { required: true, min: 8, message: 'At least 8 characters' },
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item
+            name="confirm_password"
+            label={t('users.confirmPassword')}
+            dependencies={['password']}
+            rules={[
+              { required: true },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  if (!value || getFieldValue('password') === value) {
+                    return Promise.resolve()
+                  }
+                  return Promise.reject(new Error('Passwords do not match'))
+                },
+              }),
+            ]}
+          >
+            <Input.Password autoComplete="new-password" />
+          </Form.Item>
+          <Form.Item name="role" label={t('users.role')} rules={[{ required: true }]}>
+            <Select
+              options={[
+                { label: 'Member', value: 'member' },
+                { label: 'Admin', value: 'admin' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       {accessTarget && (
         <section
@@ -583,8 +719,8 @@ export default function Users() {
             <Alert
               type="info"
               showIcon
-              message={t('users.noEligible')}
-              description={t('users.noEligibleDescription')}
+              message={t('users.noEligibleDatabases')}
+              description={t('users.noEligibleDatabasesDescription')}
               style={{ marginTop: 16 }}
             />
           ) : (
@@ -803,6 +939,39 @@ export default function Users() {
         </section>
       )}
 
+      {identityTarget && (
+        <section
+          aria-labelledby="user-enterprise-identity-heading"
+          style={{
+            background: 'var(--surface-tertiary)',
+            borderRadius: 'var(--radius-md)',
+            padding: 16,
+            marginTop: 20,
+          }}
+        >
+          <Space
+            align="start"
+            style={{ width: '100%', justifyContent: 'space-between' }}
+            wrap
+          >
+            <Title
+              id="user-enterprise-identity-heading"
+              level={4}
+              style={{ marginTop: 0 }}
+            >
+              {t('users.enterpriseIdentityFor', { name: identityTarget.display_name })}
+            </Title>
+            <Button onClick={() => setIdentityTarget(null)}>
+              {t('users.closeEnterpriseIdentity')}
+            </Button>
+          </Space>
+          <PrincipalsPanel
+            userId={identityTarget.id}
+            userName={identityTarget.display_name}
+          />
+        </section>
+      )}
+
       <Modal
         title={t('users.editTitle', { name: editTarget?.display_name ?? '' })}
         open={!!editTarget}
@@ -822,12 +991,6 @@ export default function Users() {
             <Select options={[
               { label: t('users.member'), value: 'member' },
               { label: t('users.admin'), value: 'admin' },
-            ]} />
-          </Form.Item>
-          <Form.Item name="provisioning_mode" label={t('users.provisioningMode')}>
-            <Select options={[
-              { label: t('users.dedicated'), value: 'dedicated' },
-              { label: t('users.multitenant'), value: 'multitenant' },
             ]} />
           </Form.Item>
         </Form>

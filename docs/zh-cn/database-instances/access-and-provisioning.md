@@ -2,26 +2,33 @@
 
 [English](../../en/database-instances/access-and-provisioning.md) | **简体中文**
 
-分主题流程参见[实例注册](registration.md)和
-[多租户供应](multitenant-provisioning.md)。
+分主题流程参见[实例注册](registration.md)、[多租户供应](multitenant-provisioning.md)、
+[自动供给池](dedicated-hot-pools.md)和
+[Agent REST 数据库供应](agent-rest-provisioning.md)。
 
 本文介绍管理员如何通过 Web 控制台注册 PolarDB MySQL 实例、管理凭证和供应
 后端、向 User 和 Agent 授权，以及通过 MCP 运维持久逻辑数据库。
 
 ## 能力范围
 
-本版本支持引擎为 `polardb_mysql`、拓扑为 `single_tenant` 或
-`multitenant`、分配模式为 `registered` 的物理实例。普通实例和多租户实例
-都可以通过直连绑定提供访问。只有 `polardb_mysql` + `multitenant` 实例可以
-作为 `create_db_instance` 的供应后端。
+PAS 支持引擎为 `polardb_mysql`、拓扑为 `single_tenant` 或
+`multitenant`，实例由管理员注册或由自动供给池持有。普通和多租户注册实例
+都可以通过直连绑定提供访问。`polardb_mysql` + `multitenant` 实例可以提供共享
+逻辑资源；自动供给池则为每个 Agent 资源分配一个单租户成员。
+
+供给只有三条路径：已注册多租实例上的逻辑供应、管理员分配的已注册单租实例，
+以及 PAS 购买的自动供给池成员。人类 User 只使用已分配的注册实例，不领取
+自动供给池容量，也不触发物理购买。未分配实例时，请求返回 `NO_INSTANCE_ASSIGNED` 并
+提示联系管理员。
 
 生产 Agent 可以直连绑定多个物理实例。Agent 使用 `list_db_instances` 获取
 可用实例和相应能力，通过 `describe_db_instance` 获取已授权连接信息，并通过
 `run_sql` 将 SQL 发送到 MCP 服务的 SQL-over-HTTP 代理。服务使用已注册或
 已绑定的 MySQL 账号连接选定后端。
 
-供应得到的逻辑数据库会一直保留，直到显式调用 `delete_db_instance`。本版本
-不会创建独享 PolarDB 集群，也不会按固定时间自动删除资源。
+供应数据库会一直保留，直到显式调用 `delete_db_instance`。自动供给池可以
+提前购买 PolarDB 集群，并预创建 Sandbox 数据库/账号。删除使用可配置冷却时间；
+它不是自动生命周期，并且只有在确认断开连接后才开始计算。
 
 启用多租户供应前，请阅读
 [PolarDB MySQL 版多租户管理官方文档](https://help.aliyun.com/zh/polardb/polardb-for-mysql/user-guide/multi-tenant-management-instructions)，
@@ -394,7 +401,8 @@ Authorization: Bearer <agent-token>
 }
 ```
 
-数据库实例 Tool 通过 MCP 提供，不存在并行的公开 REST 生命周期 API。
+同一生命周期也通过独立的 [Agent REST API](agent-rest-provisioning.md) 向 Agent
+Bearer Token 提供。MCP 和 REST 都是同一应用服务的 Adapter，不会创建两套资源记录。
 
 ### 常见 Tool 错误
 
@@ -429,16 +437,33 @@ delete_db_instance(db_instance_id)
       DELETED
 ```
 
-创建操作持久保留容量并返回 `CREATING`；后台 Worker 完成租户、资源配置、
-账号、数据库、授权和连接验证。只有 `READY` 状态会暴露供应资源的连接凭证。
+创建操作持久保留容量。Multitenant 和 Dedicated 冷路径返回 `CREATING`；新鲜的
+预热 Dedicated 成员可以立即返回 `READY`。后台 Worker 完成模式专属的资源、账号、
+数据库、授权和连接验证。只有 `READY` 状态会暴露供应资源的连接凭证。
 
-删除请求会立即停止暴露凭证。清理过程会锁定账号、终止活动连接、删除数据库
-对象和租户资源配置、验证没有残留、销毁加密资源凭证，最后释放容量。验证完成
-前不会释放容量。`delete_db_instance` 在可删除状态下具有幂等性。
+Dedicated 冷创建会先在所选自动供给池内创建 `ALLOCATED_PREPARING` 成员，并在调用
+PolarDB 前固定到该资源。因此，生成的物理集群在整个生命周期内都受自动供给池容量、
+购买预算、删除、冷却、恢复和清理控制。
+
+删除请求会立即停止暴露凭证。Multitenant 清理会锁定账号、终止连接、删除数据库
+对象和租户资源配置、验证无残留、销毁加密凭证并释放容量。Dedicated 清理会先确认
+断开，进入 `COOLING_DOWN`，随后销毁或 sanitize 成员。管理员可以使用旧凭证恢复
+仍可逆的 Dedicated 资源。`delete_db_instance` 在可删除状态下具有幂等性。
 
 资源行及其 `client_token` 在 `DELETED` 后仍永久保留，作为幂等和审计历史。
 删除始终由调用方显式发起；不存在按资源年龄自动将其转为 `DELETING` 的后台
 扫描。
+
+## Dedicated 路由归属
+
+管理员按 Agent 分配 Dedicated 供给，而不是配置全局自动供给池优先级。Agent 详情页维护
+一个主池和有序回退池。调整顺序只改变未来放置；每个存量资源仍保留原后端和自动供给池，
+并由其完成删除、冷却、恢复和清理。存在非终态资源的绑定可以暂停，但不能解绑。
+
+人类管理员使用需要用户认证的 `/api/agents/*` 和 `/api/dedicated-pools/*` 控制台
+API。Agent 使用其不变的 Agent Bearer Token 调用 `/mcp` 或
+`/mcp/rest/db-instances`；Agent 不能自行选择或调整自动供给池顺序。就绪、类型化购买模板、
+费用和路由选择细节参见 [自动供给池](dedicated-hot-pools.md)。
 
 ## 运维与恢复
 

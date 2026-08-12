@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     AnyHttpUrl,
@@ -10,8 +10,14 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
+    model_validator,
 )
 
+from server.configuration.aliyun_access import (
+    ALIYUN_ACCESS_SCHEMA_VERSION,
+    AliyunAccessConfig,
+)
+from server.configuration.secrets import SecretFieldSpec
 from server.configuration.types import ModuleState
 
 
@@ -24,7 +30,7 @@ class CoreAdminConfig(_StrictModel):
 
 
 class AgentTokenAuthConfig(_StrictModel):
-    enabled: bool = True
+    enabled: Literal[True] = True
 
 
 class UserSSOConfig(_StrictModel):
@@ -50,85 +56,6 @@ class UserSSOConfig(_StrictModel):
     default_department: str = ""
 
 
-class AliyunAccessConfig(_StrictModel):
-    credential_mode: str = Field(
-        default="direct_ak", pattern="^(direct_ak|assume_role)$"
-    )
-    access_key_id: str = Field(min_length=1)
-    access_key_secret: str = Field(min_length=1)
-    role_arn: str = ""
-    role_session_name: str = "polardb-agentic"
-    sts_duration_seconds: int = Field(default=3600, ge=900, le=43200)
-    region_id: str = Field(
-        default="cn-hangzhou",
-        description="Alibaba Cloud region used for OpenAPI requests",
-    )
-    openapi_network: str = Field(
-        default="public",
-        pattern="^(public|vpc)$",
-        description=(
-            "Use public endpoints, or VPC endpoints from a Pod with "
-            "Alibaba Cloud VPC connectivity"
-        ),
-    )
-
-
-class AgenticDBPurchaseConfig(_StrictModel):
-    enabled: bool = True
-    auto_stop_minutes: int = Field(default=30, ge=0)
-    auto_delete_days: int = Field(default=90, ge=1)
-    notify_before_delete_days: int = Field(default=7, ge=0)
-    db_type: str = "MySQL"
-    db_version: str = "8.0"
-    db_minor_version: str = "8.0.2"
-    db_node_class: str = "polar.mysql.sl.small.c"
-    proxy_class: str = "polar.maxscale.g2.medium.c"
-    proxy_type: str = "GENERAL"
-    architecture: str = "X86"
-    loose_polar_log_bin: str = "OFF"
-    loose_x_engine: str = "OFF"
-    pay_type: str = "Postpaid"
-    serverless_type: str = "AgileServerless"
-    scale_min: int = Field(default=0, ge=0)
-    scale_max: int = Field(default=4, ge=1)
-    allow_shut_down: bool = True
-    scale_ro_num_min: int = Field(default=0, ge=0)
-    scale_ro_num_max: int = Field(default=1, ge=0)
-    storage_type: str = "essdpl1"
-    storage_space: int = Field(default=20, ge=1)
-
-
-class ResourcePoolConfig(_StrictModel):
-    target_size: int = Field(default=0, ge=0)
-    region_id: str = Field(min_length=1)
-    vpc_id: str = Field(
-        min_length=1,
-        title="VPC ID",
-        description=(
-            "Required. Choose a VPC that is reachable from the PAS "
-            "deployment. PAS cannot detect the VPC of the ECS, container, "
-            "or Kubernetes environment where it is running."
-        ),
-    )
-    vswitch_id: str = Field(
-        min_length=1,
-        title="VSwitch ID",
-        description=(
-            "Required. Choose a VSwitch in the selected VPC and zone. "
-            "Alibaba Cloud's default VPC is not used."
-        ),
-    )
-    zone_id: str = Field(min_length=1)
-    security_ip_list: str = "127.0.0.1"
-    endpoint_net_type: str = Field(
-        default="Private", pattern="^(Private|Public)$"
-    )
-    provisioning_poll_timeout_seconds: int = Field(
-        default=600, ge=30
-    )
-    retry_after_seconds: int = Field(default=10, ge=1)
-
-
 class RuntimePolicyConfig(_StrictModel):
     external_base_url: AnyHttpUrl | None = None
     cors_allowed_origins: list[AnyHttpUrl] = Field(default_factory=list)
@@ -137,9 +64,37 @@ class RuntimePolicyConfig(_StrictModel):
     idle_timeout_seconds: int = Field(default=1800, ge=1)
     max_total_pools: int = Field(default=200, ge=1)
     worker_poll_interval_seconds: int = Field(default=1, ge=1, le=5)
+    dedicated_worker_heartbeat_interval_seconds: int = Field(default=10, ge=1)
+    dedicated_worker_heartbeat_stale_after_seconds: int = Field(
+        default=30, ge=1
+    )
     worker_claim_ttl_seconds: int = Field(default=120, ge=10)
     worker_claim_renew_seconds: int = Field(default=30, ge=1)
+    dedicated_pool_enabled: bool = False
+    dedicated_pool_simulation_enabled: bool = False
+    dedicated_pool_preparation_mode: Literal["full", "openapi_only"] = Field(
+        default="full",
+        description=(
+            "full requires private MySQL data-plane grants and verification; "
+            "openapi_only creates billable cloud resources but pauses before "
+            "private data-plane access"
+        ),
+    )
+    delete_cooldown_duration_hours: int = Field(default=24, ge=1)
     invalidate_human_sessions_on_sso_change: bool = True
+
+    @model_validator(mode="after")
+    def _validate_dedicated_worker_heartbeat(self) -> "RuntimePolicyConfig":
+        minimum = max(
+            3 * self.dedicated_worker_heartbeat_interval_seconds,
+            30,
+        )
+        if self.dedicated_worker_heartbeat_stale_after_seconds < minimum:
+            raise ValueError(
+                "Dedicated worker heartbeat stale threshold must be at least "
+                "three intervals and 30 seconds"
+            )
+        return self
 
 
 class SQLSecurityModuleConfig(_StrictModel):
@@ -186,10 +141,12 @@ class ModuleDefinition:
     model: type[BaseModel]
     initial_state: ModuleState
     dependencies: tuple[str, ...] = ()
-    secret_fields: tuple[str, ...] = ()
+    secret_fields: tuple[SecretFieldSpec, ...] = ()
     optional: bool = True
     system_owned: bool = False
+    configurable: bool = True
     ui_hints: dict[str, Any] = field(default_factory=dict)
+    schema_version: int = 1
 
 
 MODULE_REGISTRY: dict[str, ModuleDefinition] = {
@@ -203,20 +160,32 @@ MODULE_REGISTRY: dict[str, ModuleDefinition] = {
     "agent_token_auth": ModuleDefinition(
         "agent_token_auth",
         AgentTokenAuthConfig,
-        ModuleState.DRAFT,
+        ModuleState.ACTIVE,
+        optional=False,
+        system_owned=True,
+        configurable=False,
     ),
     "user_sso": ModuleDefinition(
         "user_sso",
         UserSSOConfig,
         ModuleState.SKIPPED,
         dependencies=("token_security",),
-        secret_fields=("client_secret",),
+        secret_fields=(SecretFieldSpec("client_secret"),),
     ),
     "aliyun_access": ModuleDefinition(
         "aliyun_access",
         AliyunAccessConfig,
         ModuleState.SKIPPED,
-        secret_fields=("access_key_id", "access_key_secret"),
+        secret_fields=(
+            SecretFieldSpec("direct_ak.access_key_id", display_mask=True),
+            SecretFieldSpec("direct_ak.access_key_secret"),
+            SecretFieldSpec(
+                "assume_role.source_access_key_id", display_mask=True
+            ),
+            SecretFieldSpec("assume_role.source_access_key_secret"),
+            SecretFieldSpec("assume_role.external_id"),
+        ),
+        schema_version=ALIYUN_ACCESS_SCHEMA_VERSION,
         ui_hints={
             "docs": [
                 {
@@ -229,30 +198,6 @@ MODULE_REGISTRY: dict[str, ModuleDefinition] = {
                 }
             ]
         },
-    ),
-    "agentic_db_purchase": ModuleDefinition(
-        "agentic_db_purchase",
-        AgenticDBPurchaseConfig,
-        ModuleState.SKIPPED,
-        dependencies=("aliyun_access",),
-        ui_hints={
-            "docs": [
-                {
-                    "label": "What is PolarDB Agentic Database",
-                    "url": "https://help.aliyun.com/zh/polardb/polardb-for-mysql/what-is-the-polardb-agentic-database",
-                    "description": (
-                        "Review AgenticDB cluster types and billing before "
-                        "enabling purchases."
-                    ),
-                }
-            ]
-        },
-    ),
-    "resource_pool": ModuleDefinition(
-        "resource_pool",
-        ResourcePoolConfig,
-        ModuleState.SKIPPED,
-        dependencies=("agentic_db_purchase",),
     ),
     "runtime_policy": ModuleDefinition(
         "runtime_policy",
@@ -279,7 +224,7 @@ MODULE_REGISTRY: dict[str, ModuleDefinition] = {
         "token_security",
         TokenSecurityConfig,
         ModuleState.ACTIVE,
-        secret_fields=("private_key",),
+        secret_fields=(SecretFieldSpec("private_key"),),
         optional=False,
         system_owned=True,
     ),

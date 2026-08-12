@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Table, Button, Modal, Form, Input, InputNumber, Space, message, Popconfirm, Tag, Descriptions, Select } from 'antd'
+import { Table, Button, Modal, Form, Input, Space, message, Popconfirm, Tag, Descriptions, Select } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import api from '../../api/client'
@@ -10,7 +10,6 @@ interface DeptItem {
   id: string
   name: string
   description: string | null
-  max_instances: number | null
 }
 
 interface MtInstanceInfo {
@@ -83,7 +82,7 @@ export default function Departments() {
     depts.forEach(d => fetchMtInstance(d.id))
   }, [depts, fetchMtInstance])
 
-  const handleSave = async (values: { name: string; description?: string; max_instances?: number | null }) => {
+  const handleSave = async (values: { name: string; description?: string }) => {
     if (editingDept) {
       await api.put(`/api/departments/${editingDept.id}`, values)
       message.success(t('departments.updated'))
@@ -279,7 +278,6 @@ export default function Departments() {
   const columns = [
     { title: t('departments.name'), dataIndex: 'name', key: 'name' },
     { title: t('departments.descriptionLabel'), dataIndex: 'description', key: 'description' },
-    { title: t('departments.maxInstances'), dataIndex: 'max_instances', key: 'max_instances', render: (v: number | null) => v ?? t('departments.unlimited') },
     {
       title: t('departments.actions'),
       key: 'actions',
@@ -319,9 +317,6 @@ export default function Departments() {
           </Form.Item>
           <Form.Item name="description" label={t('departments.descriptionLabel')}>
             <Input.TextArea />
-          </Form.Item>
-          <Form.Item name="max_instances" label={t('departments.maxInstancesHint')}>
-            <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
         </Form>
       </Modal>

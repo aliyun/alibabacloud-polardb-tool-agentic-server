@@ -2,8 +2,9 @@
 
 [English](../../en/getting-started/register-instance.md) | **简体中文**
 
-除了由资源池自动创建实例，你也可以把已有的 PolarDB MySQL 集群注册进来，
-再授权给 Agent 使用。本页完成一次手动注册。
+注册已有 PolarDB MySQL 集群与 自动供给池购买相互独立。已注册多租实例可通过
+供应后端自动创建逻辑资源；已注册单租实例由管理员直接分配给 Agent，PAS 不会自动
+补充。本页完成一次手动注册。
 
 ## 打开实例列表
 

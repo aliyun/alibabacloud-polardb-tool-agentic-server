@@ -21,13 +21,20 @@ from server.models.base import Base, TimestampMixin, generate_uuid
 
 if TYPE_CHECKING:
     from server.models.credential import InstanceCredential
+    from server.models.dedicated_pool import DedicatedPool
     from server.models.instance import Instance
+    from server.models.permission_template import PermissionTemplateRevision
 
 
 class ProvisioningBackendStatus(str, enum.Enum):
     ACTIVE = "active"
     DRAINING = "draining"
     DISABLED = "disabled"
+
+
+class ProvisioningBackendType(str, enum.Enum):
+    MULTITENANT = "multitenant"
+    DEDICATED_POOL = "dedicated_pool"
 
 
 class ProvisioningBackend(TimestampMixin, Base):
@@ -49,19 +56,49 @@ class ProvisioningBackend(TimestampMixin, Base):
             "config_revision > 0",
             name="ck_provisioning_backends_config_revision_positive",
         ),
+        CheckConstraint(
+            "(backend_type = 'MULTITENANT' "
+            "AND instance_id IS NOT NULL "
+            "AND dedicated_pool_id IS NULL "
+            "AND admin_credential_id IS NOT NULL) "
+            "OR (backend_type = 'DEDICATED_POOL' "
+            "AND instance_id IS NULL "
+            "AND dedicated_pool_id IS NOT NULL "
+            "AND admin_credential_id IS NULL)",
+            name="ck_provisioning_backends_target_matches_type",
+        ),
+        CheckConstraint(
+            "delete_cooldown_duration_hours IS NULL "
+            "OR delete_cooldown_duration_hours >= 1",
+            name="ck_provisioning_backends_cooldown_positive",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    instance_id: Mapped[str] = mapped_column(
+    backend_type: Mapped[ProvisioningBackendType] = mapped_column(
+        Enum(ProvisioningBackendType, native_enum=False, length=32),
+        default=ProvisioningBackendType.MULTITENANT,
+        server_default="MULTITENANT",
+    )
+    instance_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("instances.id", ondelete="RESTRICT"),
         unique=True,
         index=True,
+        nullable=True,
     )
-    admin_credential_id: Mapped[str] = mapped_column(
+    dedicated_pool_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("dedicated_pools.id", ondelete="RESTRICT"),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+    admin_credential_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("instance_credentials.id", ondelete="RESTRICT"),
         unique=True,
+        nullable=True,
     )
     status: Mapped[ProvisioningBackendStatus] = mapped_column(
         Enum(ProvisioningBackendStatus, native_enum=False, length=32),
@@ -77,9 +114,24 @@ class ProvisioningBackend(TimestampMixin, Base):
         default=1,
         server_default="1",
     )
+    delete_cooldown_duration_hours: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    permission_template_revision_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("permission_template_revisions.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
 
-    instance: Mapped["Instance"] = relationship(back_populates="provisioning_backend", lazy="selectin")
-    admin_credential: Mapped["InstanceCredential"] = relationship(lazy="selectin")
+    instance: Mapped["Instance | None"] = relationship(back_populates="provisioning_backend", lazy="selectin")
+    dedicated_pool: Mapped["DedicatedPool | None"] = relationship(
+        back_populates="provisioning_backend", lazy="selectin"
+    )
+    admin_credential: Mapped["InstanceCredential | None"] = relationship(lazy="selectin")
+    permission_template_revision: Mapped[
+        "PermissionTemplateRevision | None"
+    ] = relationship(lazy="selectin")
     health: Mapped["ProvisioningBackendHealth | None"] = relationship(
         back_populates="backend",
         cascade="all, delete-orphan",

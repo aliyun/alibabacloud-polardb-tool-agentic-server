@@ -7,7 +7,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from server.aliyun.polardb_client import (
+    AliyunCredentialsUnavailable,
     MockPolarDBClient,
+    get_polardb_client,
     get_polardb_client_async,
     reset_polardb_client,
 )
@@ -72,6 +74,8 @@ def _seed_db_credentials(overrides=None):
         "sts_duration_seconds": 3600,
         "region_id": "cn-hangzhou",
         "openapi_network": "public",
+        "credential_digest": "runtime-digest-a",
+        "config_revision": 1,
     }
     if overrides:
         defaults.update(overrides)
@@ -83,15 +87,33 @@ def _seed_db_credentials(overrides=None):
 # ---------------------------------------------------------------------------
 
 class TestGetPolarDBClientAsync:
-    async def test_no_credentials_returns_mock(
+    async def test_no_credentials_fail_closed_by_default(
         self, session: AsyncSession, encryption_key
     ):
-        """When neither DB nor env credentials are set, returns MockPolarDBClient."""
         _seed_default_settings()
-        client = await get_polardb_client_async(session)
-        assert isinstance(client, MockPolarDBClient)
+        with pytest.raises(AliyunCredentialsUnavailable) as captured:
+            await get_polardb_client_async(session)
+        assert captured.value.code == "ALIYUN_ACCESS_NOT_CONFIGURED"
         os.environ.pop("PAS_ALIYUN_ACCESS_KEY_ID", None)
         os.environ.pop("PAS_ALIYUN_ACCESS_KEY_SECRET", None)
+
+    async def test_explicit_simulation_returns_labeled_mock(
+        self, session: AsyncSession, encryption_key
+    ):
+        config_module._config = AppConfig.model_validate(
+            {
+                "polardb": {
+                    "tenant_provisioning": {
+                        "dedicated_pool_simulation_enabled": True
+                    }
+                }
+            }
+        )
+
+        client = await get_polardb_client_async(session)
+
+        assert isinstance(client, MockPolarDBClient)
+        assert client.simulation_mode is True
 
     async def test_returns_same_client_on_same_creds(
         self, session: AsyncSession, encryption_key
@@ -110,8 +132,8 @@ class TestGetPolarDBClientAsync:
         os.environ["PAS_ALIYUN_ACCESS_KEY_ID"] = "TEST_ENV_ACCESS_KEY_ID"
         os.environ["PAS_ALIYUN_ACCESS_KEY_SECRET"] = "TEST_ENV_CREDENTIAL_VALUE"
         _seed_default_settings()
-        client = await get_polardb_client_async(session)
-        assert isinstance(client, MockPolarDBClient)
+        with pytest.raises(AliyunCredentialsUnavailable):
+            await get_polardb_client_async(session)
 
     async def test_cache_invalidated_on_mode_change(
         self, session: AsyncSession, encryption_key
@@ -123,6 +145,7 @@ class TestGetPolarDBClientAsync:
         _seed_db_credentials({
             "credential_mode": "assume_role",
             "role_arn": "acs:ram::123456:role/test-role",
+            "credential_digest": "runtime-digest-b",
         })
         c2 = await get_polardb_client_async(session)
 
@@ -138,3 +161,97 @@ class TestGetPolarDBClientAsync:
         vpc_client = await get_polardb_client_async(session)
 
         assert public_client is not vpc_client
+
+    async def test_cache_invalidated_when_runtime_revision_changes(
+        self, session: AsyncSession, encryption_key
+    ):
+        _seed_db_credentials()
+        first = await get_polardb_client_async(session)
+
+        _seed_db_credentials({"config_revision": 2})
+        second = await get_polardb_client_async(session)
+
+        assert first is not second
+
+    async def test_sync_first_reuses_same_effective_client_as_async(
+        self, session: AsyncSession, encryption_key
+    ):
+        _seed_db_credentials()
+
+        with pytest.warns(DeprecationWarning):
+            sync_client = get_polardb_client()
+        async_client = await get_polardb_client_async(session)
+
+        assert async_client is sync_client
+
+    async def test_sync_accessor_invalidates_on_effective_key_change(
+        self, session: AsyncSession, encryption_key
+    ):
+        del session
+        _seed_db_credentials()
+        with pytest.warns(DeprecationWarning):
+            public_client = get_polardb_client()
+
+        _seed_db_credentials({"config_revision": 2})
+        with pytest.warns(DeprecationWarning):
+            revised_client = get_polardb_client()
+
+        _seed_db_credentials(
+            {
+                "config_revision": 2,
+                "credential_digest": "runtime-digest-b",
+            }
+        )
+        with pytest.warns(DeprecationWarning):
+            digest_changed_client = get_polardb_client()
+
+        _seed_db_credentials(
+            {
+                "config_revision": 2,
+                "credential_digest": "runtime-digest-b",
+                "region_id": "cn-beijing",
+            }
+        )
+        with pytest.warns(DeprecationWarning):
+            region_changed_client = get_polardb_client()
+
+        _seed_db_credentials(
+            {
+                "config_revision": 2,
+                "credential_digest": "runtime-digest-b",
+                "region_id": "cn-beijing",
+                "openapi_network": "vpc",
+            }
+        )
+        with pytest.warns(DeprecationWarning):
+            vpc_client = get_polardb_client()
+
+        assert revised_client is not public_client
+        assert digest_changed_client is not revised_client
+        assert region_changed_client is not digest_changed_client
+        assert vpc_client is not region_changed_client
+
+    async def test_sync_construction_does_not_fetch_credentials(
+        self, session: AsyncSession, encryption_key, monkeypatch
+    ):
+        del session
+        _seed_db_credentials(
+            {
+                "credential_mode": "assume_role",
+                "role_arn": "acs:ram::123456:role/test-role",
+            }
+        )
+
+        async def unexpected_fetch(*args, **kwargs):
+            del args, kwargs
+            raise AssertionError("credential fetch must wait for an SDK operation")
+
+        monkeypatch.setattr(
+            "server.aliyun.managed_credentials.ManagedCredentialsProvider.get_credentials_async",
+            unexpected_fetch,
+        )
+
+        with pytest.warns(DeprecationWarning):
+            client = get_polardb_client()
+
+        assert not isinstance(client, MockPolarDBClient)
