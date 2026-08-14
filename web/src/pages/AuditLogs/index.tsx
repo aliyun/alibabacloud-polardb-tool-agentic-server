@@ -13,8 +13,10 @@ import { Highlight, themes } from 'prism-react-renderer'
 import { useTranslation } from 'react-i18next'
 import api from '../../api/client'
 import PageContainer from '../../components/PageContainer'
+import { formatDateTime } from '../../i18n/format'
 
 type AuditCategory = 'all' | 'sql' | 'polarrag'
+const PAGE_SIZE = 50
 
 interface PolarRAGAuditContext {
   instance_ids: string[]
@@ -142,7 +144,10 @@ const commonColumns: TableColumnsType<AuditLogItem> = [
     title: 'Time',
     dataIndex: 'created_at',
     key: 'time',
-    render: (time: string) => (time ? new Date(time).toLocaleString() : '—'),
+    render: (time: string) =>
+      time
+        ? formatDateTime(time, document.documentElement.lang || 'en-US')
+        : '—',
   },
 ]
 
@@ -254,8 +259,8 @@ export default function AuditLogs() {
     setLoading(true)
     try {
       const params: Record<string, string | number> = {
-        offset: (page - 1) * 50,
-        limit: 50,
+        offset: (page - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
       }
       if (category !== 'all') params.category = category
       const response = await api.get('/api/audit-logs', { params })
@@ -284,9 +289,9 @@ export default function AuditLogs() {
       <Tabs
         activeKey={category}
         items={[
-          { key: 'all', label: 'All' },
-          { key: 'sql', label: 'SQL' },
-          { key: 'polarrag', label: 'PolarRAG' },
+          { key: 'all', label: t('auditLogs.all') },
+          { key: 'sql', label: t('auditLogs.sql') },
+          { key: 'polarrag', label: t('auditLogs.polarrag') },
         ]}
         onChange={(key) => {
           setCategory(key as AuditCategory)
@@ -302,10 +307,10 @@ export default function AuditLogs() {
         scroll={{ x: category === 'polarrag' ? 1180 : 980 }}
         pagination={{
           total,
-          pageSize: 50,
+          pageSize: PAGE_SIZE,
           current: page,
           onChange: setPage,
-          showTotal: (count) => `${count} records`,
+          showTotal: (count) => t('auditLogs.records', { count }),
         }}
         onRow={(record) => ({
           onClick: () => setSelected(record),
@@ -400,7 +405,10 @@ export default function AuditLogs() {
                 </Descriptions.Item>
               )}
               <Descriptions.Item label={t('auditLogs.time')}>
-                {new Date(selected.created_at).toLocaleString()}
+                {formatDateTime(
+                  selected.created_at,
+                  document.documentElement.lang || 'en-US',
+                )}
               </Descriptions.Item>
             </Descriptions>
           </>

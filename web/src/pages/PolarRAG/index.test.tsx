@@ -78,6 +78,15 @@ describe('PolarRAG instance inventory', () => {
     ).not.toBeInTheDocument()
   })
 
+  it('keeps every instance column in the same horizontal scroll layer', async () => {
+    render(<InstancesPanel />)
+
+    await screen.findByText('Primary RAG')
+    const table = screen.getByRole('table')
+    expect(table.querySelector('.ant-table-cell-fix-left')).toBeNull()
+    expect(table.querySelector('.ant-table-cell-fix-right')).toBeNull()
+  })
+
   it('matches the database empty state and delegates registration', async () => {
     const user = userEvent.setup()
     const onRegister = vi.fn()
@@ -223,6 +232,7 @@ describe('PolarRAG instance inventory', () => {
               principal_assignment_id: 'principal-1',
               pas_user_id: 'user-1',
               user_name: 'Allen',
+              user_external_id: 'allen',
               identity_domain: 'tenant-a',
               provider: 'feishu',
               principal_id: '053317',
@@ -252,7 +262,7 @@ describe('PolarRAG instance inventory', () => {
       screen.getByRole('combobox', { name: /owner for Public KB/i }),
     )
     await user.click(
-      await screen.findByText('Allen · feishu:user:053317'),
+      await screen.findByText('Allen · allen'),
     )
     await user.click(
       screen.getByRole('button', {
@@ -271,6 +281,45 @@ describe('PolarRAG instance inventory', () => {
     await waitFor(() =>
       expect(listUnclaimedPolarRAGKnowledgeBases).toHaveBeenCalledTimes(2),
     )
+  })
+
+  it('paginates synchronized knowledge bases in the Spaces drawer', async () => {
+    const user = userEvent.setup()
+    vi.mocked(listPolarRAGSpaces).mockResolvedValue({
+      data: {
+        items: [
+          {
+            space_id: 'space-a',
+            name: 'Engineering',
+            identity_domain: 'tenant-a',
+            status: 'ACTIVE',
+            enabled: true,
+            knowledge_space_id: 'opaque-space',
+            last_synced_at: null,
+            knowledge_resources: Array.from({ length: 11 }, (_, index) => ({
+              knowledge_resource_id: `resource-${index + 1}`,
+              name: `Knowledge base ${index + 1}`,
+              kb_type: 'PUBLIC',
+              binding_mode: 'domain',
+              sync_status: 'active',
+              enabled: true,
+            })),
+          },
+        ],
+      },
+    } as never)
+
+    render(<InstancesPanel />)
+    await user.click(
+      await screen.findByRole('button', {
+        name: /manage spaces for Primary RAG/i,
+      }),
+    )
+
+    expect(await screen.findByText('Knowledge base 1')).toBeInTheDocument()
+    expect(screen.queryByText('Knowledge base 11')).not.toBeInTheDocument()
+    await user.click(screen.getByTitle('2'))
+    expect(await screen.findByText('Knowledge base 11')).toBeInTheDocument()
   })
 
   it('rotates instance credentials without revealing stored secrets', async () => {

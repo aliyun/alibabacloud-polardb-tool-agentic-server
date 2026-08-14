@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Alert, Button, Modal, Space, Table, Tag, Tooltip, Typography } from 'antd'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Alert, Button, Drawer, Modal, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import { FileSearchOutlined, UploadOutlined } from '@ant-design/icons'
-import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import api, { getAPIErrorMessage } from '../../api/client'
+import type { MyAgentConnection } from '../../api/agentConnections'
 import PageContainer from '../../components/PageContainer'
 import MCPConnections from './MCPConnections'
 import DocumentManager from './DocumentManager'
@@ -25,9 +25,34 @@ interface AccessibleKnowledgeResource {
   polarrag_instance_id: string
   polarrag_instance_name: string
   name: string
+  kb_id: string
   kb_type: string
-  usage: string | null
   upload_ready?: boolean
+}
+
+interface AccessibleKnowledgeSpace {
+  knowledge_space_id: string
+  knowledge_space_name: string
+  polarrag_instance_id: string
+  polarrag_instance_name: string
+}
+
+function uniqueKnowledgeSpaces(
+  resources: AccessibleKnowledgeResource[],
+): AccessibleKnowledgeSpace[] {
+  return Array.from(
+    new Map(
+      resources.map((resource) => [
+        `${resource.polarrag_instance_id}/${resource.knowledge_space_id}`,
+        {
+          knowledge_space_id: resource.knowledge_space_id,
+          knowledge_space_name: resource.knowledge_space_name,
+          polarrag_instance_id: resource.polarrag_instance_id,
+          polarrag_instance_name: resource.polarrag_instance_name,
+        },
+      ]),
+    ).values(),
+  )
 }
 
 interface MyInstancesProps {
@@ -39,11 +64,17 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   const [databaseInstances, setDatabaseInstances] = useState<
     AccessibleDatabaseInstance[]
   >([])
+  const [knowledgeSpaces, setKnowledgeSpaces] = useState<
+    AccessibleKnowledgeSpace[]
+  >([])
   const [knowledgeResources, setKnowledgeResources] = useState<
     AccessibleKnowledgeResource[]
   >([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [overviewLoading, setOverviewLoading] = useState(true)
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false)
+  const [overviewError, setOverviewError] = useState<string | null>(null)
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null)
+  const [operationError, setOperationError] = useState<string | null>(null)
   const [uploadResource, setUploadResource] =
     useState<AccessibleKnowledgeResource | null>(null)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
@@ -51,45 +82,97 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   const [uploadResult, setUploadResult] = useState<string | null>(null)
   const [manageResource, setManageResource] =
     useState<AccessibleKnowledgeResource | null>(null)
+  const [selectedAgent, setSelectedAgent] = useState<MyAgentConnection | null>(null)
+  const resourceRequest = useRef(0)
 
-  useEffect(() => {
-    api
+  const loadOverview = useCallback(() => {
+    setOverviewLoading(true)
+    setOverviewError(null)
+    return api
       .get('/api/me/resources')
       .then((response) => {
+        const resources = response.data.knowledge_resources || []
         setDatabaseInstances(response.data.database_instances || [])
-        setKnowledgeResources(response.data.knowledge_resources || [])
+        setKnowledgeSpaces(uniqueKnowledgeSpaces(resources))
       })
-      .catch((requestError) =>
-        setError(
+      .catch((requestError) => {
+        setOverviewError(
           getAPIErrorMessage(
             requestError,
             'Could not load your accessible resources.',
           ),
-        ),
-      )
-      .finally(() => setLoading(false))
+        )
+      })
+      .finally(() => setOverviewLoading(false))
   }, [])
 
+  const loadKnowledgeBases = useCallback((agentId: string) => {
+    const requestId = ++resourceRequest.current
+    setKnowledgeLoading(true)
+    setKnowledgeError(null)
+    return api
+      .get('/api/me/resources', { params: { agent_id: agentId } })
+      .then((response) => {
+        if (requestId !== resourceRequest.current) return
+        setKnowledgeResources(response.data.knowledge_resources || [])
+      })
+      .catch((requestError) => {
+        if (requestId !== resourceRequest.current) return
+        setKnowledgeError(
+          getAPIErrorMessage(
+            requestError,
+            'Could not load your accessible resources.',
+          ),
+        )
+      })
+      .finally(() => {
+        if (requestId === resourceRequest.current) setKnowledgeLoading(false)
+      })
+  }, [])
+
+  useEffect(() => {
+    void loadOverview()
+  }, [loadOverview])
+
+  const selectKnowledgeBases = (agent: MyAgentConnection) => {
+    setSelectedAgent(agent)
+    setKnowledgeResources([])
+    setKnowledgeError(null)
+    setUploadResource(null)
+    setManageResource(null)
+    void loadKnowledgeBases(agent.agent_id)
+  }
+
+  const closeKnowledgeBases = () => {
+    ++resourceRequest.current
+    setKnowledgeLoading(false)
+    setKnowledgeError(null)
+    setKnowledgeResources([])
+    setSelectedAgent(null)
+    setUploadResource(null)
+    setManageResource(null)
+  }
+
   const databaseColumns = [
-    { title: 'Name', dataIndex: 'name' },
+    { title: t('myInstances.name'), dataIndex: 'name' },
     {
-      title: 'Type',
+      title: t('myInstances.type'),
       dataIndex: 'db_type',
       render: (value: string) => <Tag>{value}</Tag>,
     },
-    { title: 'Source', dataIndex: 'source' },
+    { title: t('myInstances.source'), dataIndex: 'source' },
     {
-      title: 'Permission',
+      title: t('myInstances.permission'),
       dataIndex: 'permission',
-      render: (value: string | null) => value || 'Not granted',
+      render: (value: string | null) => value || t('myInstances.notGranted'),
     },
     {
-      title: 'Capabilities',
+      title: t('myInstances.capabilities'),
       dataIndex: 'capabilities',
       render: (values: string[]) => values.join(', '),
     },
     {
-      title: 'Status',
+      title: t('myInstances.status'),
       dataIndex: 'status',
       render: (value: string) => (
         <Tag color={value.toLowerCase() === 'active' ? 'green' : 'orange'}>
@@ -100,10 +183,11 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   ]
 
   const upload = async () => {
-    if (!uploadResource || !uploadFile) return
+    if (!uploadResource || !uploadFile || !selectedAgent) return
     setUploading(true)
-    setError(null)
+    setOperationError(null)
     const body = new FormData()
+    body.append('agent_id', selectedAgent.agent_id)
     body.append('knowledge_resource_id', uploadResource.knowledge_resource_id)
     body.append('file', uploadFile)
     try {
@@ -114,33 +198,47 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
       setUploadResource(null)
       setUploadFile(null)
     } catch (requestError) {
-      setError(getAPIErrorMessage(requestError, 'Could not upload this document.'))
+      setOperationError(
+        getAPIErrorMessage(requestError, 'Could not upload this document.'),
+      )
     } finally {
       setUploading(false)
     }
   }
 
   const knowledgeColumns = [
-    { title: 'Knowledge resource', dataIndex: 'name' },
-    { title: 'PolarRAG instance', dataIndex: 'polarrag_instance_name' },
-    { title: 'Space', dataIndex: 'knowledge_space_name' },
     {
-      title: 'Type',
+      title: t('myInstances.knowledgeResource'),
+      render: (_: unknown, resource: AccessibleKnowledgeResource) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{resource.name}</Typography.Text>
+          <Typography.Text type="secondary">
+            {resource.knowledge_resource_id}
+          </Typography.Text>
+        </Space>
+      ),
+    },
+    {
+      title: t('myInstances.polarragInstance'),
+      dataIndex: 'polarrag_instance_name',
+    },
+    { title: t('myInstances.knowledgeSpace'), dataIndex: 'knowledge_space_name' },
+    {
+      title: t('myInstances.type'),
       dataIndex: 'kb_type',
       render: (value: string) => <Tag>{value}</Tag>,
     },
-    { title: 'Usage', dataIndex: 'usage', render: (value: string | null) => value || 'Not specified' },
     ...(!isAdmin
       ? [
           {
-            title: 'Actions',
+            title: t('myInstances.actions'),
             render: (_: unknown, resource: AccessibleKnowledgeResource) => (
               <Space>
                 <Tooltip
                   title={
                     resource.upload_ready
                       ? undefined
-                      : 'Ask an administrator to configure and validate the OSS AccessKey credentials for this Space.'
+                      : t('myInstances.uploadUnavailable')
                   }
                 >
                   <span>
@@ -173,57 +271,67 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
       : []),
   ]
 
+  const knowledgeSpaceColumns = [
+    { title: t('myInstances.knowledgeSpace'), dataIndex: 'knowledge_space_name' },
+    {
+      title: t('myInstances.polarragInstance'),
+      dataIndex: 'polarrag_instance_name',
+    },
+  ]
+
   return (
     <PageContainer
       title={t('myInstances.title')}
       description={t('myInstances.combinedDescription')}
     >
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
-        {error && <Alert type="error" showIcon message={error} />}
+        {(overviewError || operationError) && (
+          <Alert type="error" showIcon message={overviewError || operationError} />
+        )}
         {uploadResult && <Alert type="success" showIcon message={uploadResult} />}
-        {!isAdmin && <MCPConnections />}
+        {!isAdmin && <MCPConnections onSelectKnowledgeBases={selectKnowledgeBases} />}
         <Typography.Text strong>{t('myInstances.databaseInstances')}</Typography.Text>
         <Table
           dataSource={databaseInstances}
           columns={databaseColumns}
           rowKey="db_instance_id"
-          loading={loading}
+          loading={overviewLoading}
           pagination={false}
           locale={{ emptyText: 'No accessible database instances' }}
         />
-        <Typography.Text strong>{t('myInstances.knowledgeResources')}</Typography.Text>
-        {!loading && !error && knowledgeResources.length === 0 && (
-          <Alert
-            type="info"
-            showIcon
-            message={
-              isAdmin
-                ? 'No PolarRAG knowledge resources assigned to this administrator'
-                : 'No accessible PolarRAG knowledge resources'
-            }
-            description={
-              isAdmin ? (
-                <>
-                  {t('myInstances.adminNoAccess')}{' '}
-                  <Link to="/instances?type=polarrag">
-                    {t('myInstances.managePolarrag')}
-                  </Link>{' '}
-                  {t('myInstances.adminGuidance')}
-                </>
-              ) : (
-                "Registering an instance does not grant user access. An administrator must enable and synchronize a Space, then map this PAS user to a principal in that Space's identity domain."
-              )
-            }
-          />
-        )}
+        <Typography.Text strong>{t('myInstances.knowledgeSpaces')}</Typography.Text>
         <Table
-          dataSource={knowledgeResources}
-          columns={knowledgeColumns}
-          rowKey="knowledge_resource_id"
-          loading={loading}
-          pagination={false}
-          locale={{ emptyText: 'No accessible knowledge resources' }}
+          dataSource={knowledgeSpaces}
+          columns={knowledgeSpaceColumns}
+          rowKey={(space) => `${space.polarrag_instance_id}/${space.knowledge_space_id}`}
+          loading={overviewLoading}
+          pagination={{ pageSize: 10, showSizeChanger: true }}
+          locale={{ emptyText: t('myInstances.noAccessibleKnowledgeSpaces') }}
         />
+        <Drawer
+          title={
+            selectedAgent
+              ? t('mcpConnections.knowledgeBasesFor', {
+                  agent: selectedAgent.agent_name,
+                })
+              : undefined
+          }
+          open={selectedAgent !== null}
+          width={960}
+          onClose={closeKnowledgeBases}
+        >
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            {knowledgeError && <Alert type="error" showIcon message={knowledgeError} />}
+            <Table
+              dataSource={knowledgeResources}
+              columns={knowledgeColumns}
+              rowKey="knowledge_resource_id"
+              loading={knowledgeLoading}
+              pagination={{ pageSize: 10, showSizeChanger: true }}
+              locale={{ emptyText: t('myInstances.noAccessibleKnowledgeResources') }}
+            />
+          </Space>
+        </Drawer>
         <Modal
           title={t('myInstances.uploadDocument')}
           open={uploadResource !== null}
@@ -262,6 +370,7 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
         </Modal>
         <DocumentManager
           resource={manageResource}
+          agentId={selectedAgent?.agent_id ?? null}
           onClose={() => setManageResource(null)}
         />
       </Space>

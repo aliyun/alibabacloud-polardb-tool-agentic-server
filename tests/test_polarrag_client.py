@@ -87,6 +87,22 @@ async def test_client_from_instance_decrypts_credentials_and_uses_fixed_route(
     }
 
 
+def test_client_from_instance_sanitizes_credential_decryption_failure(
+    encryption_key,
+    monkeypatch,
+) -> None:
+    def fail_decrypt(_ciphertext: str) -> str:
+        raise RuntimeError("secret ciphertext sentinel")
+
+    monkeypatch.setattr("server.polarrag.client.decrypt", fail_decrypt)
+
+    with pytest.raises(PolarRAGUpstreamError) as caught:
+        client_from_instance(_instance(encryption_key))
+
+    assert caught.value.code.value == "POLARRAG_CREDENTIAL_UNAVAILABLE"
+    assert "sentinel" not in str(caught.value)
+
+
 async def test_catalog_clients_follow_opaque_pagination_and_parse_owner() -> None:
     requests: list[tuple[str, dict[str, object]]] = []
 
@@ -194,7 +210,7 @@ async def test_catalog_clients_follow_opaque_pagination_and_parse_owner() -> Non
     ]
 
 
-async def test_client_lists_unclaimed_kbs_and_claims_without_exposing_owner_token() -> None:
+async def test_client_lists_unclaimed_kbs_and_claims_with_canonical_owner() -> None:
     requests: list[tuple[str, dict[str, object]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -242,13 +258,7 @@ async def test_client_lists_unclaimed_kbs_and_claims_without_exposing_owner_toke
     result = await client.claim_knowledge_base(
         "space-a",
         "kb-a",
-        acl_context={
-            "identity_domain": "tenant-a",
-            "actor": {"provider": "feishu", "type": "user", "id": "ou-1"},
-            "principals": [
-                {"provider": "feishu", "type": "user", "id": "ou-1"}
-            ],
-        },
+        owner="alice",
     )
 
     assert [(record.kb_id, record.status, record.owner) for record in unclaimed] == [
@@ -263,19 +273,7 @@ async def test_client_lists_unclaimed_kbs_and_claims_without_exposing_owner_toke
         ),
         (
             "/_plugins/_polar_rag/spaces/space-a/knowledge_bases/kb-a/_claim",
-            {
-                "acl_context": {
-                    "identity_domain": "tenant-a",
-                    "actor": {
-                        "provider": "feishu",
-                        "type": "user",
-                        "id": "ou-1",
-                    },
-                    "principals": [
-                        {"provider": "feishu", "type": "user", "id": "ou-1"}
-                    ],
-                }
-            },
+            {"owner": "alice"},
         ),
     ]
 
@@ -802,3 +800,65 @@ async def test_submit_document_uses_user_derived_managed_route() -> None:
             "acl": {"mode": "POLARRAG_DERIVED"},
         },
     }
+
+
+@pytest.mark.parametrize(
+    ("response_body", "expected_code"),
+    [
+        (
+            {
+                "error_type": "kb_upload_forbidden",
+                "error": "password=do-not-leak; private principal",
+            },
+            "POLARRAG_DOCUMENT_UPLOAD_FORBIDDEN",
+        ),
+        (
+            {"error": "unknown authorization failure password=do-not-leak"},
+            "POLARRAG_AUTH_FAILED",
+        ),
+    ],
+)
+async def test_submit_document_distinguishes_acl_denial_from_service_auth(
+    response_body,
+    expected_code,
+) -> None:
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(403, json=response_body)
+        ),
+    )
+
+    with pytest.raises(PolarRAGUpstreamError) as captured:
+        await client.submit_document(
+            "space-a",
+            "kb-a",
+            oss_path="oss://tenant-a-documents/pas/guide.md",
+            filename="guide.md",
+            file_type="md",
+            file_md5="0cc175b9c0f1b6a831c399e269772661",
+            file_size_bytes=1,
+            metadata={"sha256": "ca978112ca1bbdcafac231b39a23dc4d"},
+            acl_context={
+                "identity_domain": "tenant-a",
+                "principals": [
+                    {
+                        "provider": "feishu",
+                        "type": "user",
+                        "id": "ou-user",
+                    }
+                ],
+                "actor": {
+                    "provider": "feishu",
+                    "type": "user",
+                    "id": "ou-user",
+                },
+            },
+        )
+
+    assert captured.value.code.value == expected_code
+    assert captured.value.retryable is False
+    assert "do-not-leak" not in str(captured.value)

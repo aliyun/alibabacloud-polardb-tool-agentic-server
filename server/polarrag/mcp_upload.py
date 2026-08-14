@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Callable, Sequence
@@ -9,9 +10,11 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.core.crypto import encrypt
 from server.models import (
     KnowledgeResource,
     PolarRAGSpace,
+    PolarRAGUploadCleanup,
     PolarRAGUploadSession,
     PolarRAGUploadStatus,
     User,
@@ -20,6 +23,7 @@ from server.models import (
 from server.polarrag.access import (
     KnowledgeAccessError,
     KnowledgeAccessPlan,
+    KnowledgeResourceScope,
     plan_knowledge_access,
 )
 from server.polarrag.client import client_from_instance
@@ -27,6 +31,7 @@ from server.polarrag.contracts import (
     PolarRAGClient,
     PolarRAGUpstreamError,
 )
+from server.polarrag import upload_cleanup
 from server.polarrag.oss import OssObjectStore
 from server.polarrag.upload import (
     MAX_UPLOAD_BYTES,
@@ -183,6 +188,7 @@ async def _owned_session(
                 PolarRAGUploadSession.agent_id == agent_id,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -190,19 +196,50 @@ async def _owned_session(
     return row
 
 
+async def _cleanup_journal(
+    session: AsyncSession,
+    row: PolarRAGUploadSession,
+    space: PolarRAGSpace,
+) -> PolarRAGUploadCleanup:
+    cleanup = await session.get(PolarRAGUploadCleanup, row.id)
+    if cleanup is None:
+        cleanup = PolarRAGUploadCleanup(
+            upload_session_id=row.id,
+            knowledge_space_id=space.knowledge_space_id,
+            oss_bucket=row.oss_bucket,
+            oss_endpoint=row.oss_endpoint,
+            oss_object_key=row.oss_object_key,
+            oss_multipart_upload_id=row.oss_multipart_upload_id,
+            oss_access_key_id_ciphertext=(
+                space.oss_access_key_id_ciphertext
+            ),
+            oss_access_key_secret_ciphertext=(
+                space.oss_access_key_secret_ciphertext
+            ),
+            object_state=(
+                "multipart"
+                if row.status == PolarRAGUploadStatus.PREPARED
+                else "object"
+            ),
+            expires_at=row.expires_at,
+        )
+        session.add(cleanup)
+    return cleanup
+
+
 async def _session_access(
     session: AsyncSession,
     user: User,
     row: PolarRAGUploadSession,
     *,
-    allowed_instance_ids: set[str] | None,
+    resource_scope: KnowledgeResourceScope | None,
 ) -> KnowledgeAccessPlan:
     try:
         plan = await plan_knowledge_access(
             session,
             user,
             [row.knowledge_resource_id],
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
         )
     except KnowledgeAccessError as exc:
         raise UploadSessionError("UPLOAD_SESSION_NOT_ACCESSIBLE") from exc
@@ -246,46 +283,6 @@ def _verified_oss_parts(
     return [by_number[number] for number in sorted(by_number)]
 
 
-def _normalize_etag(value: str) -> str:
-    normalized = value.strip()
-    if normalized.startswith('"') and normalized.endswith('"'):
-        normalized = normalized[1:-1]
-    if (
-        not normalized
-        or len(normalized) > 256
-        or any(
-            ord(character) < 32 or ord(character) == 127
-            for character in normalized
-        )
-    ):
-        raise UploadSessionError("INVALID_ARGUMENT")
-    return normalized
-
-
-def _submitted_parts(parts: Sequence[Any], part_count: int) -> dict[int, str]:
-    submitted: dict[int, str] = {}
-    for part in parts:
-        if isinstance(part, dict):
-            number = part.get("part_number")
-            etag = part.get("etag")
-        else:
-            number = getattr(part, "part_number", None)
-            etag = getattr(part, "etag", None)
-        if (
-            isinstance(number, bool)
-            or not isinstance(number, int)
-            or number < 1
-            or number > part_count
-            or number in submitted
-            or not isinstance(etag, str)
-        ):
-            raise UploadSessionError("INVALID_ARGUMENT")
-        submitted[number] = _normalize_etag(etag)
-    if set(submitted) != set(range(1, part_count + 1)):
-        raise UploadSessionError("UPLOAD_PARTS_INCOMPLETE")
-    return submitted
-
-
 async def prepare_upload(
     session: AsyncSession,
     user: User,
@@ -297,7 +294,7 @@ async def prepare_upload(
     file_md5: str,
     file_sha256: str,
     content_type: str | None,
-    allowed_instance_ids: set[str] | None,
+    resource_scope: KnowledgeResourceScope | None,
     object_store_factory: ObjectStoreFactory = object_store_from_space,
 ) -> tuple[KnowledgeResource, dict[str, Any]]:
     if user.role == UserRole.ADMIN or not agent_id:
@@ -320,7 +317,7 @@ async def prepare_upload(
             session,
             user,
             [knowledge_resource_id],
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
         )
     except KnowledgeAccessError as exc:
         raise UploadSessionError("KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE") from exc
@@ -374,7 +371,27 @@ async def prepare_upload(
     try:
         session.add(row)
         await session.flush()
+        session.add(
+            PolarRAGUploadCleanup(
+                upload_session_id=row.id,
+                knowledge_space_id=space.knowledge_space_id,
+                oss_bucket=row.oss_bucket,
+                oss_endpoint=row.oss_endpoint,
+                oss_object_key=row.oss_object_key,
+                oss_multipart_upload_id=row.oss_multipart_upload_id,
+                oss_access_key_id_ciphertext=(
+                    space.oss_access_key_id_ciphertext
+                ),
+                oss_access_key_secret_ciphertext=(
+                    space.oss_access_key_secret_ciphertext
+                ),
+                object_state="multipart",
+                expires_at=row.expires_at,
+            )
+        )
+        await session.commit()
     except Exception as exc:
+        await session.rollback()
         try:
             await store.abort_multipart(key, upload_id)
         except Exception:
@@ -389,7 +406,7 @@ async def resume_upload(
     *,
     agent_id: str,
     upload_session_id: str,
-    allowed_instance_ids: set[str] | None,
+    resource_scope: KnowledgeResourceScope | None,
     object_store_factory: ObjectStoreFactory = object_store_from_space,
 ) -> tuple[KnowledgeResource, dict[str, Any]]:
     row = await _owned_session(
@@ -403,7 +420,7 @@ async def resume_upload(
             session,
             user,
             row,
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
         )
         return plan.resources[0], _response(row, parts=[])
     if row.status != PolarRAGUploadStatus.PREPARED:
@@ -414,7 +431,7 @@ async def resume_upload(
         session,
         user,
         row,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
     store = _store_for_space(plan.space, object_store_factory, row)
     try:
@@ -452,8 +469,7 @@ async def complete_upload(
     *,
     agent_id: str,
     upload_session_id: str,
-    parts: Sequence[Any],
-    allowed_instance_ids: set[str] | None,
+    resource_scope: KnowledgeResourceScope | None,
     object_store_factory: ObjectStoreFactory = object_store_from_space,
     client_factory: ClientFactory = client_from_instance,
 ) -> tuple[KnowledgeResource, dict[str, Any]]:
@@ -474,27 +490,64 @@ async def complete_upload(
         session,
         user,
         row,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
     resource = plan.resources[0]
     if row.status == PolarRAGUploadStatus.COMPLETED:
         return resource, _completed_result(row)
     store = _store_for_space(plan.space, object_store_factory, row)
+    await _cleanup_journal(session, row, plan.space)
+    try:
+        actor = document_actor(plan.acl_context)
+    except ValueError as exc:
+        raise UploadSessionError("IDENTITY_CONTEXT_UNAVAILABLE") from exc
     if row.status == PolarRAGUploadStatus.PREPARED:
-        submitted = _submitted_parts(parts, row.part_count)
+        await session.commit()
+        finalize_claim = await upload_cleanup._claim_cleanup(
+            session,
+            row.id,
+            now=datetime.now(UTC),
+            require_due=False,
+            operation="finalizing",
+        )
+        if finalize_claim is None:
+            raise UploadSessionError("UPLOAD_OPERATION_IN_PROGRESS")
         try:
             listed = await store.list_multipart_parts(
                 row.oss_object_key,
                 row.oss_multipart_upload_id,
             )
+            verified = _verified_oss_parts(row, listed, require_all=False)
+            present = {part.part_number for part in verified}
+            missing = [
+                number
+                for number in range(1, row.part_count + 1)
+                if number not in present
+            ]
+            if missing:
+                missing_parts = _part_uploads(store, row, missing)
+                await upload_cleanup._release_cleanup(
+                    session, finalize_claim
+                )
+                return resource, _response(
+                    row,
+                    parts=missing_parts,
+                )
+        except UploadSessionError:
+            await upload_cleanup._release_cleanup(session, finalize_claim)
+            raise
         except Exception as exc:
+            await upload_cleanup._release_cleanup(session, finalize_claim)
             raise UploadSessionError("OSS_UPLOAD_FAILED") from exc
-        verified = _verified_oss_parts(row, listed, require_all=True)
-        if any(
-            submitted[part.part_number] != _normalize_etag(part.etag)
-            for part in verified
-        ):
-            raise UploadSessionError("UPLOAD_PARTS_INVALID")
+
+        claimed_cleanup = await upload_cleanup._claimed_cleanup(
+            session, finalize_claim
+        )
+        if claimed_cleanup is None:
+            await session.rollback()
+            raise UploadSessionError("UPLOAD_OPERATION_STALE")
+        claimed_cleanup.object_state = "finalizing"
+        await session.commit()
         try:
             await store.complete_multipart(
                 row.oss_object_key,
@@ -502,15 +555,69 @@ async def complete_upload(
                 verified,
             )
         except Exception as exc:
+            await upload_cleanup._release_cleanup(session, finalize_claim)
             raise UploadSessionError("OSS_UPLOAD_FAILED") from exc
+
+        claimed_cleanup = await upload_cleanup._claimed_cleanup(
+            session, finalize_claim
+        )
+        if claimed_cleanup is None:
+            await session.rollback()
+            raise UploadSessionError("UPLOAD_OPERATION_STALE")
+        row = await _owned_session(
+            session,
+            user_id=user.id,
+            agent_id=agent_id,
+            upload_session_id=upload_session_id,
+        )
+        if row.status != PolarRAGUploadStatus.PREPARED:
+            await session.rollback()
+            raise UploadSessionError("UPLOAD_SESSION_NOT_ACTIVE")
         row.status = PolarRAGUploadStatus.UPLOADED
+        claimed_cleanup.object_state = "object"
+        upload_cleanup._clear_claim(claimed_cleanup)
         await session.commit()
-    try:
-        actor = document_actor(plan.acl_context)
-    except ValueError as exc:
-        raise UploadSessionError("IDENTITY_CONTEXT_UNAVAILABLE") from exc
+    else:
+        await session.commit()
+
     acl_context = dict(plan.acl_context)
     acl_context["actor"] = actor
+    submission_payload = encrypt(
+        json.dumps(
+            {
+                "space_id": plan.space.space_id,
+                "kb_id": resource.kb_id,
+                "oss_path": f"oss://{row.oss_bucket}/{row.oss_object_key}",
+                "filename": row.filename,
+                "file_type": row.file_type,
+                "file_md5": row.file_md5,
+                "file_size_bytes": row.file_size_bytes,
+                "metadata": {"sha256": row.file_sha256},
+                "acl_context": acl_context,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    )
+    submit_claim = await upload_cleanup._claim_cleanup(
+        session,
+        row.id,
+        now=datetime.now(UTC),
+        require_due=False,
+        operation="submitting",
+        polarrag_instance_id=resource.polarrag_instance_id,
+        submission_payload_ciphertext=submission_payload,
+    )
+    if submit_claim is None:
+        current = await _owned_session(
+            session,
+            user_id=user.id,
+            agent_id=agent_id,
+            upload_session_id=upload_session_id,
+        )
+        if current.status == PolarRAGUploadStatus.COMPLETED:
+            return resource, _completed_result(current)
+        raise UploadSessionError("UPLOAD_OPERATION_IN_PROGRESS")
     try:
         document = await client_factory(plan.instance).submit_document(
             plan.space.space_id,
@@ -524,13 +631,45 @@ async def complete_upload(
             acl_context=acl_context,
         )
     except PolarRAGUpstreamError as exc:
+        await upload_cleanup._release_cleanup(
+            session,
+            submit_claim,
+            reconcile_required=(
+                not upload_cleanup.is_definitive_rejection(exc)
+            ),
+        )
         raise UploadSessionError(exc.code.value) from exc
     except Exception as exc:
+        await upload_cleanup._release_cleanup(
+            session, submit_claim, reconcile_required=True
+        )
         raise UploadSessionError("POLARRAG_DOCUMENT_SUBMIT_FAILED") from exc
+
+    claimed_cleanup = await upload_cleanup._claimed_cleanup(
+        session, submit_claim
+    )
+    if claimed_cleanup is None:
+        await session.rollback()
+        current = await _owned_session(
+            session,
+            user_id=user.id,
+            agent_id=agent_id,
+            upload_session_id=upload_session_id,
+        )
+        if current.status == PolarRAGUploadStatus.COMPLETED:
+            return resource, _completed_result(current)
+        raise UploadSessionError("UPLOAD_OPERATION_STALE")
+    row = await _owned_session(
+        session,
+        user_id=user.id,
+        agent_id=agent_id,
+        upload_session_id=upload_session_id,
+    )
     row.status = PolarRAGUploadStatus.COMPLETED
     row.completed_at = datetime.now(UTC)
     row.doc_id = document["doc_id"]
     row.upstream_status = document.get("status", "DISPATCHED")
+    await session.delete(claimed_cleanup)
     await session.flush()
     return resource, {
         "doc_id": row.doc_id,
@@ -576,16 +715,39 @@ async def abort_upload(
     if space is None:
         raise UploadSessionError("UPLOAD_SESSION_NOT_ACCESSIBLE")
     store = _store_for_space(space, object_store_factory, row)
+    await _cleanup_journal(session, row, space)
+    await session.commit()
+    cleanup_claim = await upload_cleanup._claim_cleanup(
+        session,
+        row.id,
+        now=datetime.now(UTC),
+        require_due=False,
+        operation="aborting",
+    )
+    if cleanup_claim is None:
+        raise UploadSessionError("UPLOAD_OPERATION_IN_PROGRESS")
     try:
-        if row.status == PolarRAGUploadStatus.PREPARED:
+        if cleanup_claim.object_state in {"multipart", "finalizing"}:
             await store.abort_multipart(
                 row.oss_object_key,
                 row.oss_multipart_upload_id,
             )
-        else:
+        if cleanup_claim.object_state in {"object", "finalizing"}:
             await store.delete(row.oss_object_key)
     except Exception as exc:
+        await upload_cleanup._release_cleanup(session, cleanup_claim)
         raise UploadSessionError("OSS_UPLOAD_FAILED") from exc
+    cleanup = await upload_cleanup._claimed_cleanup(session, cleanup_claim)
+    if cleanup is None:
+        await session.rollback()
+        raise UploadSessionError("UPLOAD_OPERATION_STALE")
+    row = await _owned_session(
+        session,
+        user_id=user.id,
+        agent_id=agent_id,
+        upload_session_id=upload_session_id,
+    )
     row.status = PolarRAGUploadStatus.ABORTED
+    await session.delete(cleanup)
     await session.flush()
     return resource, {"status": row.status.value}

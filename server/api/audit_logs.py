@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,18 @@ from server.models import (
 router = APIRouter(prefix="/audit-logs", tags=["audit"])
 
 SQL_ACTIONS = ("run_sql", "run_sql_transaction")
+_FORM_DECODED_OFFSET = re.compile(
+    r"^(.*T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)\s(\d{2}:\d{2})$"
+)
+
+
+def _normalize_created_from(value: object) -> object:
+    if isinstance(value, str):
+        return _FORM_DECODED_OFFSET.sub(r"\1+\2", value.strip())
+    return value
+
+
+CreatedFrom = Annotated[datetime | None, BeforeValidator(_normalize_created_from)]
 
 
 class PolarRAGAuditContext(BaseModel):
@@ -183,7 +196,7 @@ async def list_audit_logs(
     action: str | None = None,
     status: str | None = None,
     category: Literal["sql", "polarrag"] | None = None,
-    created_from: datetime | None = None,
+    created_from: CreatedFrom = None,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     admin: User = Depends(require_admin),

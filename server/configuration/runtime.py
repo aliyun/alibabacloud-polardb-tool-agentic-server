@@ -217,6 +217,7 @@ def project_app_config(
         config.auth.web_sso_guard.enabled = True
         for field in (
             "discovery_url",
+            "issuer",
             "client_id",
             "client_secret",
             "scopes",

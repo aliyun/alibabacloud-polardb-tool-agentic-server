@@ -23,7 +23,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from server.models.base import Base, TimestampMixin, generate_uuid
 
 
-ENTERPRISE_PRINCIPAL_PROVIDERS = frozenset({"feishu", "sharepoint"})
+EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS = frozenset(
+    {"feishu", "sharepoint"}
+)
+ACL_CONTEXT_PRINCIPAL_PROVIDERS = (
+    EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS | {"polarrag"}
+)
 
 
 def _enum_values(enum_type: type[enum.Enum]) -> list[str]:
@@ -148,7 +153,9 @@ class PolarRAGSpace(TimestampMixin, Base):
         String(64),
         nullable=True,
     )
-    enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     instance: Mapped[PolarRAGInstance] = relationship(lazy="selectin")
@@ -223,8 +230,16 @@ class EnterprisePrincipalAssignment(TimestampMixin, Base):
             name="uq_enterprise_user_principal_key",
         ),
         CheckConstraint(
-            "provider IN ('feishu', 'sharepoint')",
+            "provider IN ('feishu', 'sharepoint', 'polarrag')",
             name="ck_enterprise_principal_provider",
+        ),
+        CheckConstraint(
+            "provider != 'polarrag' OR principal_type = 'user'",
+            name="ck_enterprise_principal_native_user",
+        ),
+        CheckConstraint(
+            "provider != 'polarrag' OR source = 'admin_managed'",
+            name="ck_enterprise_principal_native_admin",
         ),
         Index(
             "ix_enterprise_principal_resolution",
@@ -268,12 +283,24 @@ class EnterprisePrincipalAssignment(TimestampMixin, Base):
         source: EnterprisePrincipalSource,
         status: EnterprisePrincipalStatus = EnterprisePrincipalStatus.ACTIVE,
         valid_until: datetime | None = None,
+        canonical_user_external_id: str | None = None,
     ) -> "EnterprisePrincipalAssignment":
         normalized_provider = provider.strip().lower()
-        if normalized_provider not in ENTERPRISE_PRINCIPAL_PROVIDERS:
-            raise ValueError("provider is not allowed")
         normalized_domain = identity_domain.strip()
-        normalized_id = principal_id.strip()
+        if normalized_provider not in ACL_CONTEXT_PRINCIPAL_PROVIDERS:
+            raise ValueError("provider is not allowed")
+        if normalized_provider == "polarrag":
+            if principal_type != EnterprisePrincipalType.USER:
+                raise ValueError(
+                    "polarrag provider only supports user principals"
+                )
+            if source != EnterprisePrincipalSource.ADMIN_MANAGED:
+                raise ValueError("polarrag principals must be admin-managed")
+            if principal_id != (canonical_user_external_id or ""):
+                raise ValueError("polarrag principal must match the PAS user")
+            normalized_id = canonical_user_external_id or ""
+        else:
+            normalized_id = principal_id.strip()
         if not normalized_domain:
             raise ValueError("identity_domain is required")
         if not normalized_id:

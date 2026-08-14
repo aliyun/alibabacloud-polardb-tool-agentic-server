@@ -7,15 +7,18 @@ import logging
 import secrets
 import time
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from typing import Any, cast
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 import jwt
 from jwt import PyJWTError
 from pydantic import AnyUrl
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mcp.server.auth.provider import (
     AccessToken,
@@ -23,6 +26,7 @@ from mcp.server.auth.provider import (
     AuthorizationParams,
     AuthorizeError,
     RefreshToken,
+    RegistrationError,
 )
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
@@ -47,6 +51,229 @@ from server.models.oauth import (
 )
 
 logger = logging.getLogger(__name__)
+
+_raw_registration_redirect_uris: ContextVar[tuple[str, ...] | None] = (
+    ContextVar("raw_registration_redirect_uris", default=None)
+)
+_raw_authorize_redirect_uri: ContextVar[str | None] = ContextVar(
+    "raw_authorize_redirect_uri", default=None
+)
+_AUTH_ENDPOINT_BODY_LIMIT = 65_536
+
+
+class OAuthRedirectURIExactMatchMiddleware:
+    def __init__(
+        self,
+        app: ASGIApp,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        self._app = app
+        self._session_factory = session_factory
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        registration_token = None
+        authorize_token = None
+        effective_receive = receive
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            method = scope.get("method", "")
+            if method == "POST" and path in {"/register", "/token"}:
+                for name, value in scope.get("headers", []):
+                    if name.lower() != b"content-length":
+                        continue
+                    try:
+                        declared_length = int(value)
+                    except ValueError:
+                        continue
+                    if declared_length > _AUTH_ENDPOINT_BODY_LIMIT:
+                        response = JSONResponse(
+                            {
+                                "error": "invalid_request",
+                                "error_description": (
+                                    "Authentication request body is too large"
+                                ),
+                            },
+                            status_code=413,
+                            headers={"Cache-Control": "no-store"},
+                        )
+                        await response(scope, receive, send)
+                        return
+                messages: list[Message] = []
+                body_parts: list[bytes] = []
+                body_size = 0
+                while True:
+                    message = await receive()
+                    messages.append(message)
+                    if message["type"] == "http.request":
+                        body = message.get("body", b"")
+                        body_size += len(body)
+                        if body_size > _AUTH_ENDPOINT_BODY_LIMIT:
+                            response = JSONResponse(
+                                {
+                                    "error": "invalid_request",
+                                    "error_description": (
+                                        "Authentication request body is too large"
+                                    ),
+                                },
+                                status_code=413,
+                                headers={"Cache-Control": "no-store"},
+                            )
+                            await response(scope, receive, send)
+                            return
+                        body_parts.append(body)
+                        if not message.get("more_body", False):
+                            break
+                    else:
+                        break
+                raw_body = b"".join(body_parts)
+                if path == "/register":
+                    try:
+                        payload = json.loads(raw_body)
+                    except (TypeError, ValueError):
+                        payload = None
+                    if isinstance(payload, dict):
+                        values = payload.get("redirect_uris")
+                        if (
+                            isinstance(values, list)
+                            and all(isinstance(value, str) for value in values)
+                        ):
+                            registration_token = (
+                                _raw_registration_redirect_uris.set(
+                                    tuple(values)
+                                )
+                            )
+                else:
+                    form = parse_qs(
+                        raw_body.decode("latin-1"),
+                        keep_blank_values=True,
+                    )
+                    grant_types = form.get("grant_type", [])
+                    codes = form.get("code", [])
+                    redirect_uris = form.get("redirect_uri", [])
+                    if "authorization_code" in grant_types and (
+                        grant_types != ["authorization_code"]
+                        or len(codes) != 1
+                        or len(redirect_uris) != 1
+                    ):
+                        response = JSONResponse(
+                            {
+                                "error": "invalid_request",
+                                "error_description": (
+                                    "Authorization code request parameters "
+                                    "must appear exactly once"
+                                ),
+                            },
+                            status_code=400,
+                            headers={"Cache-Control": "no-store"},
+                        )
+                        await response(scope, receive, send)
+                        return
+                    if (
+                        grant_types == ["authorization_code"]
+                        and len(codes) == 1
+                        and len(redirect_uris) == 1
+                    ):
+                        code_hash = hashlib.sha256(
+                            codes[0].encode()
+                        ).hexdigest()
+                        async with self._session_factory() as session:
+                            stored_redirect_uri = await session.scalar(
+                                select(
+                                    OAuthAuthorizationCode.redirect_uri
+                                ).where(
+                                    OAuthAuthorizationCode.code_hash
+                                    == code_hash
+                                )
+                            )
+                        if (
+                            stored_redirect_uri is not None
+                            and redirect_uris[0] != stored_redirect_uri
+                        ):
+                            response = JSONResponse(
+                                {
+                                    "error": "invalid_grant",
+                                    "error_description": (
+                                        "Redirect URI does not match the "
+                                        "authorization request"
+                                    ),
+                                },
+                                status_code=400,
+                                headers={"Cache-Control": "no-store"},
+                            )
+                            await response(scope, receive, send)
+                            return
+                message_index = 0
+
+                async def replay_receive() -> Message:
+                    nonlocal message_index
+                    if message_index < len(messages):
+                        message = messages[message_index]
+                        message_index += 1
+                        return message
+                    return {
+                        "type": "http.request",
+                        "body": b"",
+                        "more_body": False,
+                    }
+
+                effective_receive = replay_receive
+            elif method == "GET" and path == "/authorize":
+                query = parse_qs(
+                    scope.get("query_string", b"").decode("latin-1"),
+                    keep_blank_values=True,
+                )
+                values = query.get("redirect_uri", [])
+                if len(values) == 1:
+                    authorize_token = _raw_authorize_redirect_uri.set(
+                        values[0]
+                    )
+                    client_ids = query.get("client_id", [])
+                    if len(client_ids) == 1:
+                        async with self._session_factory() as session:
+                            stored = await session.scalar(
+                                select(
+                                    OAuthRegisteredClient.redirect_uris
+                                ).where(
+                                    OAuthRegisteredClient.client_id
+                                    == client_ids[0]
+                                )
+                            )
+                        if stored is not None:
+                            try:
+                                registered = set(json.loads(stored))
+                            except (TypeError, ValueError):
+                                registered = set()
+                            if values[0] not in registered:
+                                response = JSONResponse(
+                                    {
+                                        "error": "invalid_request",
+                                        "error_description": (
+                                            "Redirect URI is not registered "
+                                            "for this client"
+                                        ),
+                                    },
+                                    status_code=400,
+                                    headers={
+                                        "Cache-Control": "no-store"
+                                    },
+                                )
+                                await response(scope, receive, send)
+                                _raw_authorize_redirect_uri.reset(
+                                    authorize_token
+                                )
+                                return
+        try:
+            await self._app(scope, effective_receive, send)
+        finally:
+            if authorize_token is not None:
+                _raw_authorize_redirect_uri.reset(authorize_token)
+            if registration_token is not None:
+                _raw_registration_redirect_uris.reset(registration_token)
 
 # ─── JTI Deny-list Cache ──────────────────────────────────────────────
 # In-memory cache of revoked JWT IDs to short-circuit DB lookups when
@@ -198,6 +425,145 @@ def _normalize_resource_url(url: str) -> str:
     ))
 
 
+def _oauth_issuer(config: AppConfig) -> str:
+    return config.server.public_base_url.rstrip("/")
+
+
+def _oauth_resource(config: AppConfig) -> str:
+    return f"{_oauth_issuer(config)}/mcp"
+
+
+def _validate_redirect_uri(redirect_uri: str) -> None:
+    try:
+        parsed = urlparse(redirect_uri)
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise RegistrationError(
+            error="invalid_redirect_uri",
+            error_description="Redirect URI is invalid",
+        ) from exc
+    if (
+        not hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or "*" in redirect_uri
+    ):
+        raise RegistrationError(
+            error="invalid_redirect_uri",
+            error_description="Redirect URI must be an exact URI without credentials or a fragment",
+        )
+    is_loopback = hostname.lower() in {"localhost", "127.0.0.1", "::1"}
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme == "http" and is_loopback:
+        return
+    raise RegistrationError(
+        error="invalid_redirect_uri",
+        error_description="Redirect URI must use HTTPS, except for loopback HTTP clients",
+    )
+
+
+def _validate_client_metadata(
+    client_info: OAuthClientInformationFull,
+    redirect_uris: list[str] | None = None,
+) -> None:
+    parsed_redirect_uris = [
+        str(uri) for uri in (client_info.redirect_uris or [])
+    ]
+    if redirect_uris is None:
+        redirect_uris = parsed_redirect_uris
+    if not redirect_uris or len(redirect_uris) > 10:
+        raise RegistrationError(
+            error="invalid_redirect_uri",
+            error_description="One to ten redirect URIs are required",
+        )
+    if len(redirect_uris) != len(parsed_redirect_uris):
+        raise RegistrationError(
+            error="invalid_redirect_uri",
+            error_description="Redirect URI metadata is inconsistent",
+        )
+    for redirect_uri, parsed_redirect_uri in zip(
+        redirect_uris, parsed_redirect_uris, strict=True
+    ):
+        _validate_redirect_uri(redirect_uri)
+        if str(AnyUrl(redirect_uri)) != parsed_redirect_uri:
+            raise RegistrationError(
+                error="invalid_redirect_uri",
+                error_description="Redirect URI metadata is inconsistent",
+            )
+    if set(client_info.grant_types or []) != {
+        "authorization_code",
+        "refresh_token",
+    }:
+        raise RegistrationError(
+            error="invalid_client_metadata",
+            error_description="Only authorization_code and refresh_token grants are supported",
+        )
+    if set(client_info.response_types or []) != {"code"}:
+        raise RegistrationError(
+            error="invalid_client_metadata",
+            error_description="Only the code response type is supported",
+        )
+    if client_info.token_endpoint_auth_method not in {
+        "none",
+        "client_secret_post",
+    }:
+        raise RegistrationError(
+            error="invalid_client_metadata",
+            error_description="Unsupported token endpoint authentication method",
+        )
+
+
+def _access_token_payload(
+    config: AppConfig,
+    *,
+    subject: str,
+    resource: str | None,
+    client_id: str,
+    scopes: list[str],
+) -> dict[str, Any]:
+    now = int(time.time())
+    return {
+        "iss": _oauth_issuer(config),
+        "sub": subject,
+        "aud": resource or _oauth_resource(config),
+        "jti": str(uuid.uuid4()),
+        "iat": now,
+        "exp": now + config.auth.jwt.access_token_expire_minutes * 60,
+        "type": "access",
+        "client_id": client_id,
+        "scope": " ".join(scopes),
+    }
+
+
+def _decode_access_token(config: AppConfig, token: str) -> dict[str, Any]:
+    payload = jwt.decode(
+        token,
+        get_public_key(),
+        algorithms=["RS256"],
+        audience=_oauth_resource(config),
+        issuer=_oauth_issuer(config),
+        options={
+            "require": ["iss", "aud", "sub", "iat", "exp", "jti", "type"],
+        },
+    )
+    subject = payload["sub"]
+    jti = payload["jti"]
+    if (
+        payload["type"] != "access"
+        or not isinstance(subject, str)
+        or not subject
+        or not isinstance(jti, str)
+        or not jti
+    ):
+        raise jwt.InvalidTokenError("Invalid access token claims")
+    principal = parse_subject(subject)
+    if principal.kind != PrincipalKind.USER:
+        raise jwt.InvalidTokenError("OAuth access token subject must be a User")
+    return payload
+
+
 class PASAuthProvider:
     """MCP OAuth authorization server provider backed by PolarDB/SQLite."""
 
@@ -267,6 +633,13 @@ class PASAuthProvider:
 
         The client secret, if present, is encrypted at rest.
         """
+        raw_redirect_uris = _raw_registration_redirect_uris.get()
+        redirect_uris = (
+            list(raw_redirect_uris)
+            if raw_redirect_uris is not None
+            else [str(uri) for uri in (client_info.redirect_uris or [])]
+        )
+        _validate_client_metadata(client_info, redirect_uris)
         async with self._session_factory() as session:
             secret_enc = None
             if client_info.client_secret:
@@ -277,9 +650,7 @@ class PASAuthProvider:
                 client_secret_enc=secret_enc,
                 client_id_issued_at=client_info.client_id_issued_at,
                 client_secret_expires_at=client_info.client_secret_expires_at,
-                redirect_uris=json.dumps(
-                    [str(u) for u in (client_info.redirect_uris or [])]
-                ),
+                redirect_uris=json.dumps(redirect_uris),
                 grant_types=json.dumps(client_info.grant_types),
                 response_types=json.dumps(client_info.response_types),
                 token_endpoint_auth_method=client_info.token_endpoint_auth_method,
@@ -302,7 +673,37 @@ class PASAuthProvider:
         authorization session, and returns either the local login URL
         (builtin mode) or the SSO redirect URL (OIDC mode).
         """
-        resource_url = f"{self._config.server.public_base_url}/mcp"
+        raw_redirect_uri = _raw_authorize_redirect_uri.get()
+        redirect_uri = raw_redirect_uri or str(params.redirect_uri)
+        registered_redirect_uris = {
+            str(uri) for uri in (client.redirect_uris or [])
+        }
+        if raw_redirect_uri is not None:
+            async with self._session_factory() as session:
+                stored_redirect_uris = await session.scalar(
+                    select(OAuthRegisteredClient.redirect_uris).where(
+                        OAuthRegisteredClient.client_id == client.client_id
+                    )
+                )
+            registered_redirect_uris = set(
+                json.loads(stored_redirect_uris)
+                if stored_redirect_uris
+                else []
+            )
+        if redirect_uri not in registered_redirect_uris:
+            raise AuthorizeError(
+                error="invalid_request",
+                error_description="Redirect URI is not registered for this client",
+            )
+        try:
+            _validate_redirect_uri(redirect_uri)
+        except RegistrationError as exc:
+            raise AuthorizeError(
+                error="invalid_request",
+                error_description=exc.error_description,
+            ) from exc
+
+        resource_url = _oauth_resource(self._config)
 
         if params.resource is not None:
             if _normalize_resource_url(str(params.resource)) != _normalize_resource_url(resource_url):
@@ -321,17 +722,19 @@ class PASAuthProvider:
 
         # Generate idp_state upfront (used by OIDC mode for callback correlation)
         idp_state = str(uuid.uuid4())
+        idp_nonce = secrets.token_urlsafe(32)
 
         async with self._session_factory() as session:
             pending = OAuthPendingAuth(
                 client_id=client.client_id,
-                redirect_uri=str(params.redirect_uri),
+                redirect_uri=redirect_uri,
                 code_challenge=params.code_challenge,
                 code_challenge_method="S256",
                 resource=effective_resource,
                 scopes=json.dumps(params.scopes or []),
                 state=params.state,
                 idp_state=idp_state,
+                idp_nonce=idp_nonce,
                 expires_at=datetime.now(timezone.utc) + timedelta(minutes=10),
             )
             session.add(pending)
@@ -358,6 +761,7 @@ class PASAuthProvider:
         authorize_url, idp_code_verifier = federation.build_authorize_url(
             redirect_uri=callback_url,
             state=idp_state,
+            nonce=idp_nonce,
         )
 
         # Store authorize_url (and code_verifier if IdP PKCE is enabled)
@@ -481,19 +885,13 @@ class PASAuthProvider:
 
         # 2. Sign access token JWT
         private_key, _ = _load_keys()
-        jti = str(uuid.uuid4())
-        now = int(time.time())
-        access_payload = {
-            "sub": authorization_code.subject,
-            "aud": authorization_code.resource
-            or f"{config.server.public_base_url}/mcp",
-            "jti": jti,
-            "iat": now,
-            "exp": now + config.auth.jwt.access_token_expire_minutes * 60,
-            "type": "access",
-            "client_id": authorization_code.client_id,
-            "scope": " ".join(authorization_code.scopes),
-        }
+        access_payload = _access_token_payload(
+            config,
+            subject=subject,
+            resource=authorization_code.resource,
+            client_id=authorization_code.client_id,
+            scopes=authorization_code.scopes,
+        )
         access_token = jwt.encode(access_payload, private_key, algorithm="RS256")
 
         # 3. Generate refresh token
@@ -662,18 +1060,13 @@ class PASAuthProvider:
         # 4. Sign new access JWT
         effective_scopes = scopes if scopes else refresh_token.scopes
         private_key, _ = _load_keys()
-        jti = str(uuid.uuid4())
-        now = int(time.time())
-        access_payload = {
-            "sub": refresh_token.subject,
-            "aud": resource or f"{config.server.public_base_url}/mcp",
-            "jti": jti,
-            "iat": now,
-            "exp": now + config.auth.jwt.access_token_expire_minutes * 60,
-            "type": "access",
-            "client_id": refresh_token.client_id,
-            "scope": " ".join(effective_scopes),
-        }
+        access_payload = _access_token_payload(
+            config,
+            subject=cast(str, refresh_token.subject),
+            resource=resource,
+            client_id=refresh_token.client_id,
+            scopes=effective_scopes,
+        )
         access_token = jwt.encode(access_payload, private_key, algorithm="RS256")
 
         # 5. Return OAuthToken
@@ -699,39 +1092,23 @@ class PASAuthProvider:
             return await self._load_agent_access_token(token)
 
         try:
-            payload = jwt.decode(
-                token,
-                get_public_key(),
-                algorithms=["RS256"],
-                options={"verify_aud": False},
-            )
-        except PyJWTError:
+            payload = _decode_access_token(self._config, token)
+        except (PyJWTError, ValueError):
             return None
 
-        if payload.get("type") != "access":
+        jti = cast(str, payload["jti"])
+        cached = await _jti_is_denied_cached(jti)
+        if cached is True:
             return None
-
-        expected_aud = _normalize_resource_url(
-            f"{self._config.server.public_base_url}/mcp"
-        )
-        token_aud = payload.get("aud", "")
-        if _normalize_resource_url(token_aud) != expected_aud:
-            return None
-
-        jti = payload.get("jti")
-        if jti:
-            cached = await _jti_is_denied_cached(jti)
-            if cached is True:
-                return None
-            if cached is None:
-                async with self._session_factory() as session:
-                    result = await session.execute(
-                        select(OAuthDeniedJTI).where(OAuthDeniedJTI.jti == jti)
-                    )
-                    row = result.scalar_one_or_none()
-                    if row is not None:
-                        await _jti_cache_deny(jti, row.expires_at.timestamp())
-                        return None
+        if cached is None:
+            async with self._session_factory() as session:
+                result = await session.execute(
+                    select(OAuthDeniedJTI).where(OAuthDeniedJTI.jti == jti)
+                )
+                row = result.scalar_one_or_none()
+                if row is not None:
+                    await _jti_cache_deny(jti, row.expires_at.timestamp())
+                    return None
 
         return AccessToken(
             token=token,

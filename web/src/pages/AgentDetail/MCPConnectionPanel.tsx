@@ -22,6 +22,7 @@ type CopyResult = { status: 'success' | 'error'; message: string } | null
 
 export interface MCPConnectionPanelProps {
   agentName: string
+  headingId?: string
   mcpUrl: string
   tokenPrefix: string | null
   tokenStatus: AgentTokenStatus | null
@@ -39,6 +40,7 @@ function maskedToken(prefix: string | null): string | null {
 
 export default function MCPConnectionPanel({
   agentName,
+  headingId = 'agent-mcp-connection-heading',
   mcpUrl,
   tokenPrefix,
   tokenStatus,
@@ -100,7 +102,7 @@ export default function MCPConnectionPanel({
   return (
     <>
       <div>
-        <Title id="agent-mcp-connection-heading" level={4} style={{ marginBlock: 0 }}>
+        <Title id={headingId} level={4} style={{ marginBlock: 0 }}>
           {t('components.mcpConnection.title')}
         </Title>
         <Text type="secondary">

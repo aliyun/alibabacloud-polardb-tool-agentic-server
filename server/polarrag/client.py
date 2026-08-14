@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import ssl
 from collections.abc import Callable
 from datetime import datetime
@@ -28,6 +29,15 @@ _MAX_CATALOG_PAGES = 10_000
 _RERANKER_NOT_CONFIGURED_PREFIX = (
     "reranker is not configured for space:"
 )
+_DOCUMENT_UPLOAD_FORBIDDEN_TYPES = frozenset(
+    {
+        "acl_actor_not_in_principals",
+        "identity_domain_mismatch",
+        "kb_actor_must_be_user",
+        "kb_upload_forbidden",
+    }
+)
+logger = logging.getLogger(__name__)
 
 
 def _validate_base_url(base_url: str) -> str:
@@ -69,6 +79,7 @@ class HttpPolarRAGClient(PolarRAGClient):
         *,
         payload: dict[str, Any] | None = None,
         document_read: bool = False,
+        document_upload: bool = False,
         knowledge_resource_read: bool = False,
     ) -> dict[str, Any]:
         try:
@@ -89,6 +100,19 @@ class HttpPolarRAGClient(PolarRAGClient):
                 retryable=True,
             ) from exc
         if response.status_code in {401, 403}:
+            if (
+                response.status_code == 403
+                and document_upload
+                and (error_type := self._document_upload_error_type(response))
+            ):
+                logger.warning(
+                    "PolarRAG document upload denied: error_type=%s",
+                    error_type,
+                )
+                raise PolarRAGUpstreamError(
+                    PolarRAGErrorCode.DOCUMENT_UPLOAD_FORBIDDEN,
+                    status_code=403,
+                )
             code = (
                 PolarRAGErrorCode.DOCUMENT_NOT_ACCESSIBLE
                 if document_read and response.status_code == 403
@@ -138,6 +162,23 @@ class HttpPolarRAGClient(PolarRAGClient):
                 status_code=response.status_code,
             )
         return decoded
+
+    @staticmethod
+    def _document_upload_error_type(
+        response: httpx.Response,
+    ) -> str | None:
+        try:
+            decoded = response.json()
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(decoded, dict):
+            return None
+        error_type = decoded.get("error_type")
+        return (
+            error_type
+            if error_type in _DOCUMENT_UPLOAD_FORBIDDEN_TYPES
+            else None
+        )
 
     @staticmethod
     def _is_reranker_not_configured(response: httpx.Response) -> bool:
@@ -274,17 +315,17 @@ class HttpPolarRAGClient(PolarRAGClient):
         space_id: str,
         kb_id: str,
         *,
-        acl_context: dict[str, Any],
+        owner: str,
     ) -> None:
-        if not space_id or not kb_id:
-            raise ValueError("space_id and kb_id are required")
+        if not space_id or not kb_id or not owner:
+            raise ValueError("space_id, kb_id, and owner are required")
         response = await self._request(
             "POST",
             (
                 f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
                 f"/knowledge_bases/{quote(kb_id, safe='')}/_claim"
             ),
-            payload={"acl_context": acl_context},
+            payload={"owner": owner},
         )
         if (
             response.get("space_id") != space_id
@@ -326,6 +367,7 @@ class HttpPolarRAGClient(PolarRAGClient):
                 "acl_context": acl_context,
                 "acl": {"mode": "POLARRAG_DERIVED"},
             },
+            document_upload=True,
         )
         document = response.get("document")
         if (
@@ -749,15 +791,24 @@ def client_from_instance(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> HttpPolarRAGClient:
-    verify: bool | ssl.SSLContext = instance.tls_verify
-    if instance.ca_bundle_ciphertext:
-        context = ssl.create_default_context()
-        context.load_verify_locations(cadata=decrypt(instance.ca_bundle_ciphertext))
-        verify = context
+    try:
+        verify: bool | ssl.SSLContext = instance.tls_verify
+        if instance.ca_bundle_ciphertext:
+            context = ssl.create_default_context()
+            context.load_verify_locations(
+                cadata=decrypt(instance.ca_bundle_ciphertext)
+            )
+            verify = context
+        username = decrypt(instance.username_ciphertext)
+        password = decrypt(instance.password_ciphertext)
+    except Exception:
+        raise PolarRAGUpstreamError(
+            PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE
+        ) from None
     return HttpPolarRAGClient(
         base_url=f"{instance.scheme}://{instance.host}:{instance.port}",
-        username=decrypt(instance.username_ciphertext),
-        password=decrypt(instance.password_ciphertext),
+        username=username,
+        password=password,
         tls_verify=verify,
         transport=transport,
     )

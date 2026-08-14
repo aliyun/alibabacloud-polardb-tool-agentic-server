@@ -53,7 +53,9 @@ describe('Audit Logs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(api.get).mockImplementation((_url, config) => {
-      const category = config?.params?.category
+      const category = (
+        config?.params as Record<string, unknown> | undefined
+      )?.category
       return Promise.resolve({
         data: {
           items: category === 'polarrag' ? [polarragAudit] : [],

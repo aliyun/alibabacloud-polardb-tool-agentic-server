@@ -23,6 +23,7 @@ const connection = {
   agent_name: 'Knowledge Agent',
   agent_status: 'active' as const,
   polarrag_instances: [{ id: 'rag-1', name: 'RAG' }],
+  password_reveal_available: true,
   token: null,
 }
 
@@ -32,6 +33,7 @@ const activeConnection = {
   token: {
     token_prefix: 'pas_user_agent_example',
     status: 'active' as const,
+    expires_at: null,
     last_used_at: null,
   },
 }
@@ -50,6 +52,7 @@ describe('MCP connections', () => {
         assignment_id: 'assignment-1',
         token_prefix: 'pas_user_agent_example',
         status: 'active',
+        expires_at: null,
         last_used_at: null,
         token: null,
       },
@@ -61,10 +64,65 @@ describe('MCP connections', () => {
     render(<MCPConnections />)
 
     await user.click(await screen.findByRole('button', { name: 'Issue Token' }))
+    await user.click(screen.getByRole('button', { name: 'Issue' }))
 
-    expect(issueMyAgentToken).toHaveBeenCalledWith('agent-1')
+    expect(issueMyAgentToken).toHaveBeenCalledWith('agent-1', undefined)
     expect(await screen.findByText('pas_user_agent_••••••••')).toBeInTheDocument()
     expect(screen.queryByText(/pas_user_agent_plaintext/)).not.toBeInTheDocument()
+  })
+
+  it('copies an OIDC one-time token without rendering plaintext', async () => {
+    const oidcConnection = {
+      ...connection,
+      password_reveal_available: false,
+    }
+    vi.mocked(listMyAgentConnections)
+      .mockResolvedValueOnce({ data: [oidcConnection] } as never)
+      .mockResolvedValueOnce({
+        data: [{ ...activeConnection, password_reveal_available: false }],
+      } as never)
+    vi.mocked(issueMyAgentToken).mockResolvedValue({
+      data: {
+        assignment_id: 'assignment-1',
+        token_prefix: 'pas_user_agent_example',
+        status: 'active',
+        expires_at: null,
+        last_used_at: null,
+        token: 'pas_user_agent_oidc_once',
+      },
+    } as never)
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText')
+    const user = userEvent.setup()
+    render(<MCPConnections />)
+
+    await user.click(await screen.findByRole('button', { name: 'Issue Token' }))
+    await user.click(screen.getByRole('button', { name: 'Issue' }))
+
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith('pas_user_agent_oidc_once'),
+    )
+    expect(issueMyAgentToken).toHaveBeenCalledWith('agent-1', undefined)
+    expect(screen.queryByText('pas_user_agent_oidc_once')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Copy Token' })).not.toBeInTheDocument()
+  })
+
+  it('sends an optional expiration when issuing a Token', async () => {
+    vi.mocked(issueMyAgentToken).mockResolvedValue({ data: {} } as never)
+    const user = userEvent.setup()
+    render(<MCPConnections />)
+
+    await user.click(await screen.findByRole('button', { name: 'Issue Token' }))
+    const expiration = '2030-01-02T03:04'
+    await user.type(
+      screen.getByLabelText('Token expiration (optional)'),
+      expiration,
+    )
+    await user.click(screen.getByRole('button', { name: 'Issue' }))
+
+    expect(issueMyAgentToken).toHaveBeenCalledWith(
+      'agent-1',
+      new Date(expiration).toISOString(),
+    )
   })
 
   it('requires the user password and copies JSON without rendering plaintext', async () => {

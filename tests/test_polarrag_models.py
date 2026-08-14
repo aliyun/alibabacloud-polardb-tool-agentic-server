@@ -169,6 +169,70 @@ def test_principal_assignment_create_rejects_unknown_provider() -> None:
         )
 
 
+def test_native_principal_assignment_rejects_group() -> None:
+    with pytest.raises(ValueError, match="only supports user"):
+        EnterprisePrincipalAssignment.create(
+            pas_user_id="user-1",
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.GROUP,
+            principal_id="group-1",
+            source=EnterprisePrincipalSource.ADMIN_MANAGED,
+        )
+
+
+def test_native_principal_assignment_requires_canonical_admin_user() -> None:
+    assignment = EnterprisePrincipalAssignment.create(
+        pas_user_id="user-1",
+        identity_domain="tenant-a",
+        provider="polarrag",
+        principal_type=EnterprisePrincipalType.USER,
+        principal_id="native-user",
+        source=EnterprisePrincipalSource.ADMIN_MANAGED,
+        canonical_user_external_id="native-user",
+    )
+    assert assignment.principal_id == "native-user"
+
+    with pytest.raises(ValueError, match="match"):
+        EnterprisePrincipalAssignment.create(
+            pas_user_id="user-1",
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id="another-user",
+            source=EnterprisePrincipalSource.ADMIN_MANAGED,
+            canonical_user_external_id="native-user",
+        )
+    with pytest.raises(ValueError, match="admin-managed"):
+        EnterprisePrincipalAssignment.create(
+            pas_user_id="user-1",
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id="native-user",
+            source=EnterprisePrincipalSource.REMOTE_RESOLVER,
+            canonical_user_external_id="native-user",
+        )
+
+
+async def test_native_principal_database_rejects_remote_source(session) -> None:
+    user = await _user(session, "native-db-user")
+    session.add(
+        EnterprisePrincipalAssignment(
+            pas_user_id=user.id,
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id=user.external_id,
+            source=EnterprisePrincipalSource.REMOTE_RESOLVER,
+            status=EnterprisePrincipalStatus.ACTIVE,
+            user_principal_key="native-db-user",
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await session.commit()
+
+
 def test_principal_active_status_and_expiry_are_separate() -> None:
     assignment = EnterprisePrincipalAssignment.create(
         pas_user_id="user-1",
@@ -252,6 +316,35 @@ def test_polarrag_migration_renders_for_supported_databases(
         "enterprise_principal_assignments",
     }:
         assert f"drop table {table_name}" in rendered_downgrade
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    [mysql.dialect(), postgresql.dialect()],
+    ids=["mysql", "postgresql"],
+)
+def test_native_polarrag_principal_migration_renders(
+    dialect,
+    monkeypatch,
+) -> None:
+    migration = import_module(
+        "server.db.migrations.versions."
+        "c1d2e3f4a5b6_add_native_polarrag_principals"
+    )
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect=dialect,
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    migration.upgrade()
+
+    rendered = output.getvalue().lower()
+    assert "ck_enterprise_principal_provider" in rendered
+    assert "ck_enterprise_principal_native_user" in rendered
+    assert "ck_enterprise_principal_native_admin" in rendered
+    assert "polarrag" in rendered
 
 
 @pytest.mark.parametrize(

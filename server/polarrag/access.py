@@ -23,6 +23,7 @@ from server.models import (
 )
 from server.polarrag.identity import (
     IdentityContextUnavailable,
+    principal_assignment_is_valid_for_user,
     resolve_acl_context,
 )
 
@@ -50,32 +51,51 @@ class KnowledgeAccessPlan:
     partial_failures: list[dict[str, str]]
 
 
+@dataclass(frozen=True)
+class KnowledgeResourceScope:
+    bindings: dict[str, set[str] | None]
+
+    def allows(self, resource: KnowledgeResource) -> bool:
+        if resource.polarrag_instance_id not in self.bindings:
+            return False
+        selected = self.bindings[resource.polarrag_instance_id]
+        return (
+            resource.kb_type != "PUBLIC"
+            or selected is None
+            or resource.id in selected
+        )
+
+
 async def _domains_with_principals(
     session: AsyncSession,
-    user_id: str,
+    user: User,
     domains: set[str],
 ) -> set[str]:
     if not domains:
         return set()
-    return set(
-        (
-            await session.execute(
-                select(
-                    EnterprisePrincipalAssignment.identity_domain
-                ).where(
-                    EnterprisePrincipalAssignment.pas_user_id == user_id,
-                    EnterprisePrincipalAssignment.identity_domain.in_(domains),
-                    EnterprisePrincipalAssignment.status
-                    == EnterprisePrincipalStatus.ACTIVE,
-                    or_(
-                        EnterprisePrincipalAssignment.valid_until.is_(None),
-                        EnterprisePrincipalAssignment.valid_until
-                        > datetime.now(UTC),
-                    ),
-                )
+    assignments = (
+        await session.execute(
+            select(EnterprisePrincipalAssignment).where(
+                EnterprisePrincipalAssignment.pas_user_id == user.id,
+                EnterprisePrincipalAssignment.identity_domain.in_(domains),
+                EnterprisePrincipalAssignment.status
+                == EnterprisePrincipalStatus.ACTIVE,
+                or_(
+                    EnterprisePrincipalAssignment.valid_until.is_(None),
+                    EnterprisePrincipalAssignment.valid_until
+                    > datetime.now(UTC),
+                ),
             )
-        ).scalars()
-    )
+        )
+    ).scalars().all()
+    invalid_native_domains = {
+        assignment.identity_domain
+        for assignment in assignments
+        if not principal_assignment_is_valid_for_user(assignment, user)
+    }
+    return {
+        assignment.identity_domain for assignment in assignments
+    } - invalid_native_domains
 
 
 async def plan_knowledge_access(
@@ -83,7 +103,7 @@ async def plan_knowledge_access(
     user: User,
     knowledge_resource_ids: list[str],
     *,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
 ) -> KnowledgeAccessPlan:
     if not knowledge_resource_ids or len(set(knowledge_resource_ids)) != len(
         knowledge_resource_ids
@@ -111,7 +131,7 @@ async def plan_knowledge_access(
     domains = {resource.identity_domain for resource in by_id.values()}
     available_domains = await _domains_with_principals(
         session,
-        user.id,
+        user,
         domains,
     )
     accessible: list[KnowledgeResource] = []
@@ -121,19 +141,17 @@ async def plan_knowledge_access(
         visible = (
             resource is not None
             and (
-                allowed_instance_ids is None
-                or resource.polarrag_instance_id in allowed_instance_ids
+                resource_scope is None
+                or resource_scope.allows(resource)
             )
             and resource.enabled
             and resource.sync_status == KnowledgeResourceSyncStatus.ACTIVE
             and resource.space.enabled
             and resource.space.instance.status
             == PolarRAGInstanceStatus.ACTIVE
+            and resource.identity_domain in available_domains
             and (
-                (
-                    resource.binding_mode == KnowledgeBindingMode.DOMAIN
-                    and resource.identity_domain in available_domains
-                )
+                resource.binding_mode == KnowledgeBindingMode.DOMAIN
                 or (
                     resource.binding_mode == KnowledgeBindingMode.OWNER
                     and resource.owner_pas_user_id == user.id
@@ -185,7 +203,7 @@ async def list_visible_knowledge_resources(
     session: AsyncSession,
     user: User,
     *,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
 ) -> list[KnowledgeResource]:
     resources = (
         await session.execute(
@@ -207,23 +225,21 @@ async def list_visible_knowledge_resources(
     domains = {resource.identity_domain for resource in rows}
     available_domains = await _domains_with_principals(
         session,
-        user.id,
+        user,
         domains,
     )
     return [
         resource
         for resource in rows
         if (
-            allowed_instance_ids is None
-            or resource.polarrag_instance_id in allowed_instance_ids
+            resource_scope is None
+            or resource_scope.allows(resource)
         )
         and resource.space.enabled
         and resource.space.instance.status == PolarRAGInstanceStatus.ACTIVE
+        and resource.identity_domain in available_domains
         and (
-            (
-                resource.binding_mode == KnowledgeBindingMode.DOMAIN
-                and resource.identity_domain in available_domains
-            )
+            resource.binding_mode == KnowledgeBindingMode.DOMAIN
             or (
                 resource.binding_mode == KnowledgeBindingMode.OWNER
                 and resource.owner_pas_user_id == user.id

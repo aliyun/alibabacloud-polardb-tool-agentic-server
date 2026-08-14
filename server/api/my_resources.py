@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import get_current_user
 from server.auth.principal import Principal, PrincipalKind
+from server.core.agent_access import has_agent_access
 from server.core.db_instance_query import query_db_instances
 from server.db.engine import get_session
-from server.models import User
+from server.models import Agent, AgentStatus, User
+from server.mcp.agent_user_context import (
+    resolve_polarrag_resource_scope_for_agent,
+)
 from server.polarrag.access import list_visible_knowledge_resources
 
 router = APIRouter(prefix="/me", tags=["my-resources"])
@@ -15,6 +19,7 @@ router = APIRouter(prefix="/me", tags=["my-resources"])
 
 @router.get("/resources")
 async def list_my_resources(
+    agent_id: str | None = Query(default=None),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -23,9 +28,20 @@ async def list_my_resources(
         Principal(PrincipalKind.USER, user.id),
         limit=200,
     )
+    resource_scope = None
+    if agent_id is not None:
+        agent = await session.get(Agent, agent_id)
+        if (
+            agent is None
+            or agent.status != AgentStatus.ACTIVE
+            or not await has_agent_access(session, agent_id, user.id)
+        ):
+            raise HTTPException(status_code=404, detail="Agent connection not found")
+        resource_scope = await resolve_polarrag_resource_scope_for_agent(
+            session, agent_id
+        )
     knowledge_resources = await list_visible_knowledge_resources(
-        session,
-        user,
+        session, user, resource_scope=resource_scope
     )
     return {
         "database_instances": [
@@ -48,6 +64,7 @@ async def list_my_resources(
                 "polarrag_instance_id": resource.polarrag_instance_id,
                 "polarrag_instance_name": resource.space.instance.name,
                 "name": resource.name,
+                "kb_id": resource.kb_id,
                 "kb_type": resource.kb_type,
                 "usage": resource.usage,
                 "upload_ready": bool(

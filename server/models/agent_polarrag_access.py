@@ -19,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from server.models.base import Base, TimestampMixin, generate_uuid
+from server.models.polarrag import EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS
 
 if TYPE_CHECKING:
     from server.models.agent import Agent
@@ -124,7 +125,10 @@ class AgentGroupAssignment(TimestampMixin, Base):
         normalized_domain = identity_domain.strip()
         normalized_provider = provider.strip().lower()
         normalized_principal = principal_id.strip()
-        if normalized_provider not in {"feishu", "sharepoint"}:
+        if (
+            normalized_provider
+            not in EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS
+        ):
             raise ValueError("provider is not allowed")
         if not normalized_domain or not normalized_principal:
             raise ValueError("enterprise group identity is required")
@@ -168,6 +172,10 @@ class AgentPolarRAGInstanceBinding(TimestampMixin, Base):
     created_by_user_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    public_knowledge_resource_ids_json: Mapped[str | None] = mapped_column(
+        Text,
         nullable=True,
     )
 

@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.auth.builtin import authenticate_builtin
 from server.auth.dependencies import get_current_user
 from server.auth.jwt_manager import create_access_token
+from server.auth.rate_limit import (
+    AuthRateLimitExceeded,
+    check_builtin_login,
+)
 from server.config import get_config
 from server.db.engine import get_session
 from server.models import User
@@ -81,6 +85,14 @@ async def login(
 ):
     """Login with builtin credentials (works in all auth modes for builtin users)."""
     config = get_config()
+    try:
+        await check_builtin_login(request, body.username)
+    except AuthRateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many authentication requests.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
     user = await authenticate_builtin(session, body.username, body.password)
     if user is None:
         raise HTTPException(

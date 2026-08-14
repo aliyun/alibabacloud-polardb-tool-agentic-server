@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,11 +32,12 @@ from server.polarrag.catalog import sync_space_catalog
 from server.polarrag.client import client_from_instance
 from server.polarrag.contracts import (
     PolarRAGCapabilities,
+    PolarRAGErrorCode,
     PolarRAGOperationNotSupported,
     PolarRAGSpaceRecord,
     PolarRAGUpstreamError,
 )
-from server.polarrag.identity import resolve_acl_context
+from server.polarrag.identity import principal_assignment_is_valid_for_user
 from server.polarrag.oss import (
     OssOperationError,
     normalize_prefix,
@@ -45,6 +46,19 @@ from server.polarrag.oss import (
 
 router = APIRouter(prefix="/polarrag", tags=["polarrag"])
 _HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+async def _commit_with_required_audit(
+    session: AsyncSession,
+    **audit_fields,
+) -> None:
+    await log_audit(
+        session,
+        required=True,
+        commit=False,
+        **audit_fields,
+    )
+    await session.commit()
 
 
 class InstanceCreate(BaseModel):
@@ -118,18 +132,29 @@ class PrincipalCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identity_domain: str = Field(min_length=1, max_length=255)
-    provider: Literal["feishu", "sharepoint"]
+    provider: Literal["feishu", "sharepoint", "polarrag"]
     principal_type: Literal["user", "group"]
     principal_id: str = Field(min_length=1, max_length=255)
     valid_until: datetime | None = None
 
-    @field_validator("identity_domain", "principal_id")
+    @field_validator("identity_domain")
     @classmethod
-    def validate_nonblank(cls, value: str) -> str:
+    def validate_identity_domain(cls, value: str) -> str:
         candidate = value.strip()
         if not candidate:
             raise ValueError("value must not be blank")
         return candidate
+
+    @field_validator("principal_id")
+    @classmethod
+    def validate_principal_id(
+        cls,
+        value: str,
+        info: ValidationInfo,
+    ) -> str:
+        if not value.strip():
+            raise ValueError("value must not be blank")
+        return value if info.data.get("provider") == "polarrag" else value.strip()
 
 
 class PrincipalUpdate(BaseModel):
@@ -310,7 +335,10 @@ def _apply_capability_status(
 def _raise_upstream(error: PolarRAGUpstreamError) -> None:
     status_code = 501 if isinstance(
         error, PolarRAGOperationNotSupported
-    ) else 503 if error.retryable else 422
+    ) else 503 if (
+        error.retryable
+        or error.code == PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE
+    ) else 422
     raise HTTPException(
         status_code=status_code,
         detail={"code": error.code.value, "message": error.code.value},
@@ -372,7 +400,15 @@ async def create_instance(
     _apply_capability_status(instance, capabilities)
     session.add(instance)
     try:
-        await session.commit()
+        await session.flush()
+        await _commit_with_required_audit(
+            session,
+            user_id=admin.id,
+            action="polarrag_instance.create",
+            target_type="polarrag_instance",
+            target_id=instance.id,
+            status=AuditStatus.SUCCESS,
+        )
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
@@ -380,15 +416,6 @@ async def create_instance(
             detail="PolarRAG instance name already exists",
         ) from exc
     await session.refresh(instance)
-    await log_audit(
-        session,
-        user_id=admin.id,
-        action="polarrag_instance.create",
-        target_type="polarrag_instance",
-        target_id=instance.id,
-        status=AuditStatus.SUCCESS,
-        required=True,
-    )
     return _instance_response(instance)
 
 
@@ -442,20 +469,19 @@ async def update_instance(
         _raise_upstream(exc)
     _apply_capability_status(instance, capabilities)
     try:
-        await session.commit()
+        await session.flush()
+        await _commit_with_required_audit(
+            session,
+            user_id=admin.id,
+            action="polarrag_instance.update",
+            target_type="polarrag_instance",
+            target_id=instance.id,
+            status=AuditStatus.SUCCESS,
+        )
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail="Instance conflict") from exc
     await session.refresh(instance)
-    await log_audit(
-        session,
-        user_id=admin.id,
-        action="polarrag_instance.update",
-        target_type="polarrag_instance",
-        target_id=instance.id,
-        status=AuditStatus.SUCCESS,
-        required=True,
-    )
     return _instance_response(instance)
 
 
@@ -477,15 +503,13 @@ async def disable_instance(
         .where(KnowledgeResource.polarrag_instance_id == instance.id)
         .values(enabled=False)
     )
-    await session.commit()
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="polarrag_instance.disable",
         target_type="polarrag_instance",
         target_id=instance.id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
     return Response(status_code=204)
 
@@ -504,8 +528,7 @@ async def check_instance(
     except PolarRAGUpstreamError as exc:
         instance.status = PolarRAGInstanceStatus.ERROR
         instance.last_error_code = exc.code.value
-        await session.commit()
-        await log_audit(
+        await _commit_with_required_audit(
             session,
             user_id=admin.id,
             action="polarrag_instance.check",
@@ -513,19 +536,16 @@ async def check_instance(
             target_id=instance.id,
             status=AuditStatus.ERROR,
             error_code=exc.code.value,
-            required=True,
         )
         _raise_upstream(exc)
     _apply_capability_status(instance, capabilities)
-    await session.commit()
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="polarrag_instance.check",
         target_type="polarrag_instance",
         target_id=instance.id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
     return _instance_response(instance)
 
@@ -624,18 +644,22 @@ async def enable_space(
         _apply_space_storage(space, upstream)
         space.enabled = True
     try:
-        sync_result = await sync_space_catalog(session, space, client)
+        sync_result = await sync_space_catalog(
+            session,
+            space,
+            client,
+            commit=False,
+        )
     except PolarRAGUpstreamError as exc:
         await session.rollback()
         _raise_upstream(exc)
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="polarrag_space.enable",
         target_type="polarrag_space",
         target_id=space.knowledge_space_id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
     return {
         "knowledge_space_id": space.knowledge_space_id,
@@ -669,15 +693,13 @@ async def disable_space(
         )
         .values(enabled=False)
     )
-    await session.commit()
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="polarrag_space.disable",
         target_type="polarrag_space",
         target_id=space.knowledge_space_id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
     return Response(status_code=204)
 
@@ -732,15 +754,13 @@ async def configure_space_oss(
     space.oss_config_validated = True
     space.oss_validated_at = datetime.now(UTC)
     space.oss_last_error_code = None
-    await session.commit()
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="polarrag_space.oss_configure",
         target_type="polarrag_space",
         target_id=space.knowledge_space_id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
     return {
         "knowledge_space_id": space.knowledge_space_id,
@@ -768,17 +788,17 @@ async def sync_space(
             session,
             space,
             client_from_instance(instance),
+            commit=False,
         )
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="polarrag_space.sync",
         target_type="polarrag_space",
         target_id=space.knowledge_space_id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
     return result
 
@@ -815,8 +835,8 @@ async def list_unclaimed_knowledge_bases(
                     or record.identity_domain != space.identity_domain
                     or record.kb_type != "PERSONAL"
                 ):
-                    raise ValueError(
-                        "PolarRAG catalog identity boundary mismatch"
+                    raise PolarRAGUpstreamError(
+                        PolarRAGErrorCode.INVALID_RESPONSE
                     )
                 items.append(
                     {
@@ -878,11 +898,13 @@ async def list_unclaimed_knowledge_bases(
                 "principal_assignment_id": assignment.id,
                 "pas_user_id": user.id,
                 "user_name": user.display_name,
+                "user_external_id": user.external_id,
                 "identity_domain": assignment.identity_domain,
                 "provider": assignment.provider,
                 "principal_id": assignment.principal_id,
             }
             for assignment, user in candidates
+            if principal_assignment_is_valid_for_user(assignment, user)
         ],
     }
 
@@ -925,7 +947,7 @@ async def claim_knowledge_base(
             )
         )
     ).one_or_none()
-    if owner is None:
+    if owner is None or not principal_assignment_is_valid_for_user(*owner):
         raise HTTPException(
             status_code=422,
             detail="Eligible KB owner principal not found",
@@ -935,34 +957,55 @@ async def claim_knowledge_base(
     try:
         pending = await client.list_unclaimed_knowledge_bases(space.space_id)
         record = next((item for item in pending if item.kb_id == kb_id), None)
-        if (
-            record is None
-            or record.space_id != space.space_id
-            or record.identity_domain != space.identity_domain
-            or record.kb_type != "PERSONAL"
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="Knowledge base is not awaiting owner assignment",
+        if record is not None:
+            if (
+                record.space_id != space.space_id
+                or record.identity_domain != space.identity_domain
+                or record.kb_type != "PERSONAL"
+                or record.status.upper() != "UNCLAIMED"
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Knowledge base is not awaiting owner assignment",
+                )
+            await client.claim_knowledge_base(
+                space.space_id,
+                kb_id,
+                owner=user.external_id,
             )
-        acl_context = await resolve_acl_context(
+        else:
+            active = await client.list_knowledge_bases(space.space_id)
+            record = next(
+                (item for item in active if item.kb_id == kb_id),
+                None,
+            )
+            expected_owners = (
+                ("polarrag", user.external_id),
+                (assignment.provider, assignment.principal_id),
+            )
+            owner_value = record.owner if record is not None else None
+            if (
+                record is None
+                or record.space_id != space.space_id
+                or record.identity_domain != space.identity_domain
+                or record.kb_type != "PERSONAL"
+                or record.status.upper() != "ACTIVE"
+                or not isinstance(owner_value, dict)
+                or owner_value.get("type")
+                != EnterprisePrincipalType.USER.value
+                or (owner_value.get("provider"), owner_value.get("id"))
+                not in expected_owners
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Knowledge base is not awaiting owner assignment",
+                )
+        sync_result = await sync_space_catalog(
             session,
-            user.id,
-            space.identity_domain,
-            now=current,
+            space,
+            client,
+            commit=False,
         )
-        actor = {
-            "provider": assignment.provider,
-            "type": EnterprisePrincipalType.USER.value,
-            "id": assignment.principal_id,
-        }
-        acl_context["actor"] = actor
-        await client.claim_knowledge_base(
-            space.space_id,
-            kb_id,
-            acl_context=acl_context,
-        )
-        sync_result = await sync_space_catalog(session, space, client)
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
     resource = (
@@ -974,7 +1017,7 @@ async def claim_knowledge_base(
             )
         )
     ).scalar_one_or_none()
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="polarrag.knowledge_base.claim",
@@ -992,7 +1035,6 @@ async def claim_knowledge_base(
             },
             separators=(",", ":"),
         ),
-        required=True,
     )
     return {"kb_id": kb_id, "status": "ACTIVE", "sync": sync_result}
 
@@ -1004,20 +1046,42 @@ async def create_principal(
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    if await session.get(User, user_id) is None:
+    user = await session.get(User, user_id)
+    if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+    if body.provider == "polarrag" and (
+        body.principal_type != "user"
+        or body.principal_id != user.external_id
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="PolarRAG principal must match the PAS user",
+        )
     assignment = EnterprisePrincipalAssignment.create(
         pas_user_id=user_id,
         identity_domain=body.identity_domain,
         provider=body.provider,
         principal_type=EnterprisePrincipalType(body.principal_type),
-        principal_id=body.principal_id,
+        principal_id=(
+            user.external_id
+            if body.provider == "polarrag"
+            else body.principal_id
+        ),
         source=EnterprisePrincipalSource.ADMIN_MANAGED,
         valid_until=body.valid_until,
+        canonical_user_external_id=user.external_id,
     )
     session.add(assignment)
     try:
-        await session.commit()
+        await session.flush()
+        await _commit_with_required_audit(
+            session,
+            user_id=admin.id,
+            action="enterprise_principal.create",
+            target_type="enterprise_principal",
+            target_id=assignment.id,
+            status=AuditStatus.SUCCESS,
+        )
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
@@ -1025,15 +1089,6 @@ async def create_principal(
             detail="Enterprise principal assignment conflicts",
         ) from exc
     await session.refresh(assignment)
-    await log_audit(
-        session,
-        user_id=admin.id,
-        action="enterprise_principal.create",
-        target_type="enterprise_principal",
-        target_id=assignment.id,
-        status=AuditStatus.SUCCESS,
-        required=True,
-    )
     return _principal_response(assignment)
 
 
@@ -1073,17 +1128,16 @@ async def update_principal(
         assignment.status = EnterprisePrincipalStatus(body.status)
     if "valid_until" in body.model_fields_set:
         assignment.valid_until = body.valid_until
-    await session.commit()
-    await session.refresh(assignment)
-    await log_audit(
+    await session.flush()
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="enterprise_principal.update",
         target_type="enterprise_principal",
         target_id=assignment.id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
+    await session.refresh(assignment)
     return _principal_response(assignment)
 
 
@@ -1104,14 +1158,12 @@ async def delete_principal(
     if assignment is None or assignment.pas_user_id != user_id:
         raise HTTPException(status_code=404, detail="Principal not found")
     await session.delete(assignment)
-    await session.commit()
-    await log_audit(
+    await _commit_with_required_audit(
         session,
         user_id=admin.id,
         action="enterprise_principal.delete",
         target_type="enterprise_principal",
         target_id=principal_id,
         status=AuditStatus.SUCCESS,
-        required=True,
     )
     return Response(status_code=204)

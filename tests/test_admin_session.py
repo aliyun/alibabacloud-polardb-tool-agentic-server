@@ -93,6 +93,23 @@ class TestLogin:
         resp = await app_client.post("/auth/login", json={"username": "admin", "password": "testpass1"})
         assert "refresh_token" not in resp.json()
 
+    async def test_login_is_rate_limited_by_account_and_remote(self, app_client):
+        for _ in range(5):
+            response = await app_client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "wrong-password"},
+            )
+            assert response.status_code == 401
+
+        response = await app_client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "wrong-password"},
+        )
+
+        assert response.status_code == 429
+        assert int(response.headers["retry-after"]) >= 1
+        assert "wrong-password" not in response.text
+
 
 class TestRefresh:
     async def test_refresh_issues_new_cookies(self, app_client):

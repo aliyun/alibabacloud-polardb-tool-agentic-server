@@ -66,6 +66,10 @@ PolarDB 集群仍然已经运行并产生费用。
 
 `openapi_network` 只接受 `public` 或 `vpc`，自定义主机名会被拒绝。
 
+对于 `user_sso`，OIDC discovery 提供可信 issuer。使用手工端点配置时必须显式
+提供 `issuer`、`authorization_endpoint` 和 `token_endpoint`；PAS 会按该
+issuer 精确验证 ID Token。
+
 ## 阿里云凭证模式
 
 `aliyun_access` 只有以下三种模式：

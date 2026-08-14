@@ -83,6 +83,10 @@ and sanitized failure codes, never credentials or raw SDK exceptions.
 
 `openapi_network` accepts only `public` or `vpc`; custom hostnames are rejected.
 
+For `user_sso`, OIDC discovery supplies the trusted issuer. Manual endpoint
+configuration requires an explicit `issuer`, `authorization_endpoint`, and
+`token_endpoint`; PAS validates ID Tokens against that exact issuer.
+
 ## Alibaba Cloud credential modes
 
 `aliyun_access` has exactly three modes:

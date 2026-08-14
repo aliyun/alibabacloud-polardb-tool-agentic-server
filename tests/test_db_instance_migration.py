@@ -17,7 +17,7 @@ PRE_AGENTIC_DB_REVISION = "ad71f04a14b5"
 AGENTIC_DB_REVISION = "c0f1a2b3c4d5"
 DEDICATED_POOL_BASE_REVISION = "d4e5f6a7b8c9"
 DEDICATED_POOL_REVISION = "f3a4b5c6d7e8"
-HEAD_REVISION = "a6b7c8d9e0f1"
+HEAD_REVISION = "c1d2e3f4a5b6"
 ENCRYPTION_KEY = base64.b64encode(
     b"01234567890123456789012345678901"
 ).decode()
@@ -143,6 +143,41 @@ def test_polarrag_migration_downgrades_and_reupgrades_cleanly(
     _upgrade(monkeypatch, database, "head")
     with sqlite3.connect(database) as connection:
         assert POLARRAG_TABLES <= _tables(connection)
+
+
+def test_native_polarrag_principal_constraint_round_trip(
+    tmp_path,
+    monkeypatch,
+):
+    database = tmp_path / "native-principal-roundtrip.db"
+    _upgrade(monkeypatch, database, "head")
+
+    with sqlite3.connect(database) as connection:
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' "
+            "AND name = 'enterprise_principal_assignments'"
+        ).fetchone()[0]
+        assert "'polarrag'" in table_sql
+        assert "ck_enterprise_principal_native_user" in table_sql
+        assert "ck_enterprise_principal_native_admin" in table_sql
+
+    _downgrade(monkeypatch, database, "b0c1d2e3f4a5")
+    with sqlite3.connect(database) as connection:
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'table' "
+            "AND name = 'enterprise_principal_assignments'"
+        ).fetchone()[0]
+        assert "'polarrag'" not in table_sql
+        assert "ck_enterprise_principal_native_user" not in table_sql
+        assert "ck_enterprise_principal_native_admin" not in table_sql
+
+    _upgrade(monkeypatch, database, "head")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT version_num FROM alembic_version"
+        ).fetchone() == (HEAD_REVISION,)
 
 
 def test_target_migration_replaces_legacy_instance_and_audit_columns(tmp_path, monkeypatch):

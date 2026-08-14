@@ -97,19 +97,19 @@ POLARRAG_TOOLS = USER_ONLY_TOOLS - {
 }
 POLARRAG_UPLOAD_TOOLS = {
     "prepare_document_upload",
-    "resume_document_upload",
     "complete_document_upload",
-    "abort_document_upload",
 }
 
 
 def _user_token(user_id: str) -> str:
     private_key, _ = _load_keys()
+    issuer = get_config().server.public_base_url
     now = int(time.time())
     return jose_jwt.encode(
         {
+            "iss": issuer,
             "sub": user_subject(user_id),
-            "aud": f"{get_config().server.public_base_url}/mcp",
+            "aud": f"{issuer}/mcp",
             "jti": str(uuid.uuid4()),
             "iat": now,
             "exp": now + 3600,

@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import secrets
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from server.app import create_app
@@ -24,6 +27,7 @@ from server.config import reset_config
 from tests._helpers import init_test_jwt_keys
 from server.db import engine as engine_mod
 from server.models import Base, User, AuthProvider, UserRole
+from server.models.oauth import OAuthPendingAuth, OAuthRegisteredClient
 from server.mcp.transport import mcp_lifespan, reset_mcp
 
 
@@ -43,6 +47,70 @@ def _pkce_pair() -> tuple[str, str]:
 
 
 REDIRECT_URI = "http://localhost:18761/callback"
+RAW_REDIRECT_URI = "https://CLIENT.example:443/a/../callback"
+
+
+async def _issue_authorization_code(client) -> tuple[str, str, str]:
+    registration = await client.post("/register", json={
+        "redirect_uris": [RAW_REDIRECT_URI],
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    })
+    assert registration.status_code == 201
+    client_id = registration.json()["client_id"]
+    verifier, challenge = _pkce_pair()
+
+    authorization = await client.get(
+        "/authorize",
+        params={
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": RAW_REDIRECT_URI,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": secrets.token_urlsafe(12),
+        },
+        follow_redirects=False,
+    )
+    assert authorization.status_code == 302
+    session_id = parse_qs(
+        urlsplit(authorization.headers["location"]).query
+    )["session_id"][0]
+    login = await client.post(
+        "/mcp-auth/login/callback",
+        data={
+            "session_id": session_id,
+            "username": "admin",
+            "password": "password",
+        },
+        follow_redirects=False,
+    )
+    assert login.status_code == 302
+    authorization_code = parse_qs(
+        urlsplit(login.headers["location"]).query
+    )["code"][0]
+    return client_id, verifier, authorization_code
+
+
+def _oversized_auth_body(path: str) -> bytes:
+    padding = "x" * 65_536
+    if path == "/register":
+        return json.dumps({
+            "redirect_uris": [REDIRECT_URI],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+            "client_name": padding,
+        }).encode()
+    return urlencode({
+        "grant_type": "authorization_code",
+        "code": "invalid-code",
+        "code_verifier": "invalid-verifier",
+        "client_id": "invalid-client",
+        "redirect_uri": REDIRECT_URI,
+        "padding": padding,
+    }).encode()
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +240,20 @@ class TestDynamicRegistration:
         assert data["redirect_uris"] == [REDIRECT_URI]
         assert data["token_endpoint_auth_method"] == "none"
 
+    async def test_registration_is_rate_limited(self, client):
+        for _ in range(10):
+            response = await client.post("/register", json={})
+            assert response.status_code == 400
+
+        response = await client.post("/register", json={})
+
+        assert response.status_code == 429
+        assert int(response.headers["retry-after"]) >= 1
+        assert response.json() == {
+            "error": "rate_limit_exceeded",
+            "error_description": "Too many authentication requests.",
+        }
+
 
 # ---------------------------------------------------------------------------
 # TestAuthorizeEndpoint
@@ -205,6 +287,54 @@ class TestAuthorizeEndpoint:
         assert resp.status_code == 302
         assert "/mcp-auth/login" in resp.headers["location"]
 
+    async def test_redirect_uri_match_uses_registered_raw_string(
+        self, client
+    ):
+        registered_uri = "https://CLIENT.example:443/a/../callback"
+        normalized_uri = "https://client.example/callback"
+        registration = await client.post("/register", json={
+            "redirect_uris": [registered_uri],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        })
+        assert registration.status_code == 201
+        client_id = registration.json()["client_id"]
+        async with engine_mod._session_factory() as session:
+            stored_client = await session.get(
+                OAuthRegisteredClient, client_id
+            )
+            assert stored_client is not None
+            assert registered_uri in stored_client.redirect_uris
+        _, challenge = _pkce_pair()
+        request = {
+            "response_type": "code",
+            "client_id": client_id,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "state": "test-state",
+        }
+
+        normalized = await client.get(
+            "/authorize",
+            params={**request, "redirect_uri": normalized_uri},
+            follow_redirects=False,
+        )
+
+        assert normalized.status_code == 400
+        async with engine_mod._session_factory() as session:
+            assert list(
+                (await session.execute(select(OAuthPendingAuth))).scalars()
+            ) == []
+
+        exact = await client.get(
+            "/authorize",
+            params={**request, "redirect_uri": registered_uri},
+            follow_redirects=False,
+        )
+        assert exact.status_code == 302
+        assert "/mcp-auth/login" in exact.headers["location"]
+
 
 # ---------------------------------------------------------------------------
 # TestTokenEndpoint
@@ -212,6 +342,138 @@ class TestAuthorizeEndpoint:
 
 class TestTokenEndpoint:
     """Test the SDK-managed token endpoint error handling."""
+
+    async def test_token_redirect_uri_match_uses_authorization_raw_string(
+        self, client
+    ):
+        normalized_uri = "https://client.example/callback"
+        client_id, verifier, authorization_code = (
+            await _issue_authorization_code(client)
+        )
+        token_request = {
+            "grant_type": "authorization_code",
+            "code": authorization_code,
+            "code_verifier": verifier,
+            "client_id": client_id,
+        }
+
+        normalized = await client.post(
+            "/token",
+            data={**token_request, "redirect_uri": normalized_uri},
+        )
+        exact = await client.post(
+            "/token",
+            data={**token_request, "redirect_uri": RAW_REDIRECT_URI},
+        )
+
+        assert normalized.status_code == 400
+        assert exact.status_code == 200
+
+    @pytest.mark.parametrize(
+        ("duplicate_field", "duplicate_value"),
+        [
+            ("grant_type", "authorization_code"),
+            ("code", "different-code"),
+            ("redirect_uri", "https://client.example/callback"),
+        ],
+    )
+    async def test_authorization_code_rejects_duplicate_critical_parameter(
+        self,
+        client,
+        duplicate_field,
+        duplicate_value,
+    ):
+        client_id, verifier, authorization_code = (
+            await _issue_authorization_code(client)
+        )
+        fields = [
+            ("grant_type", "authorization_code"),
+            ("code", authorization_code),
+            ("code_verifier", verifier),
+            ("client_id", client_id),
+            ("redirect_uri", RAW_REDIRECT_URI),
+            (duplicate_field, duplicate_value),
+        ]
+
+        duplicate = await client.post(
+            "/token",
+            content=urlencode(fields),
+            headers={
+                "content-type": "application/x-www-form-urlencoded",
+            },
+        )
+        exact = await client.post(
+            "/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": authorization_code,
+                "code_verifier": verifier,
+                "client_id": client_id,
+                "redirect_uri": RAW_REDIRECT_URI,
+            },
+        )
+
+        assert duplicate.status_code == 400
+        assert duplicate.headers["cache-control"] == "no-store"
+        assert "access_token" not in duplicate.text
+        assert exact.status_code == 200
+
+    @pytest.mark.parametrize(
+        ("path", "content_type"),
+        [
+            ("/register", "application/json"),
+            ("/token", "application/x-www-form-urlencoded"),
+        ],
+    )
+    async def test_auth_endpoint_rejects_declared_oversized_body(
+        self,
+        client,
+        path,
+        content_type,
+    ):
+        response = await client.post(
+            path,
+            content=b"{}" if path == "/register" else b"grant_type=x",
+            headers={
+                "content-type": content_type,
+                "content-length": "65537",
+            },
+        )
+
+        assert response.status_code == 413
+        assert response.headers["cache-control"] == "no-store"
+
+    @pytest.mark.parametrize(
+        ("path", "content_type"),
+        [
+            ("/register", "application/json"),
+            ("/token", "application/x-www-form-urlencoded"),
+        ],
+    )
+    async def test_auth_endpoint_rejects_chunked_oversized_body(
+        self,
+        client,
+        path,
+        content_type,
+    ):
+        body = _oversized_auth_body(path)
+
+        async def chunks():
+            midpoint = len(body) // 2
+            yield body[:midpoint]
+            yield body[midpoint:]
+
+        response = await client.post(
+            path,
+            content=chunks(),
+            headers={
+                "content-type": content_type,
+                "content-length": "1",
+            },
+        )
+
+        assert response.status_code == 413
+        assert response.headers["cache-control"] == "no-store"
 
     async def test_invalid_code_rejected(self, client):
         resp = await client.post("/token", data={
@@ -223,3 +485,21 @@ class TestTokenEndpoint:
         })
         # SDK returns 401 for unrecognized client_id
         assert resp.status_code in (400, 401)
+
+    async def test_token_endpoint_is_rate_limited(self, client):
+        request = {
+            "grant_type": "authorization_code",
+            "code": "invalid-code",
+            "code_verifier": "test-verifier",
+            "client_id": "nonexistent",
+            "redirect_uri": REDIRECT_URI,
+        }
+        for _ in range(20):
+            response = await client.post("/token", data=request)
+            assert response.status_code in (400, 401)
+
+        response = await client.post("/token", data=request)
+
+        assert response.status_code == 429
+        assert int(response.headers["retry-after"]) >= 1
+        assert "invalid-code" not in response.text

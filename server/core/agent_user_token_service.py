@@ -45,6 +45,14 @@ def _as_utc(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
+def _normalize_expiry(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("expires_at must include a timezone offset")
+    return value.astimezone(timezone.utc)
+
+
 def is_active(row: AgentUserToken, now: datetime | None = None) -> bool:
     current = now or utc_now()
     return (
@@ -101,11 +109,15 @@ async def _require_active_assignment(
         raise ValueError("Agent access is not active")
 
 
-def _replace_token(row: AgentUserToken, plaintext: str) -> None:
+def _replace_token(
+    row: AgentUserToken,
+    plaintext: str,
+    expires_at: datetime | None,
+) -> None:
     row.token_prefix = plaintext[:32]
     row.token_hash = hash_agent_token(plaintext)
     row.token_ciphertext = encrypt(plaintext)
-    row.expires_at = None
+    row.expires_at = _normalize_expiry(expires_at)
     row.revoked_at = None
     row.last_used_at = None
 
@@ -113,6 +125,7 @@ def _replace_token(row: AgentUserToken, plaintext: str) -> None:
 async def issue_token(
     session: AsyncSession,
     assignment_id: str,
+    expires_at: datetime | None = None,
 ) -> tuple[AgentUserToken, str]:
     assignment = await _get_assignment(
         session, assignment_id, for_update=True
@@ -124,7 +137,7 @@ async def issue_token(
     plaintext = generate_token()
     if assignment.token is not None:
         row = assignment.token
-        _replace_token(row, plaintext)
+        _replace_token(row, plaintext, expires_at)
         await session.flush()
         return row, plaintext
 
@@ -133,6 +146,7 @@ async def issue_token(
         token_prefix=plaintext[:32],
         token_hash=hash_agent_token(plaintext),
         token_ciphertext=encrypt(plaintext),
+        expires_at=_normalize_expiry(expires_at),
     )
     try:
         async with session.begin_nested():
@@ -160,15 +174,16 @@ async def reveal_token(
 async def regenerate_token(
     session: AsyncSession,
     assignment_id: str,
+    expires_at: datetime | None = None,
 ) -> tuple[AgentUserToken, str]:
     assignment = await _get_assignment(
         session, assignment_id, for_update=True
     )
     await _require_active_assignment(session, assignment)
     if assignment.token is None:
-        return await issue_token(session, assignment_id)
+        return await issue_token(session, assignment_id, expires_at)
     plaintext = generate_token()
-    _replace_token(assignment.token, plaintext)
+    _replace_token(assignment.token, plaintext, expires_at)
     await session.flush()
     return assignment.token, plaintext
 

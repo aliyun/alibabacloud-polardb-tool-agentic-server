@@ -20,7 +20,7 @@ POLARDB_PORT="${POLARDB_PORT:-3306}"
 PAS_DB_NAME="${PAS_DB_NAME:-pas_meta}"
 PAS_HOME="${PAS_HOME:-/data/polar-mcp}"
 PAS_REPO="${PAS_REPO:-https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server.git}"
-PAS_VERSION="${PAS_VERSION:-0.0.7}"
+PAS_VERSION="${PAS_VERSION:-0.0.8}"
 PAS_REF="${PAS_REF:-v${PAS_VERSION}}"
 PAS_UPDATE_REPO="${PAS_UPDATE_REPO:-1}"
 PAS_IMAGE="${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}}"
@@ -286,8 +286,22 @@ checkout_release
 cd "$PAS_HOME"
 [ -f "$COMPOSE_FILE" ] || fatal "$COMPOSE_FILE is missing from the repository"
 
+build_local_image() {
+  LOCAL_TAG="pas-local:${PAS_IMAGE##*:}"
+  log "building $LOCAL_TAG from the verified checkout"
+  DOCKER_BUILDKIT=1 "${DOCKER_COMMAND[@]}" build \
+    --build-arg DEBIAN_MIRROR="$DEBIAN_MIRROR" \
+    --build-arg DEBIAN_SECURITY_MIRROR="$DEBIAN_SECURITY_MIRROR" \
+    --build-arg PYPI_INDEX_URL="$PYPI_INDEX" \
+    -t "$LOCAL_TAG" .
+  EFFECTIVE_IMAGE="$LOCAL_TAG"
+  verify_image_architecture "$EFFECTIVE_IMAGE"
+}
+
 EFFECTIVE_IMAGE="$PAS_IMAGE"
-if "${DOCKER_COMMAND[@]}" image inspect "$PAS_IMAGE" >/dev/null 2>&1; then
+if [ "$PAS_ALLOW_LOCAL_BUILD" = "1" ]; then
+  build_local_image
+elif "${DOCKER_COMMAND[@]}" image inspect "$PAS_IMAGE" >/dev/null 2>&1; then
   verify_image_architecture "$PAS_IMAGE"
   log "using existing local image $PAS_IMAGE"
 elif command -v timeout >/dev/null \
@@ -297,18 +311,7 @@ elif command -v timeout >/dev/null \
   verify_image_architecture "$PAS_IMAGE"
   log "pulled $PAS_IMAGE"
 else
-  if [ "$PAS_ALLOW_LOCAL_BUILD" != "1" ]; then
-    fatal "image pull failed and local build fallback is disabled; set PAS_IMAGE to an approved image or explicitly set PAS_ALLOW_LOCAL_BUILD=1"
-  fi
-  LOCAL_TAG="pas-local:${PAS_IMAGE##*:}"
-  log "image pull failed; building $LOCAL_TAG from the verified checkout"
-  DOCKER_BUILDKIT=1 "${DOCKER_COMMAND[@]}" build \
-    --build-arg DEBIAN_MIRROR="$DEBIAN_MIRROR" \
-    --build-arg DEBIAN_SECURITY_MIRROR="$DEBIAN_SECURITY_MIRROR" \
-    --build-arg PYPI_INDEX_URL="$PYPI_INDEX" \
-    -t "$LOCAL_TAG" .
-  EFFECTIVE_IMAGE="$LOCAL_TAG"
-  verify_image_architecture "$EFFECTIVE_IMAGE"
+  fatal "image pull failed and local build is disabled; set PAS_IMAGE to an approved image or explicitly set PAS_ALLOW_LOCAL_BUILD=1"
 fi
 
 mkdir -p "$SECRETS_DIR"

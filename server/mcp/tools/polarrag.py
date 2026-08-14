@@ -4,13 +4,13 @@ import asyncio
 import json
 import math
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,8 +22,8 @@ from server.auth.principal import (
 from server.core.audit_logger import log_audit
 from server.db.engine import get_session_factory
 from server.mcp.agent_user_context import (
-    allowed_polarrag_instance_ids,
     current_agent_user_context,
+    current_polarrag_resource_scope,
 )
 from server.models import (
     AuditStatus,
@@ -36,6 +36,7 @@ from server.models import (
 )
 from server.polarrag.access import (
     KnowledgeAccessError,
+    KnowledgeResourceScope,
     list_visible_knowledge_resources,
     plan_knowledge_access,
 )
@@ -47,19 +48,15 @@ from server.polarrag.contracts import (
 )
 from server.polarrag.mcp_upload import (
     UploadSessionError,
-    abort_upload,
     complete_upload,
     prepare_upload,
-    resume_upload,
 )
 from server.polarrag.upload import object_store_from_space
 
 POLARRAG_UPLOAD_TOOL_NAMES = frozenset(
     {
         "prepare_document_upload",
-        "resume_document_upload",
         "complete_document_upload",
-        "abort_document_upload",
     }
 )
 POLARRAG_TOOL_NAMES = frozenset(
@@ -77,12 +74,6 @@ POLARRAG_TOOL_NAMES = frozenset(
 ) | POLARRAG_UPLOAD_TOOL_NAMES
 
 
-class UploadPartInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    part_number: int = Field(ge=1, le=10_000)
-    etag: str = Field(min_length=1, max_length=256)
-
 ClientFactory = Callable[[PolarRAGInstance], PolarRAGClient]
 ToolHandler = Callable[..., Awaitable[CallToolResult]]
 _SENSITIVE_KEY_PARTS = (
@@ -95,9 +86,18 @@ _SENSITIVE_KEY_PARTS = (
     "index_name",
 )
 _SAFE_ERROR_MESSAGES = {
+    PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE.value: (
+        "PolarRAG credentials are unavailable. Ask an administrator to "
+        "verify the instance configuration."
+    ),
     PolarRAGErrorCode.RERANKER_NOT_CONFIGURED.value: (
         "Reranking is not configured for this knowledge Space. "
         "Ask an administrator to configure it or retry without reranking."
+    ),
+    PolarRAGErrorCode.DOCUMENT_UPLOAD_FORBIDDEN.value: (
+        "PolarRAG denied document upload for this enterprise identity. "
+        "Ask an administrator to verify the Space identity domain and "
+        "canonical PAS user ownership."
     ),
 }
 
@@ -299,14 +299,14 @@ async def handle_list_knowledge_resources(
     *,
     cursor: str | None = None,
     limit: int = 50,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
 ) -> CallToolResult:
     if limit < 1 or limit > 200:
         return _error("INVALID_ARGUMENT")
     resources = await list_visible_knowledge_resources(
         session,
         user,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
     if cursor is not None:
         positions = [
@@ -349,7 +349,7 @@ async def handle_kb_search(
     top_k: int = 10,
     min_score: float | None = None,
     reranker: bool = False,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     normalized_mode = (
@@ -370,11 +370,14 @@ async def handle_kb_search(
             session,
             user,
             knowledge_resource_ids,
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
         )
     except KnowledgeAccessError as exc:
         return _error(exc.code.value)
-    client = client_factory(plan.instance)
+    try:
+        client = client_factory(plan.instance)
+    except PolarRAGUpstreamError as exc:
+        return _error(exc.code.value)
     calls = [
         client.search(
             plan.space.space_id,
@@ -446,14 +449,14 @@ async def _single_resource_call(
     ],
     *,
     client_factory: ClientFactory,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
 ) -> CallToolResult:
     try:
         plan = await plan_knowledge_access(
             session,
             user,
             [knowledge_resource_id],
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
         )
     except KnowledgeAccessError as exc:
         return _error(exc.code.value)
@@ -505,7 +508,7 @@ async def handle_kb_fetch_context(
     doc_id: str,
     chunk_index: int,
     window_size: int = 2,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     if not doc_id or chunk_index < 0 or window_size < 0 or window_size > 100:
@@ -532,7 +535,7 @@ async def handle_kb_fetch_context(
         knowledge_resource_id,
         operation,
         client_factory=client_factory,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
 
 
@@ -543,7 +546,7 @@ async def handle_doc_find_by_name(
     knowledge_resource_ids: list[str],
     filename: str,
     limit: int = 20,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     if not filename.strip() or limit < 1 or limit > 1000:
@@ -553,11 +556,14 @@ async def handle_doc_find_by_name(
             session,
             user,
             knowledge_resource_ids,
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
         )
     except KnowledgeAccessError as exc:
         return _error(exc.code.value)
-    client = client_factory(plan.instance)
+    try:
+        client = client_factory(plan.instance)
+    except PolarRAGUpstreamError as exc:
+        return _error(exc.code.value)
     responses = await asyncio.gather(
         *[
             client.find_by_name(
@@ -621,7 +627,7 @@ async def handle_doc_status(
     *,
     knowledge_resource_id: str,
     doc_id: str,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     if not doc_id:
@@ -654,7 +660,7 @@ async def handle_doc_status(
         knowledge_resource_id,
         operation,
         client_factory=client_factory,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
 
 
@@ -666,7 +672,7 @@ async def handle_doc_recall(
     doc_id: str,
     query: str,
     top_k: int = 10,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     if not doc_id or not query.strip() or top_k < 1 or top_k > 1000:
@@ -688,7 +694,7 @@ async def handle_doc_recall(
         knowledge_resource_id,
         operation,
         client_factory=client_factory,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
 
 
@@ -698,7 +704,7 @@ async def handle_doc_get_original(
     *,
     knowledge_resource_id: str,
     doc_id: str,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     if not doc_id:
@@ -733,7 +739,7 @@ async def handle_doc_get_original(
         knowledge_resource_id,
         operation,
         client_factory=client_factory,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
 
 
@@ -743,7 +749,7 @@ async def handle_doc_delete(
     *,
     knowledge_resource_id: str,
     doc_id: str,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     if not doc_id:
@@ -775,7 +781,7 @@ async def handle_doc_delete(
         knowledge_resource_id,
         operation,
         client_factory=client_factory,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
 
 
@@ -787,7 +793,7 @@ async def handle_doc_rechunk(
     doc_id: str,
     chunk_strategy: str = "inherit",
     chunk_max_tokens: int | None = None,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     strategy = chunk_strategy.lower()
@@ -836,7 +842,7 @@ async def handle_doc_rechunk(
         knowledge_resource_id,
         operation,
         client_factory=client_factory,
-        allowed_instance_ids=allowed_instance_ids,
+        resource_scope=resource_scope,
     )
 
 
@@ -864,7 +870,7 @@ async def handle_prepare_document_upload(
     file_md5: str,
     file_sha256: str,
     content_type: str | None,
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     object_store_factory=object_store_from_space,
 ) -> CallToolResult:
     try:
@@ -878,30 +884,7 @@ async def handle_prepare_document_upload(
             file_md5=file_md5,
             file_sha256=file_sha256,
             content_type=content_type,
-            allowed_instance_ids=allowed_instance_ids,
-            object_store_factory=object_store_factory,
-        )
-    except UploadSessionError as exc:
-        return _error(exc.code)
-    return _upload_tool_result(resource, payload)
-
-
-async def handle_resume_document_upload(
-    session: AsyncSession,
-    user: User,
-    *,
-    agent_id: str,
-    upload_session_id: str,
-    allowed_instance_ids: set[str] | None = None,
-    object_store_factory=object_store_from_space,
-) -> CallToolResult:
-    try:
-        resource, payload = await resume_upload(
-            session,
-            user,
-            agent_id=agent_id,
-            upload_session_id=upload_session_id,
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
             object_store_factory=object_store_factory,
         )
     except UploadSessionError as exc:
@@ -915,8 +898,7 @@ async def handle_complete_document_upload(
     *,
     agent_id: str,
     upload_session_id: str,
-    parts: Sequence[Any],
-    allowed_instance_ids: set[str] | None = None,
+    resource_scope: KnowledgeResourceScope | None = None,
     object_store_factory=object_store_from_space,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
@@ -926,33 +908,9 @@ async def handle_complete_document_upload(
             user,
             agent_id=agent_id,
             upload_session_id=upload_session_id,
-            parts=parts,
-            allowed_instance_ids=allowed_instance_ids,
+            resource_scope=resource_scope,
             object_store_factory=object_store_factory,
             client_factory=client_factory,
-        )
-    except UploadSessionError as exc:
-        return _error(exc.code)
-    return _upload_tool_result(resource, payload)
-
-
-async def handle_abort_document_upload(
-    session: AsyncSession,
-    user: User,
-    *,
-    agent_id: str,
-    upload_session_id: str,
-    allowed_instance_ids: set[str] | None = None,
-    object_store_factory=object_store_from_space,
-) -> CallToolResult:
-    del allowed_instance_ids
-    try:
-        resource, payload = await abort_upload(
-            session,
-            user,
-            agent_id=agent_id,
-            upload_session_id=upload_session_id,
-            object_store_factory=object_store_factory,
         )
     except UploadSessionError as exc:
         return _error(exc.code)
@@ -994,7 +952,7 @@ async def _execute_tool(
             if current_user is None:
                 return _error("AUTH_REQUIRED")
             user = current_user
-        instance_ids = await allowed_polarrag_instance_ids(
+        resource_scope = await current_polarrag_resource_scope(
             session,
             context=agent_context,
         )
@@ -1003,7 +961,7 @@ async def _execute_tool(
         result = await handler(
             session,
             user,
-            allowed_instance_ids=instance_ids,
+            resource_scope=resource_scope,
             **kwargs,
         )
         error_code = None
@@ -1343,7 +1301,7 @@ def register_polarrag_tools(mcp) -> None:
             "PolarRAG knowledge resource. Pass only local file metadata; do "
             "not send a local path or file bytes. Give the returned short-lived "
             "part URLs to the approved local upload script, then call "
-            "complete_document_upload with its part results. PAS derives the "
+            "complete_document_upload with only the upload_session_id. PAS derives the "
             "OSS destination and enterprise identity on the server."
         ),
         annotations=create_annotations,
@@ -1374,30 +1332,12 @@ def register_polarrag_tools(mcp) -> None:
 
     @mcp.tool(
         description=(
-            "Resume an unfinished direct-to-OSS upload owned by the current "
-            "PAS user and Agent. Returns the already uploaded part metadata "
-            "and fresh short-lived URLs only for missing parts."
-        ),
-        annotations=annotations,
-    )
-    async def resume_document_upload(
-        upload_session_id: Annotated[
-            str, Field(min_length=36, max_length=36)
-        ],
-    ) -> CallToolResult:
-        return await _execute_tool(
-            "resume_document_upload",
-            handle_resume_document_upload,
-            require_agent_user_token=True,
-            upload_session_id=upload_session_id,
-        )
-
-    @mcp.tool(
-        description=(
-            "Finalize a prepared direct-to-OSS multipart upload after the "
-            "local upload script reports every part. PAS verifies the parts, "
-            "rebuilds trusted identity, submits the OSS object to PolarRAG, "
-            "and returns PolarRAG's authoritative doc_id and processing status."
+            "Complete a direct-to-OSS upload using only its upload_session_id. "
+            "PAS lists and validates multipart parts with server-owned OSS access. "
+            "If parts are missing, the result remains prepared and returns fresh "
+            "URLs only for missing parts; upload them locally and call this tool again. "
+            "When all parts exist, PAS finalizes multipart, rebuilds trusted identity, "
+            "submits the object, and returns PolarRAG's authoritative doc_id and status."
         ),
         annotations=mutation_annotations,
     )
@@ -1405,34 +1345,10 @@ def register_polarrag_tools(mcp) -> None:
         upload_session_id: Annotated[
             str, Field(min_length=36, max_length=36)
         ],
-        parts: Annotated[
-            list[UploadPartInput], Field(min_length=1, max_length=1000)
-        ],
     ) -> CallToolResult:
         return await _execute_tool(
             "complete_document_upload",
             handle_complete_document_upload,
-            require_agent_user_token=True,
-            upload_session_id=upload_session_id,
-            parts=parts,
-        )
-
-    @mcp.tool(
-        description=(
-            "Abort an unfinished direct-to-OSS upload owned by the current "
-            "PAS user and Agent. This removes its temporary OSS upload data "
-            "and cannot abort a document already submitted to PolarRAG."
-        ),
-        annotations=delete_annotations,
-    )
-    async def abort_document_upload(
-        upload_session_id: Annotated[
-            str, Field(min_length=36, max_length=36)
-        ],
-    ) -> CallToolResult:
-        return await _execute_tool(
-            "abort_document_upload",
-            handle_abort_document_upload,
             require_agent_user_token=True,
             upload_session_id=upload_session_id,
         )

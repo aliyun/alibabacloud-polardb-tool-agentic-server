@@ -13,6 +13,7 @@ from starlette.routing import Route
 from server.auth.auth_routes import handle_login_page, handle_login_callback
 from server.auth.builtin import hash_password
 from server.auth.jwt_manager import reset_keys
+from server.auth.rate_limit import reset_auth_rate_limiters
 from server.config import reset_config
 from tests._helpers import init_test_jwt_keys
 from server.db import engine as engine_mod
@@ -26,10 +27,12 @@ def clean():
     reset_config()
     init_test_jwt_keys()
     engine_mod.reset_engine()
+    reset_auth_rate_limiters()
     yield
     reset_keys()
     reset_config()
     engine_mod.reset_engine()
+    reset_auth_rate_limiters()
 
 
 @pytest.fixture
@@ -177,6 +180,28 @@ class TestBuiltinLoginCallback:
         )
         assert resp.status_code == 401
         assert "Invalid credentials" in resp.text
+
+    async def test_invalid_credentials_are_rate_limited(
+        self, client, pending_session
+    ):
+        request = {
+            "session_id": pending_session.session_id,
+            "username": "admin",
+            "password": "wrongpass",
+        }
+        for _ in range(5):
+            response = await client.post(
+                "/mcp-auth/login/callback", data=request
+            )
+            assert response.status_code == 401
+
+        response = await client.post(
+            "/mcp-auth/login/callback", data=request
+        )
+
+        assert response.status_code == 429
+        assert int(response.headers["retry-after"]) >= 1
+        assert "wrongpass" not in response.text
 
     async def test_missing_fields(self, client, setup):
         resp = await client.post(

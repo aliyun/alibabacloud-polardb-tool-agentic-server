@@ -14,11 +14,23 @@ the PolarRAG tools. Machine `pas_agent_` Tokens never receive these tools and
 cannot act as a human user. A user-specific `pas_user_agent_` Token resolves to
 the assigned PAS user while retaining its Agent boundary on the server.
 
+That Agent boundary is the live set of bound PolarRAG instances. Every enabled
+Space on a bound instance, including a Space enabled after the Agent binding
+was created, is eligible for discovery. Eligibility is not authorization: PAS
+still intersects the instance set with the current user's visible resources,
+enabled Space state, and server-derived target Space `acl_context`; PolarRAG
+then makes the final READ decision.
+
 Tool arguments cannot contain a user ID, provider, identity domain, principal,
 `acl_context`, endpoint, credentials, or OpenSearch DSL. PAS obtains the Space
 identity domain from the trusted PolarRAG catalog, loads the active server-side
 principal assignments for the authenticated user, and constructs
-`acl_context`. PolarRAG remains the final authority for document READ access.
+`acl_context`. The context contains any mapped Feishu and SharePoint
+principals plus exactly one canonical `polarrag/user/<User.external_id>`
+principal generated or verified by the server.
+PolarRAG adds its domain principal itself. Neither callers nor administrators
+can supply `polarrag/domain` or privileged `polarrag/role` principals.
+PolarRAG remains the final authority for document READ access.
 
 PAS resource discovery only determines which knowledge bases a user may select:
 
@@ -40,21 +52,28 @@ PolarRAG administration is integrated into the existing PAS pages:
   synchronizes or disables an enumerated Space. If an enabled Space contains an
   `UNCLAIMED` PERSONAL knowledge base, its Spaces drawer lets an administrator
   select an eligible PAS user principal in the same identity domain and choose
-  **Assign owner and activate**. PAS builds the trusted actor context, asks
-  PolarRAG to claim the knowledge base, and synchronizes the active catalog.
+  **Assign owner and activate**. PAS sends the selected user's canonical PAS
+  username (`User.external_id`) to PolarRAG, then synchronizes the active
+  catalog. PolarRAG derives and persists the native owner principal for the
+  Space identity domain.
   PUBLIC knowledge bases are active immediately and never enter this claim
   flow. Stored credentials and CA bundles are never displayed.
 - Open **Users** and choose **Enterprise Identity** on a user row to maintain
-  that user's allowlisted Feishu or SharePoint user/group principals. PAS
-  departments and external groups remain independent.
+  that user's allowlisted Feishu or SharePoint user/group principals, or the
+  locked native PolarRAG user mapping. PAS departments and external groups
+  remain independent.
 - Open **My Instances** as the authenticated user to review accessible database
-  instances and PolarRAG knowledge resources. Registering a PolarRAG instance
-  alone does not grant user access; the Space must be enabled and synchronized,
-  and the user must have a valid principal assignment for its identity domain.
-  A non-administrator can upload a local document to an upload-ready knowledge
-  resource shown on this page. The browser submits only the opaque resource ID
-  and file; PAS derives the Space, knowledge base, principals, and actor from
-  the authenticated identity. PolarRAG derives the document ACL from the KB
+  instances and knowledge spaces. A non-administrator can choose an assigned
+  Agent to open its paginated **Knowledge bases** drawer. The drawer shows each
+  knowledge-base name and its opaque PAS knowledge-resource ID. Registering
+  a PolarRAG instance alone does not grant user access; the Space must be
+  enabled and synchronized, and the user must have a valid principal assignment
+  for its identity domain. A non-administrator can upload a local document to
+  an upload-ready knowledge resource shown for the selected Agent. The browser
+  submits the Agent ID, opaque resource ID, and file; PAS derives the Space,
+  knowledge base, principals, and actor from the authenticated identity and
+  verifies the Agent's instance binding and PUBLIC scope. PolarRAG derives the
+  document ACL from the KB
   policy and trusted actor. The **Manage documents** action finds documents
   by filename and lets the user request deletion or rechunking. PAS forwards
   the same trusted identity context, and PolarRAG enforces `MANAGE` for delete
@@ -65,14 +84,17 @@ PolarRAG administration is integrated into the existing PAS pages:
   the acceptance result. Opening **Manage documents** loads one ACL-filtered
   page of 20 documents and their current statuses. **Previous**, **Next**, and
   **Refresh** are explicit user actions; PAS does not poll in the background.
-  The table also displays the chunk count when PolarRAG provides it.
-  An administrator with no accessible knowledge resources sees a control-plane
-  access explanation and a link to the PolarRAG management tab; administrator
-  status does not bypass knowledge access rules.
+  The table displays the document size, chunk count, and upload time when
+  PolarRAG provides them.
+  Administrator status does not bypass knowledge access rules.
 - On an Agent detail page, bind its allowed PolarRAG instances and assign PAS
   users. An assigned user manages their own `pas_user_agent_` Token under
   **My Instances > MCP connections**. Administrators see status only and can
-  force-revoke the Token without reading its plaintext.
+  force-revoke the Token without reading its plaintext. Built-in users reveal
+  an existing Token by confirming their password. SSO users have no PAS
+  password, so `issue` and `regenerate` return the new plaintext once in a
+  `Cache-Control: no-store` response; the UI copies it immediately and never
+  renders it. Repeated deliveries are rate limited.
 - For administrators, Dashboard **Instances** and **Active** totals include both
   registered database instances and registered PolarRAG instances. Pool
   availability remains database-only. Members instead see only the counts of
@@ -124,9 +146,11 @@ PAS never returns the AccessKey pair. A changed upstream bucket or endpoint
 immediately invalidates the saved configuration and requires revalidation.
 
 `GET /api/me/resources` returns the authenticated user's accessible database
-instances and PolarRAG knowledge resources for the **My Instances** page. It
-uses the same server-side access and resource-discovery rules as MCP and never
-returns endpoint credentials or trusted ACL context.
+instances and PolarRAG knowledge resources for the **My Instances** page. With
+`agent_id`, the knowledge resources are narrowed to that assigned Agent's
+bound instances and PUBLIC scope; the response also includes each upstream
+`kb_id`. It uses the same server-side access and resource-discovery rules as
+MCP and never returns endpoint credentials or trusted ACL context.
 
 Agent-scoped user connections use these additional routes:
 
@@ -137,31 +161,39 @@ Agent-scoped user connections use these additional routes:
   `regenerate`, and `revoke` Token operations for their own assignments.
 
 The effective resource set is the intersection of the Agent's bound PolarRAG
-instances and the existing user discovery rules. PolarRAG still makes every
-document READ decision.
+instances, any selected PUBLIC-resource scope, and the existing user discovery
+rules. The scope applies uniformly to discovery and every resource-based MCP
+Tool. It never includes PERSONAL resources and never broadens user, owner, or
+document ACL access. PolarRAG still makes every document READ decision. Scope
+changes are loaded on each Tool call and do not require a new Token.
 
-`POST /api/me/polarrag/documents` accepts one multipart file and one opaque
-`knowledge_resource_id`, with a 100 MiB limit. It is available only to a
-non-administrator who can discover that resource. PAS uploads to the validated
+`POST /api/me/polarrag/documents` accepts one multipart file, an assigned
+`agent_id`, and one opaque `knowledge_resource_id`, with a 100 MiB limit. It is
+available only to a non-administrator who can discover that resource through
+the selected Agent. PAS uploads to the validated
 Space bucket, constructs the trusted `acl_context` with all mapped principals
 and a user actor, then submits the resulting OSS path to PolarRAG without a
-caller-assigned `doc_id` and with `acl.mode=POLARRAG_DERIVED`. PolarRAG verifies
-PUBLIC/PERSONAL KB upload policy and returns the authoritative document ID while
-creating the document ACL. If PolarRAG rejects the submission, PAS attempts to
-delete the staged object and returns a sanitized error.
+caller-assigned `doc_id` and with `acl.mode=POLARRAG_DERIVED`. PAS uses the
+canonical `polarrag/user/<User.external_id>` actor for uploads; external or
+native assignments establish domain membership but do not select a different
+upload actor. PolarRAG verifies PUBLIC/PERSONAL KB upload policy and returns the
+authoritative document ID while creating the document ACL. If PolarRAG rejects
+the enterprise identity, PAS returns `POLARRAG_DOCUMENT_UPLOAD_FORBIDDEN`;
+service authentication failures remain `POLARRAG_AUTH_FAILED`. Neither error
+includes the upstream response body.
 
 The member document console uses protected paginated listing, filename search,
 delete, and rechunk routes under `/api/me/polarrag/documents`. Every operation
-accepts an opaque `knowledge_resource_id`; PAS verifies that the document
-belongs to that resource and never accepts caller-supplied identity or ACL
-fields. Successful mutations are recorded in the existing PolarRAG audit-log
-category.
+accepts an assigned `agent_id` and an opaque `knowledge_resource_id`; PAS
+verifies that the document belongs to that resource and never accepts
+caller-supplied identity or ACL fields. Successful mutations are recorded in
+the existing PolarRAG audit-log category.
 
 Space enablement accepts only `space_id`. The Space name and immutable
 `identity_domain` must come from the trusted upstream enumeration response;
 administrators cannot type or override them.
 The Spaces drawer shows whether a Space is enabled, its last synchronization
-time, and the synchronized knowledge-base catalog, including unresolved
+time, and a paginated synchronized knowledge-base catalog, including unresolved
 PERSONAL owners.
 
 ## Enterprise principals
@@ -173,10 +205,34 @@ Administrators maintain assignments with:
 - `PATCH /api/polarrag/users/{user_id}/principals/{principal_id}`;
 - `DELETE /api/polarrag/users/{user_id}/principals/{principal_id}`.
 
-The allowed providers are `feishu` and `sharepoint`; the principal type is
-`user` or `group`. One external user principal can map to only one PAS user in
-an identity domain. An external group can be assigned to multiple PAS users.
-Disabled or expired assignments are excluded from `acl_context`.
+The external providers `feishu` and `sharepoint` support `user` and `group`.
+One external user principal can map to only one PAS user in an identity domain;
+an external group can be assigned to multiple PAS users. Disabled or expired
+assignments are excluded from `acl_context`.
+
+For an enterprise without either external identity source, an administrator may
+instead add `polarrag` as the sole mapping for the target Space identity domain.
+This provider accepts only `user`, and its principal ID is locked to the
+selected PAS user's `User.external_id`. The API rejects a different ID or a
+`group`, `domain`, or `role` form. PAS also verifies the stored native mapping
+against the current user on every discovery and Tool request and fails closed
+if they differ.
+If any active native assignment is malformed, PAS rejects the whole identity
+domain even when a valid external assignment also exists. This avoids partially
+accepting an ambiguous server-side identity state.
+
+An external assignment still causes PAS to add the same canonical native user
+in memory. A native-only assignment persists that user solely to establish
+membership in the target identity domain. PolarRAG generates
+`polarrag/domain/<identity_domain>` during normalization, and
+`polarrag/role/*` remains system-only. Neither mapping mode bypasses PERSONAL
+owner rules or expands any PolarRAG document ACL.
+
+A PERSONAL owner remains discoverable only while that user has an active
+same-domain assignment. The supported claim and catalog-sync flows already
+require such an assignment before recording the owner, so existing owners need
+no data migration; removing or expiring every assignment makes discovery and
+Tool execution fail closed consistently.
 
 PAS departments continue to provide local group membership. They are
 independent from external enterprise groups; phase one does not create a
@@ -205,9 +261,7 @@ The user-specific Agent Token catalog additionally contains:
 
 - `prepare_document_upload(knowledge_resource_id, filename, file_size_bytes,
   file_md5, file_sha256, content_type?)`;
-- `resume_document_upload(upload_session_id)`;
-- `complete_document_upload(upload_session_id, parts)`;
-- `abort_document_upload(upload_session_id)`.
+- `complete_document_upload(upload_session_id)`.
 
 `knowledge_resource_ids` is mandatory where present. Accessible resources in
 one request must belong to one PolarRAG instance and one Space. `kb_search` can
@@ -239,16 +293,35 @@ The upload tools never accept a local path, file bytes, OSS coordinates,
 credentials, identity, or ACL fields. `prepare_document_upload` creates a
 24-hour upload session and returns 8 MiB multipart URLs that expire after 15
 minutes. An approved local script streams the file directly to OSS and saves
-only the session ID, file fingerprints, and completed part ETags for resume.
-`resume_document_upload` reads OSS state and returns fresh URLs only for missing
-parts. `complete_document_upload` verifies every reported ETag and part size
-against OSS before completing the object, rebuilds the current trusted actor
-context, and submits the object to PolarRAG. It returns only PolarRAG's
+only the session ID and file fingerprints for resume. The client calls
+`complete_document_upload` with only that session ID. PAS lists multipart parts
+with its server-owned OSS access and verifies their numbers, count, and sizes.
+If parts are missing, the result remains `prepared` and contains fresh URLs only
+for those parts. The script uploads them without repeating existing parts, then
+calls `complete_document_upload` again. When every part exists, PAS completes the
+multipart object, rebuilds
+the current trusted actor context, and submits the object to PolarRAG. It returns only PolarRAG's
 authoritative `doc_id`; PAS never assigns one. If PolarRAG submission fails
 after OSS completion, a caller's bounded retry calls only PolarRAG again and does not
-repeat multipart completion. `abort_document_upload` can clean up only an
-unfinished session owned by the current PAS user and Agent. Files remain
-limited to 100 MiB.
+repeat multipart completion. Expired or abandoned sessions are reclaimed by the
+server cleanup worker. Files remain
+limited to 100 MiB. PAS also keeps a cleanup journal that survives user, Agent,
+Space, or resource deletion. Each entry retains its creation-time OSS
+coordinates and an encrypted credential snapshot so later Space configuration
+or credential rotation cannot strand the old object. Foreground completion and
+background cleanup use the same committed lease, random owner token, and
+fencing check. The short claim transaction finishes before any OSS or PolarRAG
+request, so SQLite, MySQL, and PostgreSQL do not retain a database write
+transaction during remote I/O. A stale worker cannot finalize a newer claim.
+Before submission, PAS also stores an encrypted request snapshot in the journal.
+If a process exits or the result of a PolarRAG request is unknown, the background
+worker can repeat the same idempotent submission without the original user,
+Agent, or resource row. A confirmed acceptance completes local state without
+deleting the OSS object. A definite upstream rejection releases the object for
+abort or cleanup; timeouts and retryable failures never do. The snapshot is
+deleted with the journal after successful submit, abort, or cleanup and is never
+returned by an API or written to logs. The worker uses bounded retry with
+backoff for temporary PolarRAG or OSS failures.
 
 ## Required PolarRAG capabilities
 

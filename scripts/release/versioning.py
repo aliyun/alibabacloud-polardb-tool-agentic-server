@@ -66,6 +66,23 @@ TEXT_VERSIONS = (
         re.compile(r"pulls the `(\d+\.\d+\.\d+)` image by default"),
     ),
     TextVersion(
+        "Canonical deployment skill PolarRAG contract",
+        ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"\*\*Current v(\d+\.\d+\.\d+) onboarding upload contract"),
+    ),
+    TextVersion(
+        "Canonical deployment skill PolarRAG default release",
+        ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(
+            r"default deployment is\nreleased `v(\d+\.\d+\.\d+)`"
+        ),
+    ),
+    TextVersion(
+        "Canonical deployment skill PolarRAG minimum release",
+        ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"on an immutable\n`v(\d+\.\d+\.\d+)` or later `PAS_REF`"),
+    ),
+    TextVersion(
         "Claude deployment skill default",
         ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
         re.compile(
@@ -81,6 +98,23 @@ TEXT_VERSIONS = (
         "Claude deployment skill image",
         ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
         re.compile(r"pulls the `(\d+\.\d+\.\d+)` image by default"),
+    ),
+    TextVersion(
+        "Claude deployment skill PolarRAG contract",
+        ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"\*\*Current v(\d+\.\d+\.\d+) onboarding upload contract"),
+    ),
+    TextVersion(
+        "Claude deployment skill PolarRAG default release",
+        ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(
+            r"default deployment is\nreleased `v(\d+\.\d+\.\d+)`"
+        ),
+    ),
+    TextVersion(
+        "Claude deployment skill PolarRAG minimum release",
+        ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
+        re.compile(r"on an immutable\n`v(\d+\.\d+\.\d+)` or later `PAS_REF`"),
     ),
     TextVersion(
         "English root deployment skill release",
@@ -250,6 +284,20 @@ TEXT_VERSIONS = (
         "Chinese prerequisites",
         "docs/zh-cn/deployment/prerequisites.md",
         re.compile(r"(?m)^PAS_VERSION=(\d+\.\d+\.\d+)$"),
+    ),
+    TextVersion(
+        "English PolarRAG onboarding release",
+        "docs/en/knowledge/polarrag-onboarding.md",
+        re.compile(
+            r"(?m)^\| `v(\d+\.\d+\.\d+)` or a later immutable revision containing this file \|"
+        ),
+    ),
+    TextVersion(
+        "Chinese PolarRAG onboarding release",
+        "docs/zh-cn/knowledge/polarrag-onboarding.md",
+        re.compile(
+            r"(?m)^\| `v(\d+\.\d+\.\d+)` 或包含本文的更高不可变 revision \|"
+        ),
     ),
     TextVersion(
         "English Helm install guide",

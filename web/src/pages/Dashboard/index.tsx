@@ -63,8 +63,8 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
         { icon: <FileTextOutlined />, color: 'red', value: adminStats?.queries_today ?? 0, label: t('dashboard.queriesToday') },
       ]
     : [
-        { icon: <DatabaseOutlined />, color: 'purple', value: memberStats?.database_instances ?? 0, label: 'Database Instances' },
-        { icon: <FileTextOutlined />, color: 'cyan', value: memberStats?.knowledge_resources ?? 0, label: 'Knowledge Resources' },
+        { icon: <DatabaseOutlined />, color: 'purple', value: memberStats?.database_instances ?? 0, label: t('dashboard.databaseInstances') },
+        { icon: <FileTextOutlined />, color: 'cyan', value: memberStats?.knowledge_resources ?? 0, label: t('dashboard.knowledgeResources') },
       ]
 
   const quickActions = isAdmin
@@ -73,32 +73,32 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
           icon: <PlusOutlined />,
           iconBg: 'rgba(0, 113, 227, 0.1)',
           iconColor: '#0071e3',
-          title: 'Register Instance',
-          desc: 'Add a PolarDB or PolarRAG instance to manage',
+          title: t('dashboard.registerInstance'),
+          desc: t('dashboard.registerInstanceDescription'),
           path: '/instances',
         },
         {
           icon: <UserAddOutlined />,
           iconBg: 'rgba(52, 199, 89, 0.1)',
           iconColor: '#34c759',
-          title: 'Manage Users',
-          desc: 'Add users and assign permissions',
+          title: t('dashboard.manageUsers'),
+          desc: t('dashboard.manageUsersDescription'),
           path: '/users',
         },
         {
           icon: <SearchOutlined />,
           iconBg: 'rgba(175, 82, 222, 0.1)',
           iconColor: '#af52de',
-          title: 'View Audit Logs',
-          desc: 'Review system activity and SQL queries',
+          title: t('dashboard.viewAuditLogs'),
+          desc: t('dashboard.viewAuditLogsDescription'),
           path: '/audit-logs',
         },
         {
           icon: <SettingOutlined />,
           iconBg: 'rgba(255, 159, 10, 0.1)',
           iconColor: '#ff9f0a',
-          title: 'System Settings',
-          desc: 'Configure pool, quotas, and provisioning',
+          title: t('dashboard.serviceConfiguration'),
+          desc: t('dashboard.serviceConfigurationDescription'),
           path: '/settings',
         },
       ]
@@ -107,8 +107,8 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
           icon: <DatabaseOutlined />,
           iconBg: 'rgba(0, 113, 227, 0.1)',
           iconColor: '#0071e3',
-          title: 'View My Instances',
-          desc: 'Review database instances and knowledge resources accessible to you',
+          title: t('dashboard.viewMyInstances'),
+          desc: t('dashboard.viewMyInstancesDescription'),
           path: '/my-instances',
         },
       ]
@@ -119,8 +119,8 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
         <h2 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', letterSpacing: '-0.02em' }}>{t('dashboard.title')}</h2>
         <p style={{ fontSize: 14, color: 'var(--text-secondary)', margin: 0 }}>
           {isAdmin
-            ? 'Overview of your PolarDB and PolarRAG Agentic environment'
-            : 'Overview of resources accessible to your account'}
+            ? t('dashboard.adminDescription')
+            : t('dashboard.memberDescription')}
         </p>
       </div>
 

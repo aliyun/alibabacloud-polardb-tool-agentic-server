@@ -41,6 +41,16 @@ nested `issue`, `reveal`, `regenerate`, and `revoke` operations. Sensitive
 responses use `Cache-Control: no-store`; administrator responses never contain
 user Token plaintext.
 
+For one binding, administrators list eligible synchronized ACTIVE PUBLIC
+resources with
+`GET /api/agents/{agent_id}/polarrag-bindings/{binding_id}/public-resources`
+and update the scope with `PUT` on the same route. The request field
+`public_knowledge_resource_ids` is `null` for all instance PUBLIC resources, an
+array for a selected scope, and an empty array for no PUBLIC resources.
+PERSONAL IDs are rejected. Updates are audited as
+`agent_polarrag_binding.public_scope.update` and apply to the next MCP Tool call
+without Token regeneration.
+
 Instance registration has connection-test endpoints before creation and on an
 existing instance. Credential creation/update has its own test action.
 Connection tests execute from the backend Pod.

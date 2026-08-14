@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import re
 import shutil
 import subprocess
@@ -22,6 +23,63 @@ SKILL_NAMES = (
     "deploy-polardb-agentic-server",
 )
 RETIRED_SKILL_NAMES = ("deploy-polardb-agentic-server-docker",)
+LEGACY_RELEASE_UPLOAD_CONTRACT = {
+    "version": "0.0.7",
+    "revision": "9d358cd813cf07979a23cae7d80b3442231a1adb",
+    "tools": {
+        "prepare_document_upload",
+        "resume_document_upload",
+        "complete_document_upload",
+        "abort_document_upload",
+    },
+    "complete_required": {"upload_session_id", "parts"},
+}
+CURRENT_ONBOARDING_UPLOAD_CONTRACT = {
+    "tools": {"prepare_document_upload", "complete_document_upload"},
+    "complete_required": {"upload_session_id"},
+}
+
+
+def _upload_contract_for_release(revision: str) -> dict[str, set[str]]:
+    source = subprocess.run(
+        ["git", "show", f"{revision}:server/mcp/tools/polarrag.py"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    module = ast.parse(source)
+    upload_tools: set[str] | None = None
+    completion_arguments: set[str] | None = None
+    for node in ast.walk(module):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name)
+            and target.id == "POLARRAG_UPLOAD_TOOL_NAMES"
+            for target in node.targets
+        ):
+            assert isinstance(node.value, ast.Call)
+            upload_tools = set(ast.literal_eval(node.value.args[0]))
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "complete_document_upload":
+            completion_arguments = {
+                argument.arg for argument in node.args.args if argument.arg != "self"
+            }
+    assert upload_tools is not None
+    assert completion_arguments is not None
+    return {"tools": upload_tools, "complete_required": completion_arguments}
+
+
+def _documented_upload_contract(text: str, revision: str) -> dict[str, set[str]]:
+    for row in text.splitlines():
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+        if len(cells) != 4 or revision not in cells[0]:
+            continue
+        return {
+            "tools": set(re.findall(r"`([^`]+_document_upload)`", cells[1])),
+            "complete_required": set(
+                re.findall(r"`(upload_session_id|parts)`", cells[2])
+            ),
+        }
+    raise AssertionError(f"missing upload compatibility row for {revision}")
 
 
 def _frontmatter(path: Path) -> dict[str, str]:
@@ -77,6 +135,82 @@ def test_unified_skill_bundles_both_deployment_modes() -> None:
     assert (skill_root / "scripts" / "deploy-docker.sh").is_file()
     assert "bash scripts/deploy-source.sh --validate-only" in text
     assert "bash scripts/deploy-docker.sh --validate-only" in text
+
+
+def test_skill_guides_optional_polarrag_mcp_delivery() -> None:
+    path = _skill_path(CANONICAL_ROOT, "deploy-polardb-agentic-server")
+    text = path.read_text(encoding="utf-8")
+
+    assert 'version: "1.5"' in text
+    required = {
+        "PolarRAG MCP delivery",
+        "docs/en/knowledge/polarrag-onboarding.md",
+        "READY",
+        "CURRENT",
+        "polarrag",
+        "PUBLIC",
+        "PERSONAL",
+        "pas_user_agent_",
+        "prepare_document_upload",
+        "complete_document_upload",
+        "capability_missing",
+    }
+    assert not [term for term in required if term not in text]
+    assert "Do not deploy or reconfigure PolarRAG" in text
+
+
+def test_legacy_release_upload_contract_is_routed_away_from_current_onboarding() -> None:
+    skill_root = CANONICAL_ROOT / "deploy-polardb-agentic-server"
+    skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+    release_contract = _upload_contract_for_release(
+        LEGACY_RELEASE_UPLOAD_CONTRACT["revision"]
+    )
+
+    for script_name in ("deploy-source.sh", "deploy-docker.sh"):
+        script = (skill_root / "scripts" / script_name).read_text(encoding="utf-8")
+        assert (
+            f'PAS_VERSION="${{PAS_VERSION:-{CURRENT_VERSION}}}"'
+            in script
+        )
+
+    assert release_contract == {
+        "tools": LEGACY_RELEASE_UPLOAD_CONTRACT["tools"],
+        "complete_required": LEGACY_RELEASE_UPLOAD_CONTRACT["complete_required"],
+    }
+    legacy_guide = subprocess.run(
+        [
+            "git",
+            "show",
+            f'{LEGACY_RELEASE_UPLOAD_CONTRACT["revision"]}:docs/en/knowledge/polarrag-mcp.md',
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert legacy_guide
+    assert LEGACY_RELEASE_UPLOAD_CONTRACT["revision"] in skill
+    assert "Legacy v0.0.7 upload contract" in skill
+    assert f"Current v{CURRENT_VERSION} onboarding upload contract" in skill
+    for tool in LEGACY_RELEASE_UPLOAD_CONTRACT["tools"]:
+        assert tool in skill
+    for argument in LEGACY_RELEASE_UPLOAD_CONTRACT["complete_required"]:
+        assert argument in skill
+    for tool in CURRENT_ONBOARDING_UPLOAD_CONTRACT["tools"]:
+        assert tool in skill
+    assert "Only `upload_session_id` is accepted" in skill
+    assert "$PAS_HOME/docs/en/knowledge/polarrag-onboarding.md" in skill
+    for path in (
+        "docs/en/knowledge/polarrag-onboarding.md",
+        "docs/zh-cn/knowledge/polarrag-onboarding.md",
+    ):
+        guide = (ROOT / path).read_text(encoding="utf-8")
+        assert _documented_upload_contract(
+            guide, LEGACY_RELEASE_UPLOAD_CONTRACT["version"]
+        ) == release_contract
+        assert _documented_upload_contract(guide, CURRENT_VERSION) == (
+            CURRENT_ONBOARDING_UPLOAD_CONTRACT
+        )
 
 
 def test_skill_metadata_requires_explicit_safe_invocation() -> None:
@@ -152,8 +286,11 @@ def test_deployment_scripts_enforce_reviewed_safety_invariants() -> None:
     assert 'image inspect --format "{{.Architecture}}"' in docker
     assert "image architecture" in docker
     assert 'PAS_ALLOW_LOCAL_BUILD="${PAS_ALLOW_LOCAL_BUILD:-0}"' in docker
-    assert 'if [ "$PAS_ALLOW_LOCAL_BUILD" != "1" ]; then' in docker
-    assert "image pull failed and local build fallback is disabled" in docker
+    assert 'if [ "$PAS_ALLOW_LOCAL_BUILD" = "1" ]; then' in docker
+    assert docker.index('if [ "$PAS_ALLOW_LOCAL_BUILD" = "1" ]; then') < docker.index(
+        'image inspect "$PAS_IMAGE"'
+    )
+    assert "image pull failed and local build is disabled" in docker
 
 
 def test_skill_scripts_are_valid_bash() -> None:
@@ -311,6 +448,93 @@ def _add_real_git_to_validation_path(case_root: Path, *, docker: bool) -> None:
     binary_dir = Path(_validation_path(case_root, docker=docker))
     _write_executable(binary_dir / "git", f'#!/bin/sh\nexec "{git}" "$@"\n')
     _write_executable(binary_dir / "ls", "#!/bin/sh\nexec /bin/ls \"$@\"\n")
+
+
+def _run_docker_deployment_with_fake_engine(
+    tmp_path: Path,
+    *,
+    pas_home: Path,
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    docker_log = tmp_path / "docker.log"
+    _write_executable(binary_dir / "uname", "#!/bin/sh\necho Linux\n")
+    _write_executable(
+        binary_dir / "id",
+        "#!/bin/sh\n"
+        "case \"${1:-}\" in -u|-g) echo 1000 ;; *) echo test ;; esac\n",
+    )
+    _write_executable(binary_dir / "python3", "#!/bin/sh\necho READY\n")
+    _write_executable(binary_dir / "curl", "#!/bin/sh\necho '{\"mode\":\"READY\"}'\n")
+    _write_executable(binary_dir / "hostname", "#!/bin/sh\necho 127.0.0.1\n")
+    _write_executable(
+        binary_dir / "docker",
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_DOCKER_LOG\"\n"
+        "case \"${1:-}\" in\n"
+        "  version) echo amd64 ;;\n"
+        "  image) [ \"${2:-}\" = inspect ] && echo amd64 ;;\n"
+        "esac\n",
+    )
+    git = shutil.which("git")
+    assert git is not None
+    _write_executable(binary_dir / "git", f'#!/bin/sh\nexec "{git}" "$@"\n')
+    env = {
+        "HOME": str(tmp_path / "home"),
+        "PATH": f"{binary_dir}:/usr/bin:/bin",
+        "POLARDB_HOST": "db.example.invalid",
+        "POLARDB_USER": "pas_user",
+        "POLARDB_PASSWORD": "fixture-password",
+        "PAS_HOME": str(pas_home),
+        "PAS_UPDATE_REPO": "0",
+        "PAS_REF": "immutable-current-ref",
+        "PAS_ALLOW_LOCAL_BUILD": "1",
+        "FAKE_DOCKER_LOG": str(docker_log),
+    }
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(
+                CANONICAL_ROOT
+                / "deploy-polardb-agentic-server"
+                / "scripts"
+                / "deploy-docker.sh"
+            ),
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, docker_log.read_text(encoding="utf-8")
+
+
+def test_local_build_for_custom_ref_never_pulls_the_default_image(
+    tmp_path: Path,
+) -> None:
+    official = (
+        "https://github.com/aliyun/"
+        "alibabacloud-polardb-tool-agentic-server.git"
+    )
+    checkout = _prepare_checkout(tmp_path, official)
+    result, docker_log = _run_docker_deployment_with_fake_engine(
+        tmp_path, pas_home=checkout
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        f"building pas-local:{CURRENT_VERSION} from the verified checkout"
+        in result.stdout
+    )
+    assert "pull " not in docker_log
+    assert "build " in docker_log
+    assert (
+        "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:"
+        f"{CURRENT_VERSION}"
+    ) not in (
+        checkout / ".secrets" / "pas-compose.env"
+    ).read_text(encoding="utf-8")
 
 
 def test_existing_checkout_origin_must_match_when_updates_are_enabled(

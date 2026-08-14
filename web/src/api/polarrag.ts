@@ -88,6 +88,7 @@ export interface PolarRAGKnowledgeResource {
 }
 
 export interface PolarRAGSyncResult {
+  knowledge_bases: number
   active: number
   disabled: number
   owner_unresolved: number
@@ -107,6 +108,7 @@ export interface PolarRAGOwnerCandidate {
   principal_assignment_id: string
   pas_user_id: string
   user_name: string
+  user_external_id: string
   identity_domain: string
   provider: EnterprisePrincipalProvider
   principal_id: string
@@ -125,7 +127,7 @@ export interface EnabledPolarRAGSpace {
   sync: PolarRAGSyncResult
 }
 
-export type EnterprisePrincipalProvider = 'feishu' | 'sharepoint'
+export type EnterprisePrincipalProvider = 'feishu' | 'sharepoint' | 'polarrag'
 export type EnterprisePrincipalType = 'user' | 'group'
 export type EnterprisePrincipalStatus = 'active' | 'disabled'
 

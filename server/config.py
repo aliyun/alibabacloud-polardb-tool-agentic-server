@@ -18,6 +18,7 @@ class ServerConfig(BaseModel):
 class OIDCConfig(BaseModel):
     preset: str | None = None
     discovery_url: str | None = None
+    issuer: str | None = None
     client_id: str = ""
     client_secret: str = ""
     scopes: list[str] = Field(default_factory=lambda: ["openid", "profile", "email"])

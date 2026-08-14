@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 from server.core import agent_user_token_service
+from server.models.base import utc_now
 from server.models import (
     Agent,
     AgentGroupAssignment,
     AgentPolarRAGInstanceBinding,
     AgentUserAssignment,
+    AuthProvider,
     Department,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
@@ -67,6 +71,8 @@ async def test_user_manages_only_own_agent_token(client, setup) -> None:
     assert issued.status_code == 200
     assert issued.headers["cache-control"] == "no-store"
     assert issued.json()["token"] is None
+    assert issued.json()["expires_at"] is None
+    assert "issued_at" not in issued.json()
 
     summary = await http.get(
         "/api/me/agent-connections", headers=member_headers
@@ -113,6 +119,48 @@ async def test_user_manages_only_own_agent_token(client, setup) -> None:
     assert revoked.json()["token"] is None
 
 
+async def test_user_sets_expiry_when_issuing_and_regenerating(
+    client, setup
+) -> None:
+    http, _admin_headers, member_headers = client
+    assignment_id = await _seed(setup)
+    first_expiry = (utc_now() + timedelta(hours=1)).replace(microsecond=0)
+
+    issued = await http.post(
+        f"/api/me/agent-connections/{assignment_id}/token/issue",
+        json={"expires_at": first_expiry.isoformat()},
+        headers=member_headers,
+    )
+
+    assert issued.status_code == 200
+    assert issued.json()["expires_at"] == first_expiry.isoformat().replace(
+        "+00:00", "Z"
+    )
+    summary = await http.get(
+        "/api/me/agent-connections", headers=member_headers
+    )
+    assert summary.json()[0]["token"]["expires_at"] == issued.json()[
+        "expires_at"
+    ]
+
+    replacement_expiry = (utc_now() + timedelta(days=1)).replace(
+        microsecond=0
+    )
+    regenerated = await http.post(
+        f"/api/me/agent-connections/{assignment_id}/token/regenerate",
+        json={
+            "confirmed": True,
+            "expires_at": replacement_expiry.isoformat(),
+        },
+        headers=member_headers,
+    )
+
+    assert regenerated.status_code == 200
+    assert regenerated.json()["expires_at"] == (
+        replacement_expiry.isoformat().replace("+00:00", "Z")
+    )
+
+
 async def test_user_token_confirmation_is_strict(client, setup) -> None:
     http, _admin_headers, member_headers = client
     assignment_id = await _seed(setup)
@@ -122,6 +170,69 @@ async def test_user_token_confirmation_is_strict(client, setup) -> None:
         headers=member_headers,
     )
     assert response.status_code == 422
+
+
+async def test_oidc_user_receives_token_once_on_issue_and_regenerate(
+    client,
+    setup,
+) -> None:
+    http, _admin_headers, member_headers = client
+    factory, _admin, member = setup
+    assignment_id = await _seed(setup)
+    async with factory() as session:
+        stored = await session.get(type(member), member.id)
+        assert stored is not None
+        stored.auth_provider = AuthProvider.OIDC
+        stored.password_hash = None
+        await session.commit()
+
+    issued = await http.post(
+        f"/api/me/agent-connections/{assignment_id}/token/issue",
+        headers=member_headers,
+    )
+    assert issued.status_code == 200
+    assert issued.headers["cache-control"] == "no-store"
+    first = issued.json()["token"]
+    assert first.startswith("pas_user_agent_")
+
+    listed = await http.get(
+        "/api/me/agent-connections",
+        headers=member_headers,
+    )
+    assert first not in listed.text
+    assert listed.json()[0]["password_reveal_available"] is False
+
+    reveal = await http.post(
+        f"/api/me/agent-connections/{assignment_id}/token/reveal",
+        json={"password": "irrelevant"},
+        headers=member_headers,
+    )
+    assert reveal.status_code == 409
+
+    regenerated = await http.post(
+        f"/api/me/agent-connections/{assignment_id}/token/regenerate",
+        json={"confirmed": True},
+        headers=member_headers,
+    )
+    assert regenerated.status_code == 200
+    assert regenerated.headers["cache-control"] == "no-store"
+    replacement = regenerated.json()["token"]
+    assert replacement.startswith("pas_user_agent_")
+    assert replacement != first
+
+    for _ in range(3):
+        response = await http.post(
+            f"/api/me/agent-connections/{assignment_id}/token/regenerate",
+            json={"confirmed": True},
+            headers=member_headers,
+        )
+        assert response.status_code == 200
+    limited = await http.post(
+        f"/api/me/agent-connections/{assignment_id}/token/regenerate",
+        json={"confirmed": True},
+        headers=member_headers,
+    )
+    assert limited.status_code == 429
 
 
 async def test_department_member_can_issue_but_loses_access_immediately(

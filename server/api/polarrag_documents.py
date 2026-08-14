@@ -9,11 +9,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import get_current_user
+from server.core.agent_access import has_agent_access
 from server.core.audit_logger import log_audit
 from server.db.engine import get_session
-from server.models import AuditStatus, KnowledgeResource, User, UserRole
+from server.models import Agent, AgentStatus, AuditStatus, KnowledgeResource, User, UserRole
+from server.mcp.agent_user_context import (
+    resolve_polarrag_resource_scope_for_agent,
+)
 from server.polarrag.access import (
     KnowledgeAccessError,
+    KnowledgeAccessErrorCode,
     KnowledgeAccessPlan,
     plan_knowledge_access,
 )
@@ -39,6 +44,7 @@ router = APIRouter(prefix="/me/polarrag", tags=["polarrag-documents"])
 class DocumentResourceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    agent_id: str = Field(min_length=1, max_length=36)
     knowledge_resource_id: str = Field(min_length=1, max_length=512)
 
 
@@ -66,6 +72,7 @@ class RechunkDocumentRequest(DocumentResourceRequest):
 async def _member_access(
     session: AsyncSession,
     user: User,
+    agent_id: str,
     knowledge_resource_id: str,
 ) -> KnowledgeAccessPlan:
     if user.role == UserRole.ADMIN:
@@ -77,10 +84,23 @@ async def _member_access(
             },
         )
     try:
+        agent = await session.get(Agent, agent_id)
+        if (
+            agent is None
+            or agent.status != AgentStatus.ACTIVE
+            or not await has_agent_access(session, agent_id, user.id)
+        ):
+            raise KnowledgeAccessError(
+                KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
+            )
+        resource_scope = await resolve_polarrag_resource_scope_for_agent(
+            session, agent_id
+        )
         return await plan_knowledge_access(
             session,
             user,
             [knowledge_resource_id],
+            resource_scope=resource_scope,
         )
     except KnowledgeAccessError:
         raise HTTPException(
@@ -180,6 +200,8 @@ def _visible_documents(
         "doc_id",
         "kb_id",
         "filename",
+        "file_size_bytes",
+        "created_at",
         "status",
         "chunk_count",
         "active_generation",
@@ -218,6 +240,7 @@ def _audit_context(
 
 @router.post("/documents", status_code=201)
 async def upload_document(
+    agent_id: str = Form(...),
     knowledge_resource_id: str = Form(...),
     file: UploadFile = File(...),
     user: User = Depends(get_current_user),
@@ -231,20 +254,9 @@ async def upload_document(
                 "message": "Administrators cannot upload PolarRAG documents.",
             },
         )
-    try:
-        access = await plan_knowledge_access(
-            session,
-            user,
-            [knowledge_resource_id],
-        )
-    except KnowledgeAccessError:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "code": "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE",
-                "message": "Knowledge resource is not accessible.",
-            },
-        ) from None
+    access = await _member_access(
+        session, user, agent_id, knowledge_resource_id
+    )
     resource = access.resources[0]
     space = access.space
     if (
@@ -345,6 +357,7 @@ async def upload_document(
         status=AuditStatus.SUCCESS,
         client_info=_audit_context(
             resource,
+            agent_id=agent_id,
             filename=filename,
             file_size_bytes=file_size,
         ),
@@ -366,6 +379,7 @@ async def find_documents(
     access = await _member_access(
         session,
         user,
+        body.agent_id,
         body.knowledge_resource_id,
     )
     resource = access.resources[0]
@@ -391,6 +405,7 @@ async def list_documents(
     access = await _member_access(
         session,
         user,
+        body.agent_id,
         body.knowledge_resource_id,
     )
     resource = access.resources[0]
@@ -429,6 +444,8 @@ def _visible_document_page(
         "doc_id",
         "kb_id",
         "filename",
+        "file_size_bytes",
+        "created_at",
         "status",
         "chunk_count",
         "active_generation",
@@ -465,6 +482,7 @@ async def delete_document(
     access = await _member_access(
         session,
         user,
+        body.agent_id,
         body.knowledge_resource_id,
     )
     resource = access.resources[0]
@@ -496,6 +514,7 @@ async def delete_document(
         status=AuditStatus.SUCCESS,
         client_info=_audit_context(
             resource,
+            agent_id=body.agent_id,
             doc_id=doc_id,
         ),
         required=True,
@@ -513,6 +532,7 @@ async def rechunk_document(
     access = await _member_access(
         session,
         user,
+        body.agent_id,
         body.knowledge_resource_id,
     )
     resource = access.resources[0]
@@ -554,6 +574,7 @@ async def rechunk_document(
         status=AuditStatus.SUCCESS,
         client_info=_audit_context(
             resource,
+            agent_id=body.agent_id,
             doc_id=doc_id,
             chunk_strategy=body.chunk_strategy,
             chunk_max_tokens=body.chunk_max_tokens,

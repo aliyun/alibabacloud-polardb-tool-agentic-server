@@ -251,7 +251,11 @@ export default function Instances() {
         <Button
           type="primary"
           icon={<PlusOutlined />}
-          onClick={() => openRegister()}
+          onClick={() =>
+            openRegister(
+              activeTab === 'polarrag' ? 'polarrag' : 'polardb_mysql',
+            )
+          }
         >
           {t('instances.register')}
         </Button>
@@ -265,7 +269,7 @@ export default function Instances() {
         items={[
           {
             key: 'database',
-            label: 'Database Instances',
+            label: t('instances.databaseInstances'),
             children: (
               <Space direction="vertical" size={20} style={{ width: '100%' }}>
         {error && (
@@ -396,7 +400,7 @@ export default function Instances() {
           },
           {
             key: 'polarrag',
-            label: 'PolarRAG Instances',
+            label: t('instances.polarragInstances'),
             children: (
               <InstancesPanel
                 key={polarRAGRefreshKey}

@@ -46,9 +46,12 @@ describe('dashboard statistics', () => {
         return Promise.resolve({ data: { total: 7 } } as never)
       }
       if (url === '/api/audit-logs') {
+        const category = (
+          config?.params as Record<string, unknown> | undefined
+        )?.category
         return Promise.resolve({
           data: {
-            total: config?.params?.category === 'sql' ? 5 : 7,
+            total: category === 'sql' ? 5 : 7,
             items: [],
           },
         } as never)

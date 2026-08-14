@@ -177,3 +177,38 @@ async def test_audit_category_count_honors_created_from(
 
     assert response.status_code == 200
     assert response.json() == {"items": [], "total": 0}
+
+
+async def test_audit_category_accepts_form_decoded_positive_offset(
+    client,
+    setup,
+) -> None:
+    http, admin_headers, _ = client
+    await _seed_audit_logs(setup)
+
+    response = await http.get(
+        "/api/audit-logs?category=polarrag&created_from=2026-08-12T00:00:00+08:00&limit=1",
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200
+
+
+async def test_audit_category_preserves_local_datetime_without_offset(
+    client,
+    setup,
+) -> None:
+    http, admin_headers, _ = client
+    await _seed_audit_logs(setup)
+
+    response = await http.get(
+        "/api/audit-logs",
+        params={
+            "category": "polarrag",
+            "created_from": "2026-08-12 00:00",
+            "limit": 1,
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200

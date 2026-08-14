@@ -36,6 +36,14 @@ Agent 范围的 PolarRAG 访问通过
 `reveal`、`regenerate` 和 `revoke` 操作管理自己的 Token。敏感响应带有
 `Cache-Control: no-store`；管理员响应永远不包含用户 Token 明文。
 
+管理员通过
+`GET /api/agents/{agent_id}/polarrag-bindings/{binding_id}/public-resources`
+列出某个绑定下符合条件的已同步 ACTIVE PUBLIC 资源，并在同一路由使用 `PUT` 更新
+范围。请求字段 `public_knowledge_resource_ids` 为 `null` 时表示实例的全部 PUBLIC
+资源，为数组时表示指定范围，为空数组时表示不允许任何 PUBLIC 资源。PERSONAL ID
+会被拒绝。更新会以 `agent_polarrag_binding.public_scope.update` 写入审计，并在下一次
+MCP Tool 调用生效，无需重新签发 Token。
+
 实例注册提供创建前和已有实例的连接测试端点。凭证创建/更新有独立测试动作。
 连接测试从后端 Pod 执行。
 

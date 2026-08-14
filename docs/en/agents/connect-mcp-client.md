@@ -30,25 +30,19 @@ The server name defaults to the Agent name. Replace no fields manually when
 using the console-generated JSON. Store the Token in the client's secret
 storage, not source control.
 
-The user-specific PolarRAG configuration includes `type: "http"` and is shown
-with the plaintext Token only after issue, reveal, or regeneration:
-
-```json
-{
-  "mcpServers": {
-    "AGENT_NAME": {
-      "type": "http",
-      "url": "http://PAS_HOST:18780/mcp",
-      "headers": {
-        "Authorization": "Bearer pas_user_agent_REDACTED"
-      }
-    }
-  }
-}
-```
+The user-specific PolarRAG action copies the same JSON fields shown above; only
+the Bearer value uses the `pas_user_agent_` credential. The plaintext is copied
+only after password-protected reveal. Setting an optional `expires_at` while
+issuing or regenerating does not add a field to this client JSON.
 
 Private-network HTTP is suitable only for an isolated development environment.
 Use HTTPS for production and any untrusted network.
+
+OAuth-capable MCP clients may use PAS dynamic client registration instead of a
+manually copied Agent Token. Register the callback exactly: use HTTPS for a
+remote callback or HTTP only for a loopback callback. PAS rejects a different
+redirect URI during authorization and token exchange. The PAS issuer is read
+from OAuth metadata and the access JWT; do not add it to the client JSON.
 
 ## Network and TLS
 

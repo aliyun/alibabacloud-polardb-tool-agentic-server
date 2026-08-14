@@ -34,6 +34,40 @@ The `user_sso` module can remain `SKIPPED`. When enabled, configure an HTTPS
 external base URL and OIDC provider metadata, client ID, encrypted client
 secret, scopes, claims, and redirect behavior. Validate browser redirects and
 logout in the production Ingress environment before enabling it for users.
+Discovery metadata must contain the expected issuer. A manual endpoint
+configuration must set `issuer`, `authorization_endpoint`, and
+`token_endpoint` explicitly.
+
+For MCP OAuth, PAS binds each OIDC callback to a short-lived, one-time state,
+an OIDC nonce, and PKCE where the provider supports it. A failed or replayed
+callback cannot be reused for a second MCP authorization.
+PAS verifies the ID Token signature, issuer, audience, and nonce. When PAS
+also reads UserInfo, its `sub` must exactly match the verified ID Token `sub`.
+Validation failures return a generic, non-cacheable authentication error and
+consume the one-time state.
+
+## MCP OAuth security contract
+
+PAS publishes dynamic client registration for MCP clients, but accepts only the
+authorization-code and refresh-token grants with the `code` response type.
+Every redirect URI is stored and compared exactly. Remote callbacks must use
+HTTPS. HTTP is accepted only for loopback clients using `localhost`,
+`127.0.0.1`, or `::1`; credentials, fragments, wildcards, custom schemes, and
+unregistered redirects are rejected.
+
+An MCP access JWT is signed by PAS and requires `iss`, `aud`, `sub`, `iat`,
+`exp`, `jti`, and `type`. `iss` is the exact PAS external base URL and `aud` is
+the `/mcp` resource URL. Signature, issuer, audience, expiry, subject, unique
+token ID, and `type=access` are checked on every request. The issuer is internal
+to the JWT; it is not an extra field in copied MCP JSON.
+
+PAS applies pod-local limits before credential or grant validation: five
+builtin login attempts per account per minute, 20 builtin
+login attempts per remote address per minute, 10 dynamic registrations per
+remote address per minute, and 20 token requests per remote address per minute.
+An exceeded limit returns HTTP `429` and `Retry-After`. These minimum limits do
+not provide a distributed cluster-wide quota; enforce additional protection at
+the Ingress when running multiple replicas.
 
 ## Agent authentication
 

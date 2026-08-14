@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -73,6 +74,21 @@ REQUIRED_GUIDES = {
     "reference/configuration-modules.md",
     "reference/rest-api.md",
     "reference/compatibility.md",
+    "knowledge/polarrag-onboarding.md",
+}
+
+POLARRAG_MCP_TOOLS = {
+    "list_knowledge_resources",
+    "kb_search",
+    "kb_fetch_context",
+    "doc_find_by_name",
+    "doc_status",
+    "doc_recall",
+    "doc_get_original",
+    "doc_delete",
+    "doc_rechunk",
+    "prepare_document_upload",
+    "complete_document_upload",
 }
 
 
@@ -177,6 +193,112 @@ def test_configuration_guides_cover_dedicated_runtime_safety(path: str):
 
 def _read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/knowledge/polarrag-onboarding.md",
+        "docs/zh-cn/knowledge/polarrag-onboarding.md",
+    ),
+)
+def test_polarrag_onboarding_covers_end_to_end_admin_delivery(path: str):
+    text = _read(path)
+    required = {
+        "polarrag",
+        "PUBLIC",
+        "PERSONAL",
+        "PAS_ENCRYPTION_KEY",
+        "pas_user_agent_",
+        "knowledge_resource_id",
+        "100 MiB",
+        "8 MiB",
+        "24",
+        "15",
+        "feishu",
+        "sharepoint",
+        *POLARRAG_MCP_TOOLS,
+    }
+    assert not [term for term in required if term not in text]
+
+
+def test_polarrag_onboarding_is_linked_from_public_indexes() -> None:
+    expected = {
+        "README.md": "docs/en/knowledge/polarrag-onboarding.md",
+        "README_zh-CN.md": "docs/zh-cn/knowledge/polarrag-onboarding.md",
+        "docs/en/README.md": "knowledge/polarrag-onboarding.md",
+        "docs/zh-cn/README.md": "knowledge/polarrag-onboarding.md",
+    }
+    for path, link in expected.items():
+        assert link in _read(path)
+
+
+def test_polarrag_onboarding_directs_large_files_to_enterprise_knowledge_space() -> None:
+    expected = {
+        "docs/en/knowledge/polarrag-onboarding.md": "enterprise knowledge space",
+        "docs/zh-cn/knowledge/polarrag-onboarding.md": "企业知识空间自动文档上传",
+    }
+    official_guide = (
+        "https://help.aliyun.com/zh/polardb/polardb-for-mysql/"
+        "create-and-use-an-enterprise-knowledge-space#upload-oss-section"
+    )
+    for path, phrase in expected.items():
+        text = _read(path)
+        assert phrase in text
+        assert official_guide in text
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/knowledge/polarrag-onboarding.md",
+        "docs/zh-cn/knowledge/polarrag-onboarding.md",
+    ),
+)
+def test_polarrag_onboarding_declares_its_upload_contract_compatibility(path: str) -> None:
+    text = _read(path)
+    required = {
+        "v0.0.7",
+        "resume_document_upload",
+        "abort_document_upload",
+        "prepare_document_upload",
+        "complete_document_upload",
+        "upload_session_id",
+        "parts",
+    }
+    assert not [term for term in required if term not in text]
+
+
+@pytest.mark.parametrize(
+    ("path", "required"),
+    (
+        (
+            "docs/en/knowledge/polarrag-onboarding.md",
+            {
+                "`polarrag`",
+                "`feishu`",
+                "`sharepoint`",
+                "Feishu-synchronized",
+                "automatic identity synchronization",
+            },
+        ),
+        (
+            "docs/zh-cn/knowledge/polarrag-onboarding.md",
+            {
+                "`polarrag`",
+                "`feishu`",
+                "`sharepoint`",
+                "飞书同步",
+                "企业身份自动同步",
+            },
+        ),
+    ),
+)
+def test_polarrag_onboarding_explains_identity_provider_selection(
+    path: str, required: set[str]
+) -> None:
+    text = _read(path)
+    assert not [term for term in required if term not in text]
 
 
 @pytest.mark.parametrize(
@@ -373,6 +495,79 @@ def test_public_docs_do_not_link_internal_design_material():
         for path in PUBLIC_DOCS
         if "docs/superpowers" in _read(path)
     ]
+
+
+def test_mcp_identity_and_authentication_contract_is_public_and_stable():
+    for locale in ("en", "zh-cn"):
+        authentication = _read(
+            f"docs/{locale}/administration/authentication.md"
+        )
+        assert not [
+            term
+            for term in {
+                "iss",
+                "aud",
+                "sub",
+                "iat",
+                "exp",
+                "jti",
+                "type=access",
+                "PKCE",
+                "nonce",
+                "authorization_endpoint",
+                "token_endpoint",
+                "UserInfo",
+                "Retry-After",
+                "localhost",
+                "127.0.0.1",
+                "::1",
+            }
+            if term not in authentication
+        ]
+
+        agents = _read(
+            f"docs/{locale}/administration/agents-and-tokens.md"
+        )
+        assert not [
+            term
+            for term in {
+                "pas_user_agent_",
+                "expires_at",
+                "issued_at",
+                "last_used_at",
+                "PolarRAG",
+                "Space",
+            }
+            if term not in agents
+        ]
+        assert "UTC" in agents
+        assert (
+            "timezone offset" in agents
+            if locale == "en"
+            else "时区偏移" in agents
+        )
+
+        client_guide = _read(
+            f"docs/{locale}/agents/connect-mcp-client.md"
+        )
+        example = re.search(
+            r"```json\n(?P<payload>.*?)```",
+            client_guide,
+            flags=re.DOTALL,
+        )
+        assert example is not None
+        configuration = json.loads(example.group("payload"))
+        server = next(iter(configuration["mcpServers"].values()))
+        assert set(server) == {"url", "headers"}
+        assert set(server["headers"]) == {"Authorization"}
+
+        polarrag = _read(f"docs/{locale}/knowledge/polarrag-mcp.md")
+        assert "acl_context" in polarrag
+        assert (
+            "Space enabled after the Agent binding" in polarrag
+            if locale == "en"
+            else "建立 Agent 绑定后才启用的 Space" in polarrag
+        )
 
 
 def test_public_docs_exclude_internal_and_placeholder_content():

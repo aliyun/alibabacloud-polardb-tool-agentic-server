@@ -162,6 +162,8 @@ class OssObjectStore:
                 key,
                 upload_id,
             )
+        except oss2.exceptions.NoSuchUpload:
+            return
         except Exception as exc:
             raise OssOperationError("OSS_OPERATION_FAILED") from exc
 

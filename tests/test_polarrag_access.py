@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.models import (
@@ -8,6 +9,7 @@ from server.models import (
     Base,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
+    EnterprisePrincipalStatus,
     EnterprisePrincipalType,
     KnowledgeBindingMode,
     KnowledgeResource,
@@ -20,6 +22,8 @@ from server.models import (
 from server.polarrag.access import (
     KnowledgeAccessError,
     KnowledgeAccessErrorCode,
+    KnowledgeResourceScope,
+    list_visible_knowledge_resources,
     plan_knowledge_access,
 )
 
@@ -158,7 +162,9 @@ async def test_agent_instance_scope_filters_resources(seeded) -> None:
         session,
         user,
         [resources[0].id, resources[1].id],
-        allowed_instance_ids={resources[0].polarrag_instance_id},
+        resource_scope=KnowledgeResourceScope(
+            {resources[0].polarrag_instance_id: None}
+        ),
     )
 
     assert [resource.id for resource in plan.resources] == [resources[0].id]
@@ -178,7 +184,219 @@ async def test_empty_agent_instance_scope_denies_all(seeded) -> None:
             session,
             user,
             [resources[0].id],
-            allowed_instance_ids=set(),
+            resource_scope=KnowledgeResourceScope({}),
         )
 
+    assert captured.value.code == KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
+
+
+async def test_agent_public_scope_only_filters_public_resources(seeded) -> None:
+    session, user, resources, _owner_resource = seeded
+    instance_id = resources[0].polarrag_instance_id
+    space = resources[0].space
+    unlisted = KnowledgeResource(
+        knowledge_space_id=space.knowledge_space_id,
+        polarrag_instance_id=instance_id,
+        space_id=space.space_id,
+        kb_id="public-unlisted",
+        name="Public unlisted",
+        kb_type="PUBLIC",
+        identity_domain=space.identity_domain,
+        binding_mode=KnowledgeBindingMode.DOMAIN,
+        sync_status=KnowledgeResourceSyncStatus.ACTIVE,
+        enabled=True,
+    )
+    personal = KnowledgeResource(
+        knowledge_space_id=space.knowledge_space_id,
+        polarrag_instance_id=instance_id,
+        space_id=space.space_id,
+        kb_id="personal-owned",
+        name="Personal owned",
+        kb_type="PERSONAL",
+        identity_domain=space.identity_domain,
+        binding_mode=KnowledgeBindingMode.OWNER,
+        owner_pas_user_id=user.id,
+        sync_status=KnowledgeResourceSyncStatus.ACTIVE,
+        enabled=True,
+    )
+    session.add_all([unlisted, personal])
+    await session.commit()
+
+    plan = await plan_knowledge_access(
+        session,
+        user,
+        [resources[0].id, unlisted.id, personal.id],
+        resource_scope=KnowledgeResourceScope(
+            {instance_id: {resources[0].id}}
+        ),
+    )
+
+    assert [resource.id for resource in plan.resources] == [
+        resources[0].id,
+        personal.id,
+    ]
+    assert plan.partial_failures == [
+        {
+            "knowledge_resource_id": unlisted.id,
+            "error": "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE",
+        }
+    ]
+
+
+async def test_agent_public_scope_cannot_expand_user_acl(seeded) -> None:
+    session, user, resources, _owner_resource = seeded
+    instance_id = resources[0].polarrag_instance_id
+    blocked_space = PolarRAGSpace(
+        polarrag_instance_id=instance_id,
+        space_id="scope-blocked",
+        name="Scope blocked",
+        identity_domain="tenant-without-principal",
+        enabled=True,
+    )
+    session.add(blocked_space)
+    await session.flush()
+    blocked = KnowledgeResource(
+        knowledge_space_id=blocked_space.knowledge_space_id,
+        polarrag_instance_id=instance_id,
+        space_id=blocked_space.space_id,
+        kb_id="scope-blocked",
+        name="Scope blocked",
+        kb_type="PUBLIC",
+        identity_domain=blocked_space.identity_domain,
+        binding_mode=KnowledgeBindingMode.DOMAIN,
+        sync_status=KnowledgeResourceSyncStatus.ACTIVE,
+        enabled=True,
+    )
+    session.add(blocked)
+    await session.commit()
+
+    with pytest.raises(KnowledgeAccessError) as captured:
+        await plan_knowledge_access(
+            session,
+            user,
+            [blocked.id],
+            resource_scope=KnowledgeResourceScope(
+                {instance_id: {blocked.id}}
+            ),
+        )
+
+    assert captured.value.code == KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
+
+
+async def test_spoofed_native_principal_cannot_enable_discovery(seeded) -> None:
+    session, user, resources, owner_resource = seeded
+    owner_resource.owner_pas_user_id = user.id
+    session.add(
+        EnterprisePrincipalAssignment(
+            pas_user_id=user.id,
+            identity_domain=resources[0].identity_domain,
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id="another-user",
+            source=EnterprisePrincipalSource.ADMIN_MANAGED,
+            status=EnterprisePrincipalStatus.ACTIVE,
+            user_principal_key="spoofed-native-user",
+        )
+    )
+    await session.commit()
+
+    assert await list_visible_knowledge_resources(session, user) == []
+    with pytest.raises(KnowledgeAccessError) as captured:
+        await plan_knowledge_access(session, user, [owner_resource.id])
+    assert captured.value.code == KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
+
+
+async def test_personal_owner_without_domain_principal_is_not_visible(
+    seeded,
+) -> None:
+    session, user, _resources, owner_resource = seeded
+    owner_resource.owner_pas_user_id = user.id
+    await session.execute(
+        delete(EnterprisePrincipalAssignment).where(
+            EnterprisePrincipalAssignment.pas_user_id == user.id
+        )
+    )
+    await session.commit()
+
+    assert await list_visible_knowledge_resources(session, user) == []
+    with pytest.raises(KnowledgeAccessError) as captured:
+        await plan_knowledge_access(session, user, [owner_resource.id])
+    assert captured.value.code == KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
+
+
+async def test_agent_instance_scope_includes_future_enabled_spaces_with_acl(
+    seeded,
+) -> None:
+    session, user, resources, _owner_resource = seeded
+    instance_id = resources[0].polarrag_instance_id
+    future_space = PolarRAGSpace(
+        polarrag_instance_id=instance_id,
+        space_id="space-future",
+        name="Future Space",
+        identity_domain="tenant-a",
+        enabled=True,
+    )
+    blocked_space = PolarRAGSpace(
+        polarrag_instance_id=instance_id,
+        space_id="space-future-blocked",
+        name="Future Space Without User Principal",
+        identity_domain="tenant-b",
+        enabled=True,
+    )
+    session.add_all([future_space, blocked_space])
+    await session.flush()
+    future_resource = KnowledgeResource(
+        knowledge_space_id=future_space.knowledge_space_id,
+        polarrag_instance_id=instance_id,
+        space_id=future_space.space_id,
+        kb_id="kb-future",
+        name="Future KB",
+        kb_type="PUBLIC",
+        identity_domain="tenant-a",
+        binding_mode=KnowledgeBindingMode.DOMAIN,
+        sync_status=KnowledgeResourceSyncStatus.ACTIVE,
+        enabled=True,
+    )
+    blocked_resource = KnowledgeResource(
+        knowledge_space_id=blocked_space.knowledge_space_id,
+        polarrag_instance_id=instance_id,
+        space_id=blocked_space.space_id,
+        kb_id="kb-future-blocked",
+        name="Future KB Without User Principal",
+        kb_type="PUBLIC",
+        identity_domain="tenant-b",
+        binding_mode=KnowledgeBindingMode.DOMAIN,
+        sync_status=KnowledgeResourceSyncStatus.ACTIVE,
+        enabled=True,
+    )
+    session.add_all([future_resource, blocked_resource])
+    await session.commit()
+
+    plan = await plan_knowledge_access(
+        session,
+        user,
+        [future_resource.id, blocked_resource.id],
+        resource_scope=KnowledgeResourceScope({instance_id: None}),
+    )
+
+    assert [resource.id for resource in plan.resources] == [
+        future_resource.id
+    ]
+    assert plan.acl_context["identity_domain"] == "tenant-a"
+    assert plan.partial_failures == [
+        {
+            "knowledge_resource_id": blocked_resource.id,
+            "error": "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE",
+        }
+    ]
+
+    future_space.enabled = False
+    await session.commit()
+    with pytest.raises(KnowledgeAccessError) as captured:
+        await plan_knowledge_access(
+            session,
+            user,
+            [future_resource.id],
+            resource_scope=KnowledgeResourceScope({instance_id: None}),
+        )
     assert captured.value.code == KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE

@@ -29,24 +29,16 @@ PolarRAG 还要求管理员先为 Agent 绑定 PolarRAG 实例并明确分配 PA
 Server 名称默认使用 Agent 名称。使用控制台生成的 JSON 时无需手工替换字段。
 Token 应放入客户端密钥存储，而不是源代码仓库。
 
-用户专用 PolarRAG 配置包含 `type: "http"`。只有签发、查看或重新生成后才会
-展示明文 Token：
-
-```json
-{
-  "mcpServers": {
-    "AGENT_NAME": {
-      "type": "http",
-      "url": "http://PAS_HOST:18780/mcp",
-      "headers": {
-        "Authorization": "Bearer pas_user_agent_REDACTED"
-      }
-    }
-  }
-}
-```
+用户专用 PolarRAG 操作复制的 JSON 字段与上例完全相同，只有 Bearer 值改为
+`pas_user_agent_` 凭证。明文只会在密码保护的查看操作后复制。签发或重新生成时
+设置可选 `expires_at` 不会给客户端 JSON 增加字段。
 
 私网 HTTP 只适用于隔离的开发环境；生产环境和不可信网络必须使用 HTTPS。
+
+支持 OAuth 的 MCP 客户端可以使用 PAS 动态客户端注册，而不是手工复制 Agent
+Token。回调地址必须精确注册：远程回调使用 HTTPS，只有回环回调可以使用 HTTP。
+PAS 会在授权和 token 交换时拒绝不同的 redirect URI。客户端从 OAuth 元数据和
+access JWT 获取 PAS issuer，不要把 issuer 增加到客户端 JSON。
 
 ## 网络与 TLS
 

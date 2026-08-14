@@ -968,6 +968,7 @@ export default function Users() {
           <PrincipalsPanel
             userId={identityTarget.id}
             userName={identityTarget.display_name}
+            userExternalId={identityTarget.external_id}
           />
         </section>
       )}

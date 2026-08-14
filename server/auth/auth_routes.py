@@ -6,13 +6,19 @@ import json
 import logging
 import secrets
 from datetime import datetime, timezone, timedelta
+from typing import cast
 
+import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from server.auth.builtin import authenticate_builtin
+from server.auth.rate_limit import (
+    AuthRateLimitExceeded,
+    check_builtin_login,
+)
 from server.db.engine import get_session_factory
 from server.models.oauth import OAuthPendingAuth, OAuthAuthorizationCode
 
@@ -35,6 +41,14 @@ def _utc_now_comparable(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return now.replace(tzinfo=None)
     return now
+
+
+def _oidc_callback_error(message: str, status_code: int) -> HTMLResponse:
+    return HTMLResponse(
+        f"<h3>{message}</h3>",
+        status_code=status_code,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def handle_login_page(request: Request) -> Response:
@@ -95,6 +109,17 @@ async def handle_login_callback(request: Request) -> Response:
 
     if not session_id or not username or not password:
         return HTMLResponse("<h3>Missing required fields</h3>", status_code=400)
+    try:
+        await check_builtin_login(request, username)
+    except AuthRateLimitExceeded as exc:
+        return HTMLResponse(
+            "<h3>Too many authentication requests</h3>",
+            status_code=429,
+            headers={
+                "Retry-After": str(exc.retry_after),
+                "Cache-Control": "no-store",
+            },
+        )
 
     factory = get_session_factory()
     async with factory() as db_session:
@@ -213,7 +238,7 @@ async def handle_oidc_callback(request: Request) -> Response:
     idp_state = request.query_params.get("state", "")
 
     if not code or not idp_state:
-        return HTMLResponse("<h3>Missing code or state</h3>", status_code=400)
+        return _oidc_callback_error("Missing code or state", 400)
 
     factory = get_session_factory()
     async with factory() as db_session:
@@ -225,69 +250,99 @@ async def handle_oidc_callback(request: Request) -> Response:
         )
         pending = result.scalar_one_or_none()
         if pending is None:
-            return HTMLResponse(
-                "<h3>Invalid or expired session</h3>", status_code=404
-            )
+            return _oidc_callback_error("Invalid or expired session", 404)
 
         # Check expiry
         if pending.expires_at < _utc_now_comparable(pending.expires_at):
-            return HTMLResponse("<h3>Session expired</h3>", status_code=410)
+            return _oidc_callback_error("Session expired", 410)
+        if not pending.idp_nonce:
+            return _oidc_callback_error("Invalid authorization session", 400)
+
+        redirect_uri = pending.redirect_uri
+        state = pending.state
+        pending_values = {
+            "client_id": pending.client_id,
+            "code_challenge": pending.code_challenge,
+            "code_challenge_method": pending.code_challenge_method,
+            "resource": pending.resource,
+            "scopes": pending.scopes,
+            "idp_code_verifier_enc": pending.idp_code_verifier_enc,
+            "idp_nonce": pending.idp_nonce,
+        }
+        consumed = await db_session.execute(
+            delete(OAuthPendingAuth).where(
+                OAuthPendingAuth.session_id == pending.session_id,
+                OAuthPendingAuth.idp_state == idp_state,
+            )
+        )
+        await db_session.commit()
+        if consumed.rowcount != 1:  # type: ignore[attr-defined]
+            return _oidc_callback_error("Invalid or expired session", 404)
 
         # Exchange IdP code for tokens
         from server.config import get_config
         from server.auth.identity_federation import IdentityFederation
         from server.core.crypto import decrypt as crypto_decrypt
 
-        config = get_config()
-        federation = IdentityFederation(
-            config.auth.oidc,
-            provider_name=config.auth.oidc.provider_name,
-        )
-        await federation.discover_endpoints()
+        try:
+            config = get_config()
+            federation = IdentityFederation(
+                config.auth.oidc,
+                provider_name=config.auth.oidc.provider_name,
+            )
+            await federation.discover_endpoints()
 
-        # Recover IdP-side PKCE code_verifier if stored
-        idp_code_verifier: str | None = None
-        if pending.idp_code_verifier_enc:
-            try:
-                idp_code_verifier = crypto_decrypt(pending.idp_code_verifier_enc)
-            except Exception:
-                logger.warning("Failed to decrypt idp_code_verifier_enc")
+            # Recover IdP-side PKCE code_verifier if stored
+            idp_code_verifier: str | None = None
+            if pending_values["idp_code_verifier_enc"]:
+                try:
+                    idp_code_verifier = crypto_decrypt(
+                        str(pending_values["idp_code_verifier_enc"])
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to decrypt OIDC PKCE verifier"
+                    )
 
-        callback_url = (
-            config.auth.oidc.redirect_uri
-            or f"{config.server.public_base_url}/auth/oidc/callback"
-        )
-        token_response = await federation.exchange_code(
-            code, callback_url, code_verifier=idp_code_verifier
-        )
-
-        # Extract user identity
-        identity = await federation.extract_user_identity(token_response)
+            callback_url = (
+                config.auth.oidc.redirect_uri
+                or f"{config.server.public_base_url}/auth/oidc/callback"
+            )
+            token_response = await federation.exchange_code(
+                code, callback_url, code_verifier=idp_code_verifier
+            )
+            identity = await federation.extract_user_identity(
+                token_response,
+                expected_nonce=str(pending_values["idp_nonce"]),
+            )
+        except (ValueError, httpx.HTTPError) as exc:
+            logger.warning(
+                "OIDC callback authentication failed (%s)",
+                type(exc).__name__,
+            )
+            return _oidc_callback_error("Authentication failed", 400)
 
         # Find or create local user
         user = await federation.find_or_create_user(db_session, identity)
-
-        redirect_uri = pending.redirect_uri
-        state = pending.state
 
         mcp_code = secrets.token_urlsafe(32)
         code_hash = hashlib.sha256(mcp_code.encode()).hexdigest()
 
         code_record = OAuthAuthorizationCode(
             code_hash=code_hash,
-            client_id=pending.client_id,
+            client_id=str(pending_values["client_id"]),
             user_id=user.id,
             redirect_uri=redirect_uri,
             redirect_uri_provided_explicitly=True,
-            code_challenge=pending.code_challenge,
-            code_challenge_method=pending.code_challenge_method,
-            resource=pending.resource,
-            scopes=pending.scopes,
+            code_challenge=str(pending_values["code_challenge"]),
+            code_challenge_method=str(
+                pending_values["code_challenge_method"]
+            ),
+            resource=cast(str | None, pending_values["resource"]),
+            scopes=str(pending_values["scopes"]),
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
         )
         db_session.add(code_record)
-
-        await db_session.delete(pending)
         await db_session.commit()
 
     separator = "&" if "?" in redirect_uri else "?"

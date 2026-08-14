@@ -41,10 +41,12 @@ Human-user sessions may also expose `set_default_instance`, `list_branches`,
 `create_branch`, and `delete_branch` when their runtime access supports those
 operations. Authenticated users with visible PolarRAG resources also receive
 `list_knowledge_resources`, `kb_search`, `kb_fetch_context`,
-`doc_find_by_name`, `doc_status`, `doc_recall`, and `doc_get_original`.
-Machine `pas_agent_` Tokens never receive the PolarRAG tools. A
-`pas_user_agent_` Token receives exactly those seven tools and applies both
-the assigned user's ACL context and the Agent's PolarRAG instance boundary. See
+`doc_find_by_name`, `doc_status`, `doc_recall`, `doc_get_original`,
+`doc_delete`, and `doc_rechunk`. When the selected Space is upload-ready, the
+catalog also includes `prepare_document_upload` and
+`complete_document_upload`. Machine `pas_agent_` Tokens never receive the
+PolarRAG tools. A `pas_user_agent_` Token applies both the assigned user's ACL
+context and the Agent's PolarRAG instance boundary. See
 [PolarRAG MCP and enterprise identities](../knowledge/polarrag-mcp.md).
 
 ## Actionable errors

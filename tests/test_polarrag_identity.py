@@ -73,6 +73,11 @@ async def test_resolve_acl_context_filters_and_deduplicates_assignments(
         "principals": [
             {"provider": "feishu", "type": "group", "id": "group-1"},
             {"provider": "feishu", "type": "user", "id": "ou-1"},
+            {
+                "provider": "polarrag",
+                "type": "user",
+                "id": user.external_id,
+            },
             {"provider": "sharepoint", "type": "user", "id": "sp-1"},
         ],
     }
@@ -93,9 +98,114 @@ async def test_resolve_acl_context_fails_closed_without_principals(
         await resolve_acl_context(session, user.id, "tenant-a")
 
 
+async def test_resolve_acl_context_accepts_native_user_assignment_only(
+    session,
+) -> None:
+    user = User(
+        external_id="native-user",
+        display_name="Native User",
+        auth_provider=AuthProvider.BUILTIN,
+    )
+    session.add(user)
+    await session.flush()
+    session.add(
+        EnterprisePrincipalAssignment.create(
+            pas_user_id=user.id,
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id=user.external_id,
+            source=EnterprisePrincipalSource.ADMIN_MANAGED,
+            canonical_user_external_id=user.external_id,
+        )
+    )
+    await session.commit()
+
+    assert await resolve_acl_context(session, user.id, "tenant-a") == {
+        "identity_domain": "tenant-a",
+        "principals": [
+            {"provider": "polarrag", "type": "user", "id": "native-user"}
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("auth_provider", "external_id"),
+    [
+        (AuthProvider.BUILTIN, "native-user "),
+        (AuthProvider.OIDC, "oidc:native-user "),
+    ],
+)
+async def test_resolve_acl_context_preserves_native_external_id_whitespace(
+    session,
+    auth_provider,
+    external_id,
+) -> None:
+    user = User(
+        external_id=external_id,
+        display_name="Native User",
+        auth_provider=auth_provider,
+    )
+    session.add(user)
+    await session.flush()
+    session.add(
+        EnterprisePrincipalAssignment.create(
+            pas_user_id=user.id,
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id=user.external_id,
+            source=EnterprisePrincipalSource.ADMIN_MANAGED,
+            canonical_user_external_id=user.external_id,
+        )
+    )
+    await session.commit()
+
+    assert await resolve_acl_context(session, user.id, "tenant-a") == {
+        "identity_domain": "tenant-a",
+        "principals": [
+            {"provider": "polarrag", "type": "user", "id": external_id}
+        ],
+    }
+
+
+async def test_resolve_acl_context_rejects_spoofed_native_assignment(
+    session,
+) -> None:
+    user = User(
+        external_id="native-user",
+        display_name="Native User",
+        auth_provider=AuthProvider.BUILTIN,
+    )
+    session.add(user)
+    await session.flush()
+    session.add(
+        EnterprisePrincipalAssignment(
+            pas_user_id=user.id,
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id="another-user",
+            source=EnterprisePrincipalSource.ADMIN_MANAGED,
+            status=EnterprisePrincipalStatus.ACTIVE,
+            user_principal_key="spoofed-native-user",
+        )
+    )
+    await session.commit()
+
+    with pytest.raises(IdentityContextUnavailable):
+        await resolve_acl_context(session, user.id, "tenant-a")
+
+
 def test_remote_provider_results_cannot_spoof_provider() -> None:
     with pytest.raises(ValueError, match="provider"):
         validate_provider_results(
             "feishu",
             [{"provider": "sharepoint", "type": "user", "id": "spoofed"}],
+        )
+
+    with pytest.raises(ValueError, match="provider"):
+        validate_provider_results(
+            "polarrag",
+            [{"provider": "polarrag", "type": "user", "id": "spoofed"}],
         )

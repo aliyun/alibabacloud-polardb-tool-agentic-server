@@ -56,6 +56,9 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
 ## Knowledge
 
+- [PolarRAG administrator onboarding](knowledge/polarrag-onboarding.md):
+  end-to-end setup for users, native identities, public and personal knowledge,
+  Agent Tokens, OSS upload, and MCP acceptance.
 - [PolarRAG MCP and enterprise identities](knowledge/polarrag-mcp.md):
   instance registration, identity principals, knowledge discovery, user-only
   tools, ACL boundaries, and required upstream capabilities.
@@ -64,7 +67,7 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
 - [Agent-assisted single-host deployment](deployment/agent-assisted-deployment.md):
   explicitly invoked Codex, Claude Code, Cursor, and compatible Agent Skills
-  workflows pinned to PAS 0.0.7.
+  workflows pinned to PAS 0.0.8.
 - [Production prerequisites](deployment/prerequisites.md): supported
   platforms, metadata database, root-key handling, writable paths, and
   registry access.

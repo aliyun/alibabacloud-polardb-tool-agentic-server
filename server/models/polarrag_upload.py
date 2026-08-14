@@ -4,6 +4,7 @@ import enum
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -11,6 +12,8 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -34,12 +37,6 @@ class PolarRAGUploadSession(TimestampMixin, Base):
         CheckConstraint(
             "part_size_bytes >= 1 AND part_count >= 1 AND part_count <= 10000",
             name="ck_polarrag_upload_sessions_parts",
-        ),
-        Index(
-            "ix_polarrag_upload_sessions_owner_status",
-            "pas_user_id",
-            "agent_id",
-            "status",
         ),
         Index("ix_polarrag_upload_sessions_expires_at", "expires_at"),
     )
@@ -90,5 +87,65 @@ class PolarRAGUploadSession(TimestampMixin, Base):
     )
     doc_id: Mapped[str | None] = mapped_column(String(512), nullable=True)
     upstream_status: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+
+
+class PolarRAGUploadCleanup(TimestampMixin, Base):
+    __tablename__ = "polarrag_upload_cleanups"
+    __table_args__ = (
+        CheckConstraint(
+            "object_state IN ('multipart', 'finalizing', 'object')",
+            name="ck_polarrag_upload_cleanups_object_state",
+        ),
+        Index(
+            "ix_polarrag_upload_cleanups_due",
+            "expires_at",
+            "cleanup_after",
+            "cleanup_lease_until",
+        ),
+    )
+
+    upload_session_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True
+    )
+    knowledge_space_id: Mapped[str] = mapped_column(String(36), index=True)
+    polarrag_instance_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    oss_bucket: Mapped[str] = mapped_column(String(255))
+    oss_endpoint: Mapped[str] = mapped_column(String(512))
+    oss_object_key: Mapped[str] = mapped_column(String(1024))
+    oss_multipart_upload_id: Mapped[str] = mapped_column(String(512))
+    oss_access_key_id_ciphertext: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    oss_access_key_secret_ciphertext: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    object_state: Mapped[str] = mapped_column(String(16))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    cleanup_attempts: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
+    cleanup_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cleanup_lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    operation_kind: Mapped[str | None] = mapped_column(
+        String(16), nullable=True
+    )
+    operation_token: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    submission_payload_ciphertext: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    reconcile_required: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
+    cleanup_error_code: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )

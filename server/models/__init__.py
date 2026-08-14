@@ -83,7 +83,8 @@ from server.models.provisioning_operation_budget import (
     ProvisioningOperationBudget,
 )
 from server.models.polarrag import (
-    ENTERPRISE_PRINCIPAL_PROVIDERS,
+    ACL_CONTEXT_PRINCIPAL_PROVIDERS,
+    EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalStatus,
@@ -96,6 +97,7 @@ from server.models.polarrag import (
     PolarRAGSpace,
 )
 from server.models.polarrag_upload import (
+    PolarRAGUploadCleanup,
     PolarRAGUploadSession,
     PolarRAGUploadStatus,
 )
@@ -194,7 +196,8 @@ __all__ = [
     "UserRefreshToken",
     "QuotaCounter",
     "SecretRevealLimit",
-    "ENTERPRISE_PRINCIPAL_PROVIDERS",
+    "ACL_CONTEXT_PRINCIPAL_PROVIDERS",
+    "EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS",
     "EnterprisePrincipalAssignment",
     "EnterprisePrincipalSource",
     "EnterprisePrincipalStatus",
@@ -206,5 +209,6 @@ __all__ = [
     "PolarRAGInstanceStatus",
     "PolarRAGSpace",
     "PolarRAGUploadSession",
+    "PolarRAGUploadCleanup",
     "PolarRAGUploadStatus",
 ]

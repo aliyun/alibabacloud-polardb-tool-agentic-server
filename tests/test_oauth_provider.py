@@ -10,7 +10,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from mcp.server.auth.provider import AuthorizationParams, AuthorizeError
+from mcp.server.auth.provider import (
+    AuthorizationParams,
+    AuthorizeError,
+    RegistrationError,
+)
 from mcp.shared.auth import OAuthClientInformationFull
 
 from server.auth.jwt_manager import reset_keys
@@ -123,7 +127,7 @@ class TestClientRegistration:
             client_id="public-client-001",
             client_secret=None,
             redirect_uris=["http://localhost:3000/callback"],
-            grant_types=["authorization_code"],
+            grant_types=["authorization_code", "refresh_token"],
             response_types=["code"],
             token_endpoint_auth_method="none",
             client_name="Public App",
@@ -138,6 +142,71 @@ class TestClientRegistration:
         assert result.client_name == "Public App"
         assert result.token_endpoint_auth_method == "none"
         assert len(result.redirect_uris) == 1
+
+    @pytest.mark.parametrize(
+        "redirect_uri",
+        [
+            "http://example.com/callback",
+            "https://user@example.com/callback",
+            "https://example.com/callback#fragment",
+            "custom-scheme://callback",
+        ],
+    )
+    async def test_rejects_unsafe_redirect_uri(
+        self, provider: PASAuthProvider, redirect_uri: str
+    ):
+        client_info = OAuthClientInformationFull(
+            client_id="unsafe-client",
+            redirect_uris=[redirect_uri],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+
+        with pytest.raises(RegistrationError):
+            await provider.register_client(client_info)
+
+    async def test_allows_remote_https_redirect(
+        self, provider: PASAuthProvider
+    ):
+        client_info = OAuthClientInformationFull(
+            client_id="remote-client",
+            redirect_uris=["https://client.example.com/oauth/callback"],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+
+        await provider.register_client(client_info)
+
+        assert await provider.get_client("remote-client") is not None
+
+    @pytest.mark.parametrize(
+        ("grant_types", "response_types", "auth_method"),
+        [
+            (["authorization_code"], ["code"], "none"),
+            (["authorization_code", "refresh_token", "client_credentials"], ["code"], "none"),
+            (["authorization_code", "refresh_token"], ["code", "token"], "none"),
+            (["authorization_code", "refresh_token"], ["code"], "client_secret_basic"),
+        ],
+    )
+    async def test_rejects_non_minimal_client_metadata(
+        self,
+        provider: PASAuthProvider,
+        grant_types: list[str],
+        response_types: list[str],
+        auth_method: str,
+    ):
+        client_info = OAuthClientInformationFull(
+            client_id="overbroad-client",
+            redirect_uris=["http://127.0.0.1:8080/callback"],
+            grant_types=grant_types,
+            response_types=response_types,
+            token_endpoint_auth_method=auth_method,
+        )
+
+        with pytest.raises(RegistrationError):
+            await provider.register_client(client_info)
 
 
 @pytest.fixture
@@ -207,6 +276,69 @@ class TestAuthorize:
             ),
         )
         assert "/mcp-auth/login?session_id=" in url
+
+    async def test_authorize_rejects_unregistered_redirect_uri(
+        self,
+        provider: PASAuthProvider,
+        registered_client: OAuthClientInformationFull,
+    ):
+        with pytest.raises(AuthorizeError):
+            await provider.authorize(
+                registered_client,
+                AuthorizationParams(
+                    state="s",
+                    scopes=[],
+                    code_challenge="c",
+                    redirect_uri="http://localhost/other-callback",
+                    redirect_uri_provided_explicitly=True,
+                    resource=None,
+                ),
+            )
+
+    async def test_oidc_authorize_persists_and_sends_nonce(
+        self,
+        provider: PASAuthProvider,
+        registered_client: OAuthClientInformationFull,
+        session_factory,
+    ):
+        from unittest.mock import AsyncMock, patch
+        from sqlalchemy import select
+        from server.models.oauth import OAuthPendingAuth
+
+        provider._config.auth.mode = "oidc"
+        provider._config.auth.oidc.authorization_endpoint = (
+            "https://idp.example.com/authorize"
+        )
+        provider._config.auth.oidc.token_endpoint = (
+            "https://idp.example.com/token"
+        )
+        provider._config.auth.oidc.client_id = "pas-client"
+
+        with patch(
+            "server.auth.identity_federation.IdentityFederation.discover_endpoints",
+            new=AsyncMock(),
+        ), patch(
+            "server.auth.identity_federation.IdentityFederation.build_authorize_url",
+            return_value=("https://idp.example.com/authorize", None),
+        ) as build_authorize_url:
+            await provider.authorize(
+                registered_client,
+                AuthorizationParams(
+                    state="mcp-state",
+                    scopes=["openid"],
+                    code_challenge="challenge",
+                    redirect_uri="http://localhost/callback",
+                    redirect_uri_provided_explicitly=True,
+                    resource="http://localhost:18760/mcp",
+                ),
+            )
+
+        async with session_factory() as session:
+            pending = (
+                await session.execute(select(OAuthPendingAuth))
+            ).scalar_one()
+        assert pending.idp_nonce
+        assert build_authorize_url.call_args.kwargs["nonce"] == pending.idp_nonce
 
 
 class TestCodeExchange:
@@ -383,7 +515,9 @@ class TestCodeExchange:
             get_public_key(),
             algorithms=["RS256"],
             audience="http://localhost:18760/mcp",
+            issuer="http://localhost:18760",
         )
+        assert payload["iss"] == "http://localhost:18760"
         assert payload["aud"] == "http://localhost:18760/mcp"
         assert payload["sub"] == "user:user-1"
         assert payload["client_id"] == "test-client"
@@ -523,6 +657,18 @@ class TestRefreshToken:
         new_token = await provider.exchange_refresh_token(client, loaded, [])
         assert new_token.access_token != access
         assert new_token.refresh_token != refresh
+
+        import jwt as jose_jwt
+        from server.auth.jwt_manager import get_public_key
+
+        payload = jose_jwt.decode(
+            new_token.access_token,
+            get_public_key(),
+            algorithms=["RS256"],
+            audience="http://localhost:18760/mcp",
+            issuer="http://localhost:18760",
+        )
+        assert payload["iss"] == "http://localhost:18760"
 
     async def test_old_refresh_revoked_after_rotation(
         self, provider, session_factory
@@ -685,6 +831,54 @@ class TestAccessToken:
         )
         result = await provider.load_access_token(bad_token)
         assert result is None
+
+    @pytest.mark.parametrize(
+        "missing_claim",
+        ["iss", "aud", "sub", "iat", "exp", "jti", "type"],
+    )
+    async def test_load_rejects_missing_required_claim(
+        self, provider, missing_claim: str
+    ):
+        import jwt as jose_jwt
+        from server.auth.jwt_manager import _load_keys
+
+        private_key, _ = _load_keys()
+        now = int(time.time())
+        payload = {
+            "iss": "http://localhost:18760",
+            "aud": "http://localhost:18760/mcp",
+            "sub": "user:user-1",
+            "iat": now,
+            "exp": now + 3600,
+            "jti": str(uuid.uuid4()),
+            "type": "access",
+        }
+        payload.pop(missing_claim)
+        token = jose_jwt.encode(payload, private_key, algorithm="RS256")
+
+        assert await provider.load_access_token(token) is None
+
+    async def test_load_rejects_wrong_issuer(self, provider):
+        import jwt as jose_jwt
+        from server.auth.jwt_manager import _load_keys
+
+        private_key, _ = _load_keys()
+        now = int(time.time())
+        token = jose_jwt.encode(
+            {
+                "iss": "https://other.example.com",
+                "aud": "http://localhost:18760/mcp",
+                "sub": "user:user-1",
+                "iat": now,
+                "exp": now + 3600,
+                "jti": str(uuid.uuid4()),
+                "type": "access",
+            },
+            private_key,
+            algorithm="RS256",
+        )
+
+        assert await provider.load_access_token(token) is None
 
 
 class TestRevocation:

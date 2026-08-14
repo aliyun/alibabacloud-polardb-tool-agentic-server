@@ -93,7 +93,7 @@ bootstrap token 交付、Docker 与 Kubernetes 命令和恢复方式详见
 
 Codex、Claude Code、Cursor 和兼容 Agent Skills 的客户端可以使用显式调用的
 [Agent 辅助部署 SKILL](docs/zh-cn/deployment/agent-assisted-deployment.md)。
-它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.7`。
+它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.8`。
 
 ## 管理流程
 
@@ -165,6 +165,7 @@ Agent 也可以通过仅接受 Bearer Token 的 `/mcp/rest/db-instances` REST �
 - [数据库实例访问与供应](docs/zh-cn/database-instances/access-and-provisioning.md)
 - [自动供给池（AgenticDB Dedicated）](docs/zh-cn/database-instances/dedicated-hot-pools.md)
 - [Agent REST 数据库供应](docs/zh-cn/database-instances/agent-rest-provisioning.md)
+- [PolarRAG 管理员接入](docs/zh-cn/knowledge/polarrag-onboarding.md)
 - [PolarRAG MCP 与企业身份](docs/zh-cn/knowledge/polarrag-mcp.md)
 - [Docker Compose 部署](docs/zh-cn/deployment/docker-compose.md)
 - [Agent 辅助的单机部署](docs/zh-cn/deployment/agent-assisted-deployment.md)

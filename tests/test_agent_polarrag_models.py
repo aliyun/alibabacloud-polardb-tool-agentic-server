@@ -78,6 +78,12 @@ async def test_unique_agent_polarrag_binding(session) -> None:
         await database.commit()
 
 
+def test_agent_polarrag_binding_defaults_to_all_public_resources() -> None:
+    column = AgentPolarRAGInstanceBinding.__table__.c.public_knowledge_resource_ids_json
+
+    assert column.nullable is True
+
+
 async def test_unique_agent_user_assignment(session) -> None:
     database, admin, member, agent, _instance = session
     for _ in range(2):
@@ -127,11 +133,22 @@ def test_agent_polarrag_ddl_compiles(dialect) -> None:
         "agent_user_tokens",
         "agent_group_assignments",
         "polarrag_upload_sessions",
+        "polarrag_upload_cleanups",
     }:
         table = Base.metadata.tables[table_name]
         assert table_name in str(CreateTable(table).compile(dialect=dialect))
         for index in table.indexes:
             assert str(CreateIndex(index).compile(dialect=dialect))
+
+
+def test_polarrag_space_disabled_default_is_portable_to_postgresql() -> None:
+    ddl = str(
+        CreateTable(Base.metadata.tables["polarrag_spaces"]).compile(
+            dialect=postgresql.dialect()
+        )
+    ).lower()
+
+    assert "enabled boolean default false not null" in ddl
 
 
 def test_polarrag_upload_session_binds_user_agent_resource_and_oss_upload() -> None:
@@ -210,6 +227,28 @@ def test_agent_group_migration_renders(dialect, monkeypatch) -> None:
     [sqlite.dialect(), mysql.dialect(), postgresql.dialect()],
     ids=["sqlite", "mysql", "postgresql"],
 )
+def test_agent_public_kb_scope_migration_renders(dialect, monkeypatch) -> None:
+    migration = import_module(
+        "server.db.migrations.versions."
+        "b0c1d2e3f4a5_add_agent_public_kb_scope"
+    )
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect=dialect,
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    migration.upgrade()
+
+    assert "public_knowledge_resource_ids_json" in output.getvalue().lower()
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    [sqlite.dialect(), mysql.dialect(), postgresql.dialect()],
+    ids=["sqlite", "mysql", "postgresql"],
+)
 def test_polarrag_upload_session_migration_renders(dialect, monkeypatch) -> None:
     migration = import_module(
         "server.db.migrations.versions."
@@ -227,3 +266,89 @@ def test_polarrag_upload_session_migration_renders(dialect, monkeypatch) -> None
     rendered = output.getvalue().lower()
     assert "create table polarrag_upload_sessions" in rendered
     assert "oss_multipart_upload_id" in rendered
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    [sqlite.dialect(), mysql.dialect(), postgresql.dialect()],
+    ids=["sqlite", "mysql", "postgresql"],
+)
+def test_polarrag_upload_cleanup_migration_renders(
+    dialect,
+    monkeypatch,
+) -> None:
+    migration = import_module(
+        "server.db.migrations.versions."
+        "d6e7f8a9b0c1_add_polarrag_upload_cleanup_journal"
+    )
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect=dialect,
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    migration.upgrade()
+
+    rendered = output.getvalue().lower()
+    assert "create table polarrag_upload_cleanups" in rendered
+    assert "insert into polarrag_upload_cleanups" in rendered
+    assert "drop index ix_polarrag_upload_sessions_owner_status" in rendered
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    [sqlite.dialect(), mysql.dialect(), postgresql.dialect()],
+    ids=["sqlite", "mysql", "postgresql"],
+)
+def test_polarrag_upload_cleanup_credentials_migration_renders(
+    dialect,
+    monkeypatch,
+) -> None:
+    migration = import_module(
+        "server.db.migrations.versions."
+        "e7f8a9b0c1d2_snapshot_upload_cleanup_credentials"
+    )
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect=dialect,
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    migration.upgrade()
+
+    rendered = output.getvalue().lower()
+    assert "oss_access_key_id_ciphertext" in rendered
+    assert "oss_access_key_secret_ciphertext" in rendered
+    assert "update polarrag_upload_cleanups" in rendered
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    [sqlite.dialect(), mysql.dialect(), postgresql.dialect()],
+    ids=["sqlite", "mysql", "postgresql"],
+)
+def test_polarrag_upload_cleanup_fencing_migration_renders(
+    dialect,
+    monkeypatch,
+) -> None:
+    migration = import_module(
+        "server.db.migrations.versions."
+        "f8a9b0c1d2e3_add_upload_cleanup_fencing"
+    )
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect=dialect,
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    migration.upgrade()
+
+    rendered = output.getvalue().lower()
+    assert "operation_kind" in rendered
+    assert "operation_token" in rendered
+    assert "polarrag_instance_id" in rendered
+    assert "submission_payload_ciphertext" in rendered
+    assert "reconcile_required" in rendered

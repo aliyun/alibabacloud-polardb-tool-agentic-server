@@ -63,6 +63,7 @@ describe('Agent PolarRAG access panel', () => {
         id: 'binding-1',
         polarrag_instance_id: 'rag-1',
         instance_name: 'Primary RAG',
+        public_knowledge_resource_ids: null,
         created_at: '2026-08-05T00:00:00Z',
       },
     } as never)
@@ -163,6 +164,7 @@ describe('Agent PolarRAG access panel', () => {
             id: 'binding-1',
             polarrag_instance_id: 'rag-1',
             instance_name: 'Primary RAG',
+            public_knowledge_resource_ids: null,
             created_at: '2026-08-05T00:00:00Z',
           },
         ]}
@@ -173,11 +175,13 @@ describe('Agent PolarRAG access panel', () => {
     await user.click(
       await screen.findByRole('combobox', { name: 'PolarRAG instance' }),
     )
-  expect(
-    await screen.findByText('All PolarRAG instances are already bound'),
-  ).toBeInTheDocument()
-  expect(
-    screen.getByText(/Already-bound instances are listed under Instance access/),
-  ).toBeInTheDocument()
-})
+    expect(
+      await screen.findByText('All PolarRAG instances are already bound'),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByText(
+        /shown in this PolarRAG instances tab/,
+      ),
+    ).toBeInTheDocument()
+  })
 })

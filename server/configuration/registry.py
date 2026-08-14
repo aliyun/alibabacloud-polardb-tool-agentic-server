@@ -35,6 +35,7 @@ class AgentTokenAuthConfig(_StrictModel):
 
 class UserSSOConfig(_StrictModel):
     discovery_url: AnyHttpUrl | None = None
+    issuer: AnyHttpUrl | None = None
     authorization_endpoint: AnyHttpUrl | None = None
     token_endpoint: AnyHttpUrl | None = None
     userinfo_endpoint: AnyHttpUrl | None = None
@@ -54,6 +55,27 @@ class UserSSOConfig(_StrictModel):
         default_factory=lambda: ["RS256", "ES256"]
     )
     default_department: str = ""
+
+    @model_validator(mode="after")
+    def validate_manual_endpoints(self) -> "UserSSOConfig":
+        manual_values = (
+            self.issuer,
+            self.authorization_endpoint,
+            self.token_endpoint,
+            self.userinfo_endpoint,
+            self.jwks_uri,
+        )
+        if self.discovery_url is None and any(manual_values):
+            if not (
+                self.issuer
+                and self.authorization_endpoint
+                and self.token_endpoint
+            ):
+                raise ValueError(
+                    "Manual OIDC configuration requires issuer, "
+                    "authorization_endpoint, and token_endpoint"
+                )
+        return self
 
 
 class RuntimePolicyConfig(_StrictModel):

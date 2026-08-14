@@ -2,9 +2,12 @@
 
 [简体中文](../../zh-cn/reference/release-process.md)
 
-`v0.0.x` releases are pre-releases for user trials. Promote the project to
-`v0.1.0` only after field feedback and defect fixes make the supported
-deployment stable.
+The semantic version and GitHub release maturity are separate decisions. A
+release can be published as a stable Release when its supported deployment,
+upgrade, rollback, and known-issue gates have passed, including while the
+project remains on the `v0.0.x` line. Use a Pre-release only when the exact
+version is intentionally offered for evaluation and is not yet accepted as a
+stable release.
 
 ## Repository protection
 
@@ -38,12 +41,23 @@ The required trailers record the semantic release version and exact internal
 source commit without reducing the subject to `publish v0.0.x` or
 `port develop`.
 
+Internal `develop` and public `main` do not share a reliable commit ancestry.
+To prepare the next snapshot, export the allowlisted public tree from the exact
+target `develop` commit and compare that exported tree with the current public
+`main` tree. Apply only that net tree delta as the new public commit. Do not
+derive the publication range from `Source-Develop..develop`, and do not
+cherry-pick an internal commit range: earlier feature content may already be in
+public `main` under different commit identities. Set the new `Source-Develop`
+trailer to the exact internal commit whose exported tree was reviewed.
+
 ## Draft inspection
 
 The protected workflow produces immutable multi-architecture image and Chart
 versions, per-architecture offline archives, an SPDX SBOM, checksums, and
-GitHub attestations. It then creates a **Draft, Pre-release** GitHub Release.
-It never publishes the Release automatically.
+GitHub attestations. It then creates a **Draft** GitHub Release with the
+Pre-release marker initially enabled. This initial marker is a safe review
+default, not the final maturity decision. The workflow never publishes the
+Release automatically.
 
 Before publication, the approving maintainer must inspect:
 
@@ -54,6 +68,38 @@ Before publication, the approving maintainer must inspect:
 - Generated release notes, known issues, upgrade limits, and China-network
   offline instructions.
 
+## Publication decision
+
+After the Draft passes inspection, publish it directly in one of these two
+states. Do not publish it as a Pre-release first and then convert it merely as
+an intermediate step.
+
+For a stable release, clear the Pre-release marker and explicitly select it as
+GitHub Latest:
+
+```bash
+gh release edit "${RELEASE_TAG}" \
+  --draft=false \
+  --prerelease=false \
+  --latest \
+  --verify-tag
+```
+
+For an evaluation release, retain the Pre-release marker and do not mark it as
+GitHub Latest:
+
+```bash
+gh release edit "${RELEASE_TAG}" \
+  --draft=false \
+  --prerelease \
+  --verify-tag
+```
+
+After publication, verify the Release's `draft` and `prerelease` fields, its
+stable asset URLs and checksums, the tag commit, and every workflow triggered
+by the `published` event. For a stable release, also verify that
+`/releases/latest` selects the expected tag.
+
 Document accepted vulnerability exceptions with scope, rationale, owner, and
 expiry in the public
 [`dependency-vulnerability-exceptions.yaml`](../../../security/dependency-vulnerability-exceptions.yaml)
@@ -63,11 +109,13 @@ or silently waive a scanner finding.
 
 ## Container `latest` alias
 
-Publishing a GitHub Release may promote its verified container image digest
-to the mutable `latest` alias. Promotion runs only when the candidate is the
-highest published semantic version, so a delayed older Release cannot move
-the alias backward. The alias applies only to the container image; it does
-not create or replace a Chart version.
+Publishing a GitHub Release currently promotes its verified container image
+digest to the mutable `latest` alias when the candidate is the highest
+published semantic version. This `published`-event workflow also runs for a
+Pre-release, so an evaluation release can update the container alias even
+though it is not GitHub Latest. A delayed older Release cannot move the alias
+backward. The alias applies only to the container image; it does not create or
+replace a Chart version.
 
 Use `latest` only for evaluation and discovery. Production and reproducible
 deployments must continue to pin an exact semantic version or, preferably,
@@ -77,8 +125,8 @@ the verified image digest.
 
 Never replace a published tag, image, Chart, archive, checksum, or Release
 asset. If a defect is found, create a new patch version. A rerun fails when a
-Release for the tag already exists. Keep `prerelease` enabled throughout the
-`v0.0.x` line.
+Release for the tag already exists. Do not change immutable artifacts when
+changing only the GitHub Release maturity metadata.
 
 ## Recovering an incomplete Release
 
@@ -103,5 +151,6 @@ gh workflow run recover-release.yml \
 
 Review the JSON evidence in the job summary. Only then may a maintainer start
 the mutating job by changing `dry_run` to `false`. That job requires approval
-through the `release` Environment and creates a **Draft, Pre-release** for
-manual inspection. It does not publish the draft.
+through the `release` Environment and creates a **Draft** with the Pre-release
+marker initially enabled for manual inspection. It does not publish the draft;
+use the same publication decision above after recovery checks pass.

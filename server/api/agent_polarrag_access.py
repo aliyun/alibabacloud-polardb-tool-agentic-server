@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,7 +27,11 @@ from server.models import (
     EnterprisePrincipalAssignment,
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
+    KnowledgeBindingMode,
+    KnowledgeResource,
+    KnowledgeResourceSyncStatus,
     PolarRAGInstance,
+    PolarRAGSpace,
     User,
     UserDepartment,
 )
@@ -37,6 +43,11 @@ router = APIRouter(prefix="/agents", tags=["agent-polarrag-access"])
 class PolarRAGBindingRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     polarrag_instance_id: str
+
+
+class PolarRAGPublicScopeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    public_knowledge_resource_ids: list[str] | None
 
 
 class UserAssignmentRequest(BaseModel):
@@ -72,7 +83,31 @@ class PolarRAGBindingResponse(BaseModel):
     id: str
     polarrag_instance_id: str
     instance_name: str
+    public_knowledge_resource_ids: list[str] | None
     created_at: datetime
+
+
+class PolarRAGPublicResourceResponse(BaseModel):
+    knowledge_resource_id: str
+    name: str
+    knowledge_space_name: str
+
+
+def _public_resource_ids(
+    row: AgentPolarRAGInstanceBinding,
+) -> list[str] | None:
+    raw = row.public_knowledge_resource_ids_json
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) for item in value
+    ):
+        return []
+    return value
 
 
 class UserTokenSummaryResponse(BaseModel):
@@ -98,6 +133,7 @@ def _binding_response(
         id=row.id,
         polarrag_instance_id=row.polarrag_instance_id,
         instance_name=row.instance.name,
+        public_knowledge_resource_ids=_public_resource_ids(row),
         created_at=row.created_at,
     )
 
@@ -155,6 +191,7 @@ async def _audit(
     action: str,
     target_type: str,
     target_id: str,
+    client_info: str | None = None,
 ) -> None:
     await log_audit(
         session,
@@ -164,6 +201,7 @@ async def _audit(
         user_name=admin.display_name,
         target_type=target_type,
         target_id=target_id,
+        client_info=client_info,
         required=True,
         commit=False,
     )
@@ -510,6 +548,151 @@ async def create_polarrag_binding(
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail="PolarRAG instance already bound") from exc
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(status_code=503, detail="Audit unavailable") from exc
+    return _binding_response(row)
+
+
+async def _require_polarrag_binding(
+    session: AsyncSession,
+    agent_id: str,
+    binding_id: str,
+) -> AgentPolarRAGInstanceBinding:
+    row = (
+        await session.execute(
+            select(AgentPolarRAGInstanceBinding)
+            .options(selectinload(AgentPolarRAGInstanceBinding.instance))
+            .where(
+                AgentPolarRAGInstanceBinding.id == binding_id,
+                AgentPolarRAGInstanceBinding.agent_id == agent_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="PolarRAG binding not found")
+    return row
+
+
+@router.get(
+    "/{agent_id}/polarrag-bindings/{binding_id}/public-resources",
+    response_model=list[PolarRAGPublicResourceResponse],
+)
+async def list_polarrag_binding_public_resources(
+    agent_id: str,
+    binding_id: str,
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    row = await _require_polarrag_binding(session, agent_id, binding_id)
+    resources = (
+        await session.execute(
+            select(KnowledgeResource)
+            .join(
+                PolarRAGSpace,
+                PolarRAGSpace.knowledge_space_id
+                == KnowledgeResource.knowledge_space_id,
+            )
+            .options(selectinload(KnowledgeResource.space))
+            .where(
+                KnowledgeResource.polarrag_instance_id
+                == row.polarrag_instance_id,
+                KnowledgeResource.kb_type == "PUBLIC",
+                KnowledgeResource.binding_mode == KnowledgeBindingMode.DOMAIN,
+                KnowledgeResource.sync_status
+                == KnowledgeResourceSyncStatus.ACTIVE,
+                KnowledgeResource.enabled.is_(True),
+                PolarRAGSpace.enabled.is_(True),
+            )
+            .order_by(KnowledgeResource.name, KnowledgeResource.id)
+        )
+    ).scalars()
+    return [
+        PolarRAGPublicResourceResponse(
+            knowledge_resource_id=resource.id,
+            name=resource.name,
+            knowledge_space_name=resource.space.name,
+        )
+        for resource in resources
+    ]
+
+
+@router.put(
+    "/{agent_id}/polarrag-bindings/{binding_id}/public-resources",
+    response_model=PolarRAGBindingResponse,
+)
+async def update_polarrag_binding_public_resources(
+    agent_id: str,
+    binding_id: str,
+    body: PolarRAGPublicScopeRequest,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    row = await _require_polarrag_binding(session, agent_id, binding_id)
+    requested = body.public_knowledge_resource_ids
+    if requested is not None:
+        try:
+            valid_shape = len(requested) == len(set(requested)) and all(
+                str(uuid.UUID(resource_id)) == resource_id
+                for resource_id in requested
+            )
+        except (TypeError, ValueError, AttributeError):
+            valid_shape = False
+        selected = set(
+            (
+                await session.execute(
+                    select(KnowledgeResource.id)
+                    .join(
+                        PolarRAGSpace,
+                        PolarRAGSpace.knowledge_space_id
+                        == KnowledgeResource.knowledge_space_id,
+                    )
+                    .where(
+                        KnowledgeResource.id.in_(requested),
+                        KnowledgeResource.polarrag_instance_id
+                        == row.polarrag_instance_id,
+                        KnowledgeResource.kb_type == "PUBLIC",
+                        KnowledgeResource.binding_mode
+                        == KnowledgeBindingMode.DOMAIN,
+                        KnowledgeResource.sync_status
+                        == KnowledgeResourceSyncStatus.ACTIVE,
+                        KnowledgeResource.enabled.is_(True),
+                        PolarRAGSpace.enabled.is_(True),
+                    )
+                )
+            ).scalars()
+        )
+        if not valid_shape or selected != set(requested):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "Selected resources must be synchronized ACTIVE PUBLIC "
+                    "knowledge resources on the bound instance"
+                ),
+            )
+        requested = sorted(requested)
+    row.public_knowledge_resource_ids_json = (
+        None
+        if requested is None
+        else json.dumps(requested, separators=(",", ":"))
+    )
+    scope = "all" if requested is None else "selected"
+    try:
+        await _audit(
+            session,
+            admin,
+            "agent_polarrag_binding.public_scope.update",
+            "agent_polarrag_binding",
+            row.id,
+            client_info=json.dumps(
+                {
+                    "public_scope": scope,
+                    "resource_count": len(requested or []),
+                },
+                separators=(",", ":"),
+            ),
+        )
+        await session.commit()
     except Exception as exc:
         await session.rollback()
         raise HTTPException(status_code=503, detail="Audit unavailable") from exc

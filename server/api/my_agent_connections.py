@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -21,6 +21,7 @@ from server.models import (
     AgentUserAssignment,
     AgentUserToken,
     AuditStatus,
+    AuthProvider,
     User,
 )
 
@@ -30,6 +31,12 @@ router = APIRouter(prefix="/me/agent-connections", tags=["my-agent-connections"]
 class ConfirmedRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     confirmed: Literal[True]
+    expires_at: datetime | None = None
+
+
+class TokenExpiryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expires_at: datetime | None = None
 
 
 class PasswordRequest(BaseModel):
@@ -40,6 +47,7 @@ class PasswordRequest(BaseModel):
 class MyTokenSummary(BaseModel):
     token_prefix: str
     status: str
+    expires_at: datetime | None
     last_used_at: datetime | None
 
 
@@ -54,6 +62,7 @@ class MyAgentConnection(BaseModel):
     agent_name: str
     agent_status: str
     polarrag_instances: list[MyPolarRAGInstance]
+    password_reveal_available: bool
     token: MyTokenSummary | None
 
 
@@ -61,6 +70,7 @@ class MyTokenResponse(BaseModel):
     assignment_id: str
     token_prefix: str
     status: str
+    expires_at: datetime | None
     last_used_at: datetime | None
     token: str | None = None
 
@@ -122,8 +132,17 @@ def _token_response(
         assignment_id=row.assignment_id,
         token_prefix=row.token_prefix,
         status=agent_user_token_service.token_status(row),
+        expires_at=_as_utc(row.expires_at),
         last_used_at=row.last_used_at,
         token=plaintext,
+    )
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(
+        tzinfo=timezone.utc
     )
 
 
@@ -200,6 +219,7 @@ async def list_connections(
             agent,
             assignments_by_agent.get(agent.id),
             by_agent.get(agent.id, []),
+            password_reveal_available=user.password_hash is not None,
         )
         for agent in agents
     ]
@@ -209,6 +229,8 @@ def _connection_response(
     agent: Agent,
     assignment: AgentUserAssignment | None,
     instances: list[MyPolarRAGInstance],
+    *,
+    password_reveal_available: bool,
 ) -> MyAgentConnection:
     token = assignment.token if assignment is not None else None
     return MyAgentConnection(
@@ -217,10 +239,12 @@ def _connection_response(
         agent_name=agent.name,
         agent_status=agent.status.value,
         polarrag_instances=instances,
+        password_reveal_available=password_reveal_available,
         token=(
             MyTokenSummary(
                 token_prefix=token.token_prefix,
                 status=agent_user_token_service.token_status(token),
+                expires_at=_as_utc(token.expires_at),
                 last_used_at=token.last_used_at,
             )
             if token is not None
@@ -252,6 +276,7 @@ async def _finish_sensitive(
 @router.post("/{connection_id}/token/issue", response_model=MyTokenResponse)
 async def issue_token(
     connection_id: str,
+    body: TokenExpiryRequest | None = None,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -262,15 +287,31 @@ async def issue_token(
         create=True,
     )
     try:
-        row, _plaintext = await agent_user_token_service.issue_token(
-            session, assignment.id
+        row, plaintext = await agent_user_token_service.issue_token(
+            session,
+            assignment.id,
+            body.expires_at if body is not None else None,
         )
+        if user.auth_provider == AuthProvider.OIDC:
+            await agent_token_service.consume_reveal_budget(
+                session, user.id, assignment.agent_id
+            )
+    except agent_token_service.TokenRevealRateLimitExceeded as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail="Token delivery rate limit exceeded",
+        ) from exc
     except agent_user_token_service.ActiveTokenExists as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return await _finish_sensitive(
-        session, user, "agent_user_token.issue", row, None
+        session,
+        user,
+        "agent_user_token.issue",
+        row,
+        plaintext if user.auth_provider == AuthProvider.OIDC else None,
     )
 
 
@@ -282,6 +323,14 @@ async def reveal_token(
     session: AsyncSession = Depends(get_session),
 ):
     assignment = await _owned_assignment(session, connection_id, user.id)
+    if user.auth_provider == AuthProvider.OIDC:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Password reveal is unavailable for SSO users; regenerate "
+                "the Token for one-time delivery"
+            ),
+        )
     if (
         user.password_hash is None
         or not verify_password(body.password, user.password_hash)
@@ -307,19 +356,33 @@ async def reveal_token(
 @router.post("/{connection_id}/token/regenerate", response_model=MyTokenResponse)
 async def regenerate_token(
     connection_id: str,
-    _body: ConfirmedRequest,
+    body: ConfirmedRequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     assignment = await _owned_assignment(session, connection_id, user.id)
     try:
-        row, _plaintext = await agent_user_token_service.regenerate_token(
-            session, assignment.id
+        row, plaintext = await agent_user_token_service.regenerate_token(
+            session, assignment.id, body.expires_at
         )
+        if user.auth_provider == AuthProvider.OIDC:
+            await agent_token_service.consume_reveal_budget(
+                session, user.id, assignment.agent_id
+            )
+    except agent_token_service.TokenRevealRateLimitExceeded as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=429,
+            detail="Token delivery rate limit exceeded",
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return await _finish_sensitive(
-        session, user, "agent_user_token.regenerate", row, None
+        session,
+        user,
+        "agent_user_token.regenerate",
+        row,
+        plaintext if user.auth_provider == AuthProvider.OIDC else None,
     )
 
 

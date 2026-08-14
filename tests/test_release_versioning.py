@@ -22,6 +22,8 @@ CURRENT_RELEASE_REFERENCE_PATHS = (
     "docs/zh-cn/README.md",
     "docs/en/deployment/agent-assisted-deployment.md",
     "docs/zh-cn/deployment/agent-assisted-deployment.md",
+    "docs/en/knowledge/polarrag-onboarding.md",
+    "docs/zh-cn/knowledge/polarrag-onboarding.md",
     "docs/en/getting-started/deploy-compose.md",
     "docs/zh-cn/getting-started/deploy-compose.md",
 )
@@ -54,6 +56,8 @@ VERSION_PATHS = (
     "docs/en/deployment/kubernetes-helm.md",
     "docs/zh-cn/deployment/kubernetes-helm.md",
     "docs/zh-cn/deployment/agent-assisted-deployment.md",
+    "docs/en/knowledge/polarrag-onboarding.md",
+    "docs/zh-cn/knowledge/polarrag-onboarding.md",
     "docs/en/deployment/offline-installation.md",
     "docs/zh-cn/deployment/offline-installation.md",
     "docs/en/deployment/upgrade-and-rollback.md",

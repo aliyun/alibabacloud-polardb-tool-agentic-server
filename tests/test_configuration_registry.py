@@ -81,6 +81,49 @@ def test_sso_accepts_https_external_url() -> None:
     assert result.normalized_config["provider_name"] == "oidc"
 
 
+def test_sso_manual_endpoints_require_explicit_issuer() -> None:
+    result = validate_module_config(
+        "user_sso",
+        {
+            "authorization_endpoint": "https://idp.example/authorize",
+            "token_endpoint": "https://idp.example/token",
+            "client_id": "client",
+            "client_secret": "secret",
+        },
+        effective_configs={
+            "runtime_policy": {
+                "external_base_url": "https://agentic.example"
+            }
+        },
+    )
+
+    assert result.valid is False
+    assert result.error_code == "INVALID_MODULE_CONFIG"
+
+
+def test_sso_accepts_manual_endpoints_with_explicit_issuer() -> None:
+    result = validate_module_config(
+        "user_sso",
+        {
+            "issuer": "https://idp.example/tenant/v2.0",
+            "authorization_endpoint": "https://idp.example/authorize",
+            "token_endpoint": "https://idp.example/token",
+            "client_id": "client",
+            "client_secret": "secret",
+        },
+        effective_configs={
+            "runtime_policy": {
+                "external_base_url": "https://agentic.example"
+            }
+        },
+    )
+
+    assert result.valid is True
+    assert result.normalized_config["issuer"] == (
+        "https://idp.example/tenant/v2.0"
+    )
+
+
 def test_runtime_poll_interval_is_bounded() -> None:
     result = validate_module_config(
         "runtime_policy",

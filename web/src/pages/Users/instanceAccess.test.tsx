@@ -343,6 +343,69 @@ describe('User instance access editor', () => {
     )
   })
 
+  it('locks native PolarRAG principals to the selected PAS user', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/users') {
+        return Promise.resolve({
+          data: { items: [member], total: 1, offset: 0, limit: 20 },
+        } as never)
+      }
+      if (url === '/auth/mode') {
+        return Promise.resolve({ data: { mode: 'builtin' } } as never)
+      }
+      if (url === `/api/polarrag/users/${member.id}/principals`) {
+        return Promise.resolve({ data: { items: [] } } as never)
+      }
+      return Promise.resolve({ data: [] } as never)
+    })
+    vi.mocked(api.post).mockResolvedValue({ data: {} } as never)
+    render(<Users />)
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: /enterprise identity for production reporter/i,
+      }),
+    )
+    await user.click(
+      screen.getAllByRole('button', { name: /add principal/i })[0],
+    )
+    const dialog = screen.getByRole('dialog', {
+      name: /add enterprise principal/i,
+    })
+    await user.type(
+      within(dialog).getByLabelText(/identity domain/i),
+      'tenant-native',
+    )
+    await user.click(
+      within(dialog).getByRole('combobox', { name: /provider/i }),
+    )
+    await user.click(await screen.findByText('PolarRAG'))
+
+    expect(
+      within(dialog).getByRole('combobox', { name: /principal type/i }),
+    ).toBeDisabled()
+    const principalId = within(dialog).getByLabelText(/principal id/i)
+    expect(principalId).toBeDisabled()
+    expect(principalId).toHaveValue(member.external_id)
+
+    await user.click(
+      within(dialog).getByRole('button', { name: /^add$/i }),
+    )
+    await waitFor(() =>
+      expect(api.post).toHaveBeenCalledWith(
+        `/api/polarrag/users/${member.id}/principals`,
+        {
+          identity_domain: 'tenant-native',
+          provider: 'polarrag',
+          principal_type: 'user',
+          principal_id: member.external_id,
+          valid_until: null,
+        },
+      ),
+    )
+  })
+
   it('grants describe and credentials independently with dependency expansion', async () => {
     const user = userEvent.setup()
     vi.mocked(updateUserInstanceAccess).mockResolvedValue({

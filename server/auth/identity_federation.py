@@ -19,8 +19,27 @@ from server.models.oauth import UserExternalIdentity
 logger = logging.getLogger(__name__)
 
 
+class OIDCAuthenticationError(ValueError):
+    pass
+
+
+def _oidc_json_object(response: httpx.Response, label: str) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise OIDCAuthenticationError(
+            f"OIDC {label} must be valid JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise OIDCAuthenticationError(
+            f"OIDC {label} must be a JSON object"
+        )
+    return payload
+
+
 @dataclass
 class IdPEndpoints:
+    issuer: str
     authorization_endpoint: str
     token_endpoint: str
     userinfo_endpoint: str | None = None
@@ -49,20 +68,52 @@ class IdentityFederation:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(self._config.discovery_url)
                 resp.raise_for_status()
-                meta = resp.json()
+                meta = _oidc_json_object(resp, "discovery metadata")
+            required_endpoints: dict[str, str] = {}
+            for field in (
+                "issuer",
+                "authorization_endpoint",
+                "token_endpoint",
+            ):
+                value = meta.get(field)
+                if not isinstance(value, str) or not value:
+                    raise OIDCAuthenticationError(
+                        f"OIDC discovery metadata requires {field}"
+                    )
+                required_endpoints[field] = value
+            optional_endpoints: dict[str, str | None] = {}
+            for field in ("userinfo_endpoint", "jwks_uri"):
+                value = meta.get(field)
+                if value is not None and (
+                    not isinstance(value, str) or not value
+                ):
+                    raise OIDCAuthenticationError(
+                        f"OIDC discovery metadata has invalid {field}"
+                    )
+                optional_endpoints[field] = value
             self._endpoints = IdPEndpoints(
-                authorization_endpoint=meta["authorization_endpoint"],
-                token_endpoint=meta["token_endpoint"],
-                userinfo_endpoint=meta.get("userinfo_endpoint"),
-                jwks_uri=meta.get("jwks_uri"),
+                issuer=required_endpoints["issuer"],
+                authorization_endpoint=required_endpoints[
+                    "authorization_endpoint"
+                ],
+                token_endpoint=required_endpoints["token_endpoint"],
+                userinfo_endpoint=optional_endpoints[
+                    "userinfo_endpoint"
+                ],
+                jwks_uri=optional_endpoints["jwks_uri"],
             )
         else:
-            if not self._config.authorization_endpoint or not self._config.token_endpoint:
+            if (
+                not self._config.issuer
+                or not self._config.authorization_endpoint
+                or not self._config.token_endpoint
+            ):
                 raise ValueError(
                     "OIDC config requires either discovery_url or "
-                    "manual authorization_endpoint + token_endpoint"
+                    "manual issuer + authorization_endpoint + token_endpoint"
                 )
             self._endpoints = IdPEndpoints(
+                issuer=self._config.issuer,
                 authorization_endpoint=self._config.authorization_endpoint,
                 token_endpoint=self._config.token_endpoint,
                 userinfo_endpoint=self._config.userinfo_endpoint,
@@ -134,17 +185,76 @@ class IdentityFederation:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             resp.raise_for_status()
-            result: dict[str, Any] = resp.json()
-            return result
+            return _oidc_json_object(resp, "token response")
 
-    async def extract_user_identity(self, token_response: dict) -> UserIdentity:
+    async def _verified_id_token_claims(
+        self, token_response: dict[str, Any]
+    ) -> dict[str, Any]:
+        endpoints = await self.discover_endpoints()
+        id_token = token_response.get("id_token")
+        if not id_token or not endpoints.jwks_uri:
+            raise ValueError(
+                "Cannot verify id_token: no id_token or jwks_uri available"
+            )
+        async with httpx.AsyncClient() as client:
+            jwks_resp = await client.get(endpoints.jwks_uri)
+            jwks_resp.raise_for_status()
+            jwks = _oidc_json_object(jwks_resp, "JWKS response")
+        keys = jwks.get("keys")
+        if not isinstance(keys, list) or any(
+            not isinstance(key, dict) for key in keys
+        ):
+            raise OIDCAuthenticationError(
+                "OIDC JWKS keys must be an array of objects"
+            )
+        try:
+            header = jwt.get_unverified_header(id_token)
+            matching_keys = [
+                key
+                for key in keys
+                if not header.get("kid") or key.get("kid") == header["kid"]
+            ]
+            if len(matching_keys) != 1:
+                raise ValueError("Cannot select a unique OIDC signing key")
+            signing_key = jwt.PyJWK.from_dict(matching_keys[0]).key
+            claims = jwt.decode(
+                id_token,
+                signing_key,
+                algorithms=self._config.id_token_algorithms,
+                audience=self._config.client_id,
+                issuer=endpoints.issuer,
+            )
+        except (jwt.PyJWTError, TypeError, ValueError) as exc:
+            raise OIDCAuthenticationError(
+                "OIDC id_token signature, issuer, or audience validation failed"
+            ) from exc
+        return dict(claims)
+
+    async def extract_user_identity(
+        self,
+        token_response: dict[str, Any],
+        *,
+        expected_nonce: str | None = None,
+    ) -> UserIdentity:
         """Extract user identity from IdP token response.
 
-        Prefers the userinfo endpoint when available; falls back to decoding
-        the id_token without verification (covered by TLS to the IdP).
+        Validates the ID token before using either its claims or UserInfo
+        claims associated with its subject.
         """
         config = self._config
         endpoints = await self.discover_endpoints()
+
+        id_token_claims: dict[str, Any] | None = None
+        if expected_nonce is not None:
+            id_token_claims = await self._verified_id_token_claims(
+                token_response
+            )
+            nonce = id_token_claims.get("nonce")
+            if (
+                not isinstance(nonce, str)
+                or not secrets.compare_digest(nonce, expected_nonce)
+            ):
+                raise ValueError("OIDC nonce validation failed")
 
         if endpoints.userinfo_endpoint:
             access_token = token_response.get("access_token", "")
@@ -160,57 +270,49 @@ class IdentityFederation:
                         headers={"Authorization": f"Bearer {access_token}"},
                     )
             resp.raise_for_status()
-            claims = resp.json()
-        elif "id_token" in token_response:
-            if endpoints.jwks_uri:
-                async with httpx.AsyncClient() as client:
-                    jwks_resp = await client.get(endpoints.jwks_uri)
-                    jwks_resp.raise_for_status()
-                    jwks = jwks_resp.json()
-                header = jwt.get_unverified_header(
-                    token_response["id_token"]
-                )
-                keys = jwks.get("keys", [])
-                matching_keys = [
-                    key
-                    for key in keys
-                    if not header.get("kid")
-                    or key.get("kid") == header["kid"]
-                ]
-                if len(matching_keys) != 1:
-                    raise ValueError(
-                        "Cannot select a unique OIDC signing key"
+            claims = _oidc_json_object(resp, "UserInfo response")
+            if id_token_claims is not None:
+                id_token_subject = id_token_claims.get("sub")
+                userinfo_subject = claims.get("sub")
+                if (
+                    not isinstance(id_token_subject, str)
+                    or not isinstance(userinfo_subject, str)
+                    or not secrets.compare_digest(
+                        id_token_subject, userinfo_subject
                     )
-                signing_key = jwt.PyJWK.from_dict(
-                    matching_keys[0]
-                ).key
-                claims = jwt.decode(
-                    token_response["id_token"],
-                    signing_key,
-                    algorithms=config.id_token_algorithms,
-                    audience=config.client_id,
-                )
-            else:
-                raise ValueError(
-                    "Cannot verify id_token: no jwks_uri discovered and no "
-                    "userinfo endpoint configured. Configure a userinfo "
-                    "endpoint or ensure the IdP exposes jwks_uri in discovery."
-                )
+                ):
+                    raise OIDCAuthenticationError(
+                        "OIDC UserInfo subject does not match id_token subject"
+                    )
+        elif "id_token" in token_response:
+            claims = id_token_claims or await self._verified_id_token_claims(
+                token_response
+            )
         else:
             raise ValueError(
                 "Cannot extract user identity: no userinfo endpoint and no id_token"
             )
 
-        subject = str(claims.get(config.user_id_claim, ""))
-        if not subject:
-            raise ValueError(
-                f"User identity claim '{config.user_id_claim}' not found in response"
+        subject = claims.get(config.user_id_claim)
+        if not isinstance(subject, str) or not subject:
+            raise OIDCAuthenticationError(
+                f"OIDC user identity claim '{config.user_id_claim}' must be a non-empty string"
+            )
+        display_name = claims.get(config.display_name_claim)
+        if display_name is not None and not isinstance(display_name, str):
+            raise OIDCAuthenticationError(
+                f"OIDC display name claim '{config.display_name_claim}' must be a string or null"
+            )
+        email = claims.get(config.email_claim)
+        if email is not None and not isinstance(email, str):
+            raise OIDCAuthenticationError(
+                f"OIDC email claim '{config.email_claim}' must be a string or null"
             )
 
         return UserIdentity(
             subject=subject,
-            display_name=claims.get(config.display_name_claim),
-            email=claims.get(config.email_claim),
+            display_name=display_name,
+            email=email,
         )
 
     async def find_or_create_user(

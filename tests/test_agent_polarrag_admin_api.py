@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import json
+
+from sqlalchemy import select
+
 from server.models import (
     Agent,
     AgentGroupAssignment,
+    AuditLog,
     AuthProvider,
     Department,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalType,
+    KnowledgeBindingMode,
+    KnowledgeResource,
+    KnowledgeResourceSyncStatus,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
+    PolarRAGSpace,
     User,
     UserDepartment,
 )
@@ -54,6 +63,7 @@ async def test_admin_binds_instance_and_assigns_user(client, setup) -> None:
     )
     assert binding.status_code == 201
     assert binding.json()["instance_name"] == "RAG"
+    assert binding.json()["public_knowledge_resource_ids"] is None
     duplicate = await http.post(
         f"/api/agents/{agent_id}/polarrag-bindings",
         json={"polarrag_instance_id": instance_id},
@@ -76,6 +86,161 @@ async def test_admin_binds_instance_and_assigns_user(client, setup) -> None:
         headers=admin_headers,
     )
     assert [row["id"] for row in listed.json()] == [assignment.json()["id"]]
+
+
+async def test_admin_updates_agent_public_kb_scope_with_audit(
+    client,
+    setup,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, admin, _member = setup
+    async with factory() as session:
+        agent = Agent(name="scoped-agent", created_by=admin.id)
+        instances = [
+            PolarRAGInstance(
+                name=f"RAG {index}",
+                scheme="http",
+                host=f"rag-{index}.example.test",
+                port=9200,
+                username_ciphertext="username",
+                password_ciphertext="password",
+                status=PolarRAGInstanceStatus.ACTIVE,
+                created_by=admin.id,
+            )
+            for index in (1, 2)
+        ]
+        session.add_all([agent, *instances])
+        await session.flush()
+        spaces = [
+            PolarRAGSpace(
+                polarrag_instance_id=instance.id,
+                space_id=f"space-{index}",
+                name=f"Space {index}",
+                identity_domain="tenant-a",
+                enabled=True,
+            )
+            for index, instance in enumerate(instances, 1)
+        ]
+        session.add_all(spaces)
+        await session.flush()
+
+        def resource(
+            *,
+            space_index: int,
+            kb_id: str,
+            kb_type: str,
+            active: bool = True,
+        ) -> KnowledgeResource:
+            space = spaces[space_index]
+            return KnowledgeResource(
+                knowledge_space_id=space.knowledge_space_id,
+                polarrag_instance_id=space.polarrag_instance_id,
+                space_id=space.space_id,
+                kb_id=kb_id,
+                name=kb_id,
+                kb_type=kb_type,
+                identity_domain=space.identity_domain,
+                binding_mode=(
+                    KnowledgeBindingMode.DOMAIN
+                    if kb_type == "PUBLIC"
+                    else KnowledgeBindingMode.OWNER
+                ),
+                sync_status=(
+                    KnowledgeResourceSyncStatus.ACTIVE
+                    if active
+                    else KnowledgeResourceSyncStatus.UPSTREAM_DISABLED
+                ),
+                enabled=active,
+            )
+
+        selected = resource(space_index=0, kb_id="public-selected", kb_type="PUBLIC")
+        other_public = resource(space_index=0, kb_id="public-other", kb_type="PUBLIC")
+        personal = resource(space_index=0, kb_id="personal", kb_type="PERSONAL")
+        inactive = resource(
+            space_index=0,
+            kb_id="inactive",
+            kb_type="PUBLIC",
+            active=False,
+        )
+        cross_instance = resource(space_index=1, kb_id="cross", kb_type="PUBLIC")
+        session.add_all(
+            [selected, other_public, personal, inactive, cross_instance]
+        )
+        await session.commit()
+        agent_id = agent.id
+        instance_id = instances[0].id
+
+    binding = (
+        await http.post(
+            f"/api/agents/{agent_id}/polarrag-bindings",
+            json={"polarrag_instance_id": instance_id},
+            headers=admin_headers,
+        )
+    ).json()
+
+    options = await http.get(
+        f"/api/agents/{agent_id}/polarrag-bindings/{binding['id']}/public-resources",
+        headers=admin_headers,
+    )
+    assert options.status_code == 200
+    assert options.json() == [
+        {
+            "knowledge_resource_id": other_public.id,
+            "name": "public-other",
+            "knowledge_space_name": "Space 1",
+        },
+        {
+            "knowledge_resource_id": selected.id,
+            "name": "public-selected",
+            "knowledge_space_name": "Space 1",
+        },
+    ]
+
+    updated = await http.put(
+        f"/api/agents/{agent_id}/polarrag-bindings/{binding['id']}/public-resources",
+        json={"public_knowledge_resource_ids": [selected.id]},
+        headers=admin_headers,
+    )
+    assert updated.status_code == 200
+    assert updated.json()["public_knowledge_resource_ids"] == [selected.id]
+
+    for invalid_id in (personal.id, inactive.id, cross_instance.id):
+        rejected = await http.put(
+            f"/api/agents/{agent_id}/polarrag-bindings/{binding['id']}/public-resources",
+            json={"public_knowledge_resource_ids": [invalid_id]},
+            headers=admin_headers,
+        )
+        assert rejected.status_code == 422
+
+    restored = await http.put(
+        f"/api/agents/{agent_id}/polarrag-bindings/{binding['id']}/public-resources",
+        json={"public_knowledge_resource_ids": None},
+        headers=admin_headers,
+    )
+    assert restored.status_code == 200
+    assert restored.json()["public_knowledge_resource_ids"] is None
+
+    async with factory() as session:
+        audits = list(
+            (
+                await session.execute(
+                    select(AuditLog)
+                    .where(
+                        AuditLog.action
+                        == "agent_polarrag_binding.public_scope.update"
+                    )
+                    .order_by(AuditLog.created_at)
+                )
+            ).scalars()
+        )
+    assert len(audits) == 2
+    assert [
+        json.loads(json.loads(row.metadata_json or "{}")["client_info"])
+        for row in audits
+    ] == [
+        {"public_scope": "selected", "resource_count": 1},
+        {"public_scope": "all", "resource_count": 0},
+    ]
 
 
 async def test_admin_force_revoke_never_returns_plaintext(

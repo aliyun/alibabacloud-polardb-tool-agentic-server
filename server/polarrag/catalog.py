@@ -5,11 +5,12 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import exists, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from server.models import (
+    EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
@@ -17,10 +18,13 @@ from server.models import (
     KnowledgeResource,
     KnowledgeResourceSyncStatus,
     PolarRAGSpace,
+    User,
+    UserStatus,
 )
 from server.polarrag.client import client_from_instance
 from server.polarrag.contracts import (
     PolarRAGClient,
+    PolarRAGErrorCode,
     PolarRAGKnowledgeBaseRecord,
     PolarRAGUpstreamError,
 )
@@ -40,6 +44,31 @@ async def _resolve_owner(
         or not isinstance(owner.get("provider"), str)
         or not isinstance(owner.get("id"), str)
     ):
+        return None
+    if owner["provider"] == "polarrag":
+        has_membership = exists(
+            select(EnterprisePrincipalAssignment.id).where(
+                EnterprisePrincipalAssignment.pas_user_id == User.id,
+                EnterprisePrincipalAssignment.identity_domain
+                == record.identity_domain,
+                EnterprisePrincipalAssignment.status
+                == EnterprisePrincipalStatus.ACTIVE,
+                or_(
+                    EnterprisePrincipalAssignment.valid_until.is_(None),
+                    EnterprisePrincipalAssignment.valid_until > now,
+                ),
+            )
+        )
+        return (
+            await session.execute(
+                select(User.id).where(
+                    User.external_id == owner["id"],
+                    User.status == UserStatus.ACTIVE,
+                    has_membership,
+                )
+            )
+        ).scalar_one_or_none()
+    if owner["provider"] not in EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS:
         return None
     return (
         await session.execute(
@@ -67,6 +96,7 @@ async def sync_space_catalog(
     client: PolarRAGClient,
     *,
     now: datetime | None = None,
+    commit: bool = True,
 ) -> dict[str, int]:
     current = now or datetime.now(UTC)
     try:
@@ -87,7 +117,10 @@ async def sync_space_catalog(
                     sync_status=KnowledgeResourceSyncStatus.UPSTREAM_DISABLED,
                 )
             )
-            await session.commit()
+            if commit:
+                await session.commit()
+            else:
+                await session.flush()
         raise
     existing = {
         resource.kb_id: resource
@@ -108,7 +141,9 @@ async def sync_space_catalog(
             record.space_id != space.space_id
             or record.identity_domain != space.identity_domain
         ):
-            raise ValueError("PolarRAG catalog identity boundary mismatch")
+            raise PolarRAGUpstreamError(
+                PolarRAGErrorCode.INVALID_RESPONSE
+            )
         seen.add(record.kb_id)
         resource = existing.get(record.kb_id)
         if resource is None:
@@ -159,8 +194,12 @@ async def sync_space_catalog(
             resource.enabled = False
             resource.sync_status = KnowledgeResourceSyncStatus.UPSTREAM_DISABLED
             counts["disabled"] += 1
+    counts["knowledge_bases"] = len(set(existing) | seen)
     space.last_synced_at = current
-    await session.commit()
+    if commit:
+        await session.commit()
+    else:
+        await session.flush()
     return counts
 
 

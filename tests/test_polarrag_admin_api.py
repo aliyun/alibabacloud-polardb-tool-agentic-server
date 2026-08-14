@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import select
 
 from server.core.crypto import decrypt
 from server.models import (
     AuditLog,
     EnterprisePrincipalAssignment,
+    EnterprisePrincipalSource,
+    EnterprisePrincipalStatus,
+    EnterprisePrincipalType,
     KnowledgeResource,
     PolarRAGInstance,
     PolarRAGSpace,
+    AuthProvider,
+    User,
 )
 from server.polarrag.contracts import (
     PolarRAGCapabilities,
+    PolarRAGErrorCode,
     PolarRAGKnowledgeBaseRecord,
     PolarRAGSpaceRecord,
+    PolarRAGUpstreamError,
 )
 
 pytest_plugins = ("tests._admin_api_fixtures",)
@@ -65,7 +73,7 @@ class FakeClaimClient(FakeAdminClient):
     def __init__(self) -> None:
         super().__init__()
         self.claimed = False
-        self.claim_context = None
+        self.claim_owner = None
 
     async def list_knowledge_bases(self, space_id):
         assert space_id == "space-a"
@@ -103,10 +111,66 @@ class FakeClaimClient(FakeAdminClient):
             )
         ]
 
-    async def claim_knowledge_base(self, space_id, kb_id, *, acl_context):
+    async def claim_knowledge_base(self, space_id, kb_id, *, owner):
         assert (space_id, kb_id) == ("space-a", "personal-kb")
-        self.claim_context = acl_context
+        self.claim_owner = owner
         self.claimed = True
+
+
+class RetryableClaimClient(FakeClaimClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.claim_calls = 0
+        self.fail_sync_once = True
+
+    async def list_knowledge_bases(self, space_id):
+        if self.claimed and self.fail_sync_once:
+            self.fail_sync_once = False
+            raise PolarRAGUpstreamError(
+                PolarRAGErrorCode.UNAVAILABLE,
+                retryable=True,
+            )
+        if not self.claimed:
+            return []
+        return [
+            PolarRAGKnowledgeBaseRecord(
+                space_id="space-a",
+                kb_id="personal-kb",
+                name="Personal KB",
+                kb_type="PERSONAL",
+                identity_domain="tenant-a",
+                owner={
+                    "provider": "polarrag",
+                    "type": "user",
+                    "id": self.claim_owner,
+                },
+                status="ACTIVE",
+            )
+        ]
+
+    async def claim_knowledge_base(self, space_id, kb_id, *, owner):
+        self.claim_calls += 1
+        await super().claim_knowledge_base(
+            space_id,
+            kb_id,
+            owner=owner,
+        )
+
+
+class MismatchedCatalogClient(FakeAdminClient):
+    async def list_unclaimed_knowledge_bases(self, space_id):
+        assert space_id == "space-a"
+        return [
+            PolarRAGKnowledgeBaseRecord(
+                space_id="space-a",
+                kb_id="foreign-personal-kb",
+                name="Foreign Personal KB",
+                kb_type="PERSONAL",
+                identity_domain="tenant-b",
+                owner=None,
+                status="UNCLAIMED",
+            )
+        ]
 
 
 async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
@@ -280,6 +344,44 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
         assert resource.enabled is False
 
 
+async def test_instance_create_rolls_back_when_required_audit_fails(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, _member = setup
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: FakeAdminClient(),
+    )
+
+    async def fail_audit(*_args, **_kwargs):
+        raise RuntimeError("audit storage unavailable")
+
+    monkeypatch.setattr("server.api.polarrag.log_audit", fail_audit)
+
+    with pytest.raises(RuntimeError, match="audit storage unavailable"):
+        await http.post(
+            "/api/polarrag/instances",
+            json={
+                "name": "Atomic RAG",
+                "scheme": "https",
+                "host": "rag.example.test",
+                "port": 9200,
+                "username": "shared",
+                "password": "not-returned",
+                "tls_verify": True,
+            },
+            headers=admin_headers,
+        )
+
+    async with factory() as session:
+        assert (
+            await session.execute(select(PolarRAGInstance))
+        ).scalar_one_or_none() is None
+
+
 async def test_principal_api_enforces_provider_and_user_uniqueness(
     client,
     setup,
@@ -297,6 +399,43 @@ async def test_principal_api_enforces_provider_and_user_uniqueness(
         headers=admin_headers,
     )
     assert invalid.status_code == 422
+
+    native_spoof = await http.post(
+        f"/api/polarrag/users/{member.id}/principals",
+        json={
+            "identity_domain": "tenant-a",
+            "provider": "polarrag",
+            "principal_type": "user",
+            "principal_id": member.id,
+        },
+        headers=admin_headers,
+    )
+    assert native_spoof.status_code == 422
+
+    native_group = await http.post(
+        f"/api/polarrag/users/{member.id}/principals",
+        json={
+            "identity_domain": "tenant-a",
+            "provider": "polarrag",
+            "principal_type": "group",
+            "principal_id": member.external_id,
+        },
+        headers=admin_headers,
+    )
+    assert native_group.status_code == 422
+
+    native = await http.post(
+        f"/api/polarrag/users/{member.id}/principals",
+        json={
+            "identity_domain": "tenant-a",
+            "provider": "polarrag",
+            "principal_type": "user",
+            "principal_id": member.external_id,
+        },
+        headers=admin_headers,
+    )
+    assert native.status_code == 201
+    assert native.json()["principal_id"] == member.external_id
 
     blank = await http.post(
         f"/api/polarrag/users/{member.id}/principals",
@@ -347,7 +486,45 @@ async def test_principal_api_enforces_provider_and_user_uniqueness(
         assignments = (
             await session.execute(select(EnterprisePrincipalAssignment))
         ).scalars().all()
-        assert len(assignments) == 1
+        assert len(assignments) == 2
+
+
+@pytest.mark.parametrize(
+    ("auth_provider", "external_id"),
+    [
+        ("builtin", "builtin-user "),
+        ("oidc", "oidc:user "),
+    ],
+)
+async def test_principal_api_preserves_native_user_external_id_whitespace(
+    client,
+    setup,
+    auth_provider,
+    external_id,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, member = setup
+    async with factory() as session:
+        stored_member = await session.get(User, member.id)
+        assert stored_member is not None
+        stored_member.external_id = external_id
+        if auth_provider == "oidc":
+            stored_member.auth_provider = AuthProvider.OIDC
+        await session.commit()
+
+    response = await http.post(
+        f"/api/polarrag/users/{member.id}/principals",
+        json={
+            "identity_domain": "tenant-a",
+            "provider": "polarrag",
+            "principal_type": "user",
+            "principal_id": external_id,
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json()["principal_id"] == external_id
 
 
 async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
@@ -393,6 +570,20 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
         headers=admin_headers,
     )
     principal_id = principal.json()["id"]
+    async with factory() as session:
+        spoof = EnterprisePrincipalAssignment(
+            pas_user_id=member.id,
+            identity_domain="tenant-a",
+            provider="polarrag",
+            principal_type=EnterprisePrincipalType.USER,
+            principal_id="another-user",
+            source=EnterprisePrincipalSource.ADMIN_MANAGED,
+            status=EnterprisePrincipalStatus.ACTIVE,
+            user_principal_key="spoofed-native-owner",
+        )
+        session.add(spoof)
+        await session.commit()
+        spoof_id = spoof.id
 
     forbidden = await http.get(
         f"/api/polarrag/instances/{instance_id}/unclaimed-knowledge-bases",
@@ -411,13 +602,19 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
         headers=admin_headers,
     )
     assert wrong_domain.status_code == 201
+    spoofed_owner = await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/space-a/knowledge-bases/personal-kb/claim",
+        json={"principal_assignment_id": spoof_id},
+        headers=admin_headers,
+    )
+    assert spoofed_owner.status_code == 422
     rejected = await http.post(
         f"/api/polarrag/instances/{instance_id}/spaces/space-a/knowledge-bases/personal-kb/claim",
         json={"principal_assignment_id": wrong_domain.json()["id"]},
         headers=admin_headers,
     )
     assert rejected.status_code == 422
-    assert fake.claim_context is None
+    assert fake.claim_owner is None
 
     pending = await http.get(
         f"/api/polarrag/instances/{instance_id}/unclaimed-knowledge-bases",
@@ -441,6 +638,7 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
                 "principal_assignment_id": principal_id,
                 "pas_user_id": member.id,
                 "user_name": "Member",
+                "user_external_id": member.external_id,
                 "identity_domain": "tenant-a",
                 "provider": "feishu",
                 "principal_id": "ou-owner",
@@ -457,15 +655,14 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
     assert claimed.json() == {
         "kb_id": "personal-kb",
         "status": "ACTIVE",
-        "sync": {"active": 1, "disabled": 0, "owner_unresolved": 0},
+        "sync": {
+            "knowledge_bases": 1,
+            "active": 1,
+            "disabled": 0,
+            "owner_unresolved": 0,
+        },
     }
-    assert fake.claim_context == {
-        "identity_domain": "tenant-a",
-        "actor": {"provider": "feishu", "type": "user", "id": "ou-owner"},
-        "principals": [
-            {"provider": "feishu", "type": "user", "id": "ou-owner"}
-        ],
-    }
+    assert fake.claim_owner == member.external_id
     async with factory() as session:
         resource = (await session.execute(select(KnowledgeResource))).scalar_one()
         assert resource.kb_id == "personal-kb"
@@ -479,3 +676,119 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
         ).scalar_one()
         assert audit.actor_user_id == admin.id
         assert audit.target_id == "space-a/personal-kb"
+
+
+async def test_claim_retry_recovers_after_upstream_success_and_sync_failure(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, member = setup
+    fake = RetryableClaimClient()
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: fake,
+    )
+    instance = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "Retry RAG",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "not-returned",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+    instance_id = instance.json()["id"]
+    await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/enable",
+        json={"space_id": "space-a"},
+        headers=admin_headers,
+    )
+    principal = await http.post(
+        f"/api/polarrag/users/{member.id}/principals",
+        json={
+            "identity_domain": "tenant-a",
+            "provider": "feishu",
+            "principal_type": "user",
+            "principal_id": "ou-owner",
+        },
+        headers=admin_headers,
+    )
+    endpoint = (
+        f"/api/polarrag/instances/{instance_id}/spaces/space-a/"
+        "knowledge-bases/personal-kb/claim"
+    )
+
+    first = await http.post(
+        endpoint,
+        json={"principal_assignment_id": principal.json()["id"]},
+        headers=admin_headers,
+    )
+    second = await http.post(
+        endpoint,
+        json={"principal_assignment_id": principal.json()["id"]},
+        headers=admin_headers,
+    )
+
+    assert first.status_code == 503
+    assert second.status_code == 200
+    assert fake.claim_calls == 1
+    async with factory() as session:
+        resource = (
+            await session.execute(
+                select(KnowledgeResource).where(
+                    KnowledgeResource.kb_id == "personal-kb"
+                )
+            )
+        ).scalar_one()
+        assert resource.owner_pas_user_id == member.id
+
+
+async def test_unclaimed_catalog_rejects_identity_boundary_as_upstream_error(
+    client,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    fake = MismatchedCatalogClient()
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: fake,
+    )
+    created = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "Boundary RAG",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "not-returned",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+    instance_id = created.json()["id"]
+    enabled = await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/enable",
+        json={"space_id": "space-a"},
+        headers=admin_headers,
+    )
+    assert enabled.status_code == 200
+
+    response = await http.get(
+        f"/api/polarrag/instances/{instance_id}/unclaimed-knowledge-bases",
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": {
+            "code": "POLARRAG_INVALID_RESPONSE",
+            "message": "POLARRAG_INVALID_RESPONSE",
+        }
+    }

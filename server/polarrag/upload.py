@@ -7,7 +7,7 @@ from pathlib import PurePath
 from typing import Any, BinaryIO
 
 from server.core.crypto import decrypt
-from server.models import PolarRAGSpace
+from server.models import ACL_CONTEXT_PRINCIPAL_PROVIDERS, PolarRAGSpace
 from server.polarrag.oss import OssObjectStore
 
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
@@ -69,6 +69,7 @@ def document_object_key(prefix: str, upload_object_id: str, filename: str) -> st
 
 
 def document_actor(acl_context: dict[str, Any]) -> dict[str, str]:
+    fallback: dict[str, str] | None = None
     for principal in acl_context.get("principals", []):
         if not isinstance(principal, dict) or principal.get("type") != "user":
             continue
@@ -76,11 +77,20 @@ def document_actor(acl_context: dict[str, Any]) -> dict[str, str]:
         principal_id = principal.get("id")
         if (
             isinstance(provider, str)
-            and provider
+            and provider in ACL_CONTEXT_PRINCIPAL_PROVIDERS
             and isinstance(principal_id, str)
             and principal_id
         ):
-            return {"provider": provider, "type": "user", "id": principal_id}
+            actor = {
+                "provider": provider,
+                "type": "user",
+                "id": principal_id,
+            }
+            if provider == "polarrag":
+                return actor
+            fallback = fallback or actor
+    if fallback is not None:
+        return fallback
     raise ValueError("user principal unavailable")
 
 

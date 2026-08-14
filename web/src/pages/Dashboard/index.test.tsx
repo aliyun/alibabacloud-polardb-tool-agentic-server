@@ -46,6 +46,9 @@ it('renders the dashboard in Simplified Chinese', async () => {
 
   expect(await screen.findByRole('heading', { name: '仪表盘' })).toBeInTheDocument()
   expect(screen.getByText('快速操作')).toBeInTheDocument()
+  expect(screen.getByText('用户总数')).toBeInTheDocument()
+  expect(screen.getByText('注册实例')).toBeInTheDocument()
+  expect(screen.queryByText('Total Users')).not.toBeInTheDocument()
 })
 it('shows only current-user resource statistics to a member', async () => {
   vi.mocked(getDashboardStats).mockResolvedValue({

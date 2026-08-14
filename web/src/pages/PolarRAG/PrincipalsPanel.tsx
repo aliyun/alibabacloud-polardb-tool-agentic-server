@@ -25,6 +25,7 @@ import {
 } from '@ant-design/icons'
 
 import { getAPIErrorMessage } from '../../api/client'
+import { formatDateTime } from '../../i18n/format'
 import {
   createEnterprisePrincipal,
   deleteEnterprisePrincipal,
@@ -40,13 +41,15 @@ const { Text } = Typography
 interface PrincipalsPanelProps {
   userId: string
   userName: string
+  userExternalId: string
 }
 
 export default function PrincipalsPanel({
   userId,
   userName,
+  userExternalId,
 }: PrincipalsPanelProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [principals, setPrincipals] = useState<EnterprisePrincipal[]>([])
   const [principalsLoading, setPrincipalsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -54,6 +57,8 @@ export default function PrincipalsPanel({
   const [saving, setSaving] = useState(false)
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [form] = Form.useForm<CreateEnterprisePrincipalInput>()
+  const provider = Form.useWatch('provider', form)
+  const nativePrincipal = provider === 'polarrag'
 
   const loadPrincipals = useCallback(async (userId: string) => {
     setPrincipalsLoading(true)
@@ -65,13 +70,13 @@ export default function PrincipalsPanel({
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not load enterprise principals.',
+          t('principals.loadFailed'),
         ),
       )
     } finally {
       setPrincipalsLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     setPrincipals([])
@@ -85,10 +90,12 @@ export default function PrincipalsPanel({
       await createEnterprisePrincipal(userId, {
         ...values,
         identity_domain: values.identity_domain.trim(),
-        principal_id: values.principal_id.trim(),
+        principal_id: nativePrincipal
+          ? values.principal_id
+          : values.principal_id.trim(),
         valid_until: values.valid_until || null,
       })
-      message.success('Enterprise principal added')
+      message.success(t('principals.added'))
       setAddOpen(false)
       form.resetFields()
       await loadPrincipals(userId)
@@ -96,7 +103,7 @@ export default function PrincipalsPanel({
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not add this enterprise principal.',
+          t('principals.addFailed'),
         ),
       )
     } finally {
@@ -120,7 +127,7 @@ export default function PrincipalsPanel({
       setError(
         getAPIErrorMessage(
           requestError,
-          'Could not update principal status.',
+          t('principals.updateFailed'),
         ),
       )
     } finally {
@@ -130,16 +137,16 @@ export default function PrincipalsPanel({
 
   const remove = (principal: EnterprisePrincipal) => {
     Modal.confirm({
-      title: 'Delete enterprise principal?',
+      title: t('principals.deleteTitle'),
       content: t('principals.removeDescription', {
         principalId: principal.principal_id,
         userName,
       }),
-      okText: 'Delete',
+      okText: t('principals.delete'),
       okButtonProps: { danger: true },
       async onOk() {
         await deleteEnterprisePrincipal(userId, principal.id)
-        message.success('Enterprise principal deleted')
+        message.success(t('principals.deleted'))
         await loadPrincipals(userId)
       },
     })
@@ -191,7 +198,7 @@ export default function PrincipalsPanel({
               pagination={false}
               columns={[
                 {
-                  title: 'Principal',
+                  title: t('principals.principal'),
                   render: (_: unknown, record) => (
                     <Space>
                       {record.principal_type === 'user' ? (
@@ -209,17 +216,17 @@ export default function PrincipalsPanel({
                   ),
                 },
                 {
-                  title: 'Identity domain',
+                  title: t('principals.identityDomain'),
                   dataIndex: 'identity_domain',
                   render: (value: string) => <Tag>{value}</Tag>,
                 },
                 {
-                  title: 'Source',
+                  title: t('principals.source'),
                   dataIndex: 'source',
                   render: (value: string) => <Tag>{value}</Tag>,
                 },
                 {
-                  title: 'Status',
+                  title: t('principals.status'),
                   dataIndex: 'status',
                   render: (value: EnterprisePrincipal['status']) => (
                     <Tag color={value === 'active' ? 'green' : 'red'}>
@@ -228,13 +235,18 @@ export default function PrincipalsPanel({
                   ),
                 },
                 {
-                  title: 'Valid until',
+                  title: t('principals.validUntilColumn'),
                   dataIndex: 'valid_until',
                   render: (value: string | null) =>
-                    value ? new Date(value).toLocaleString() : 'No expiry',
+                    value
+                      ? formatDateTime(
+                          value,
+                          i18n.resolvedLanguage ?? i18n.language,
+                        )
+                      : t('principals.noExpiry'),
                 },
                 {
-                  title: 'Actions',
+                  title: t('principals.actions'),
                   render: (_: unknown, record) => (
                     <Space>
                       <Button
@@ -247,10 +259,17 @@ export default function PrincipalsPanel({
                           )
                         }
                         loading={updatingId === record.id}
-                        aria-label={`${record.status === 'active' ? 'Disable' : 'Enable'} ${record.principal_id}`}
+                        aria-label={t(
+                          record.status === 'active'
+                            ? 'principals.disablePrincipal'
+                            : 'principals.enablePrincipal',
+                          { id: record.principal_id },
+                        )}
                         onClick={() => void toggleStatus(record)}
                       >
-                        {record.status === 'active' ? 'Disable' : 'Enable'}
+                        {record.status === 'active'
+                          ? t('principals.disable')
+                          : t('principals.enable')}
                       </Button>
                       <Button
                         size="small"
@@ -313,7 +332,18 @@ export default function PrincipalsPanel({
                 options={[
                   { value: 'feishu', label: 'Feishu' },
                   { value: 'sharepoint', label: 'SharePoint' },
+                  { value: 'polarrag', label: 'PolarRAG' },
                 ]}
+                onChange={(value) => {
+                  form.setFieldsValue(
+                    value === 'polarrag'
+                      ? {
+                          principal_type: 'user',
+                          principal_id: userExternalId,
+                        }
+                      : { principal_id: '' },
+                  )
+                }}
               />
             </Form.Item>
             <Form.Item
@@ -323,6 +353,8 @@ export default function PrincipalsPanel({
               style={{ flex: 1 }}
             >
               <Select
+                aria-label={t('principals.principalType')}
+                disabled={nativePrincipal}
                 options={[
                   { value: 'user', label: 'User' },
                   { value: 'group', label: 'Group' },
@@ -330,13 +362,20 @@ export default function PrincipalsPanel({
               />
             </Form.Item>
           </Space>
+          <Typography.Text type="secondary">
+            {t('principals.providerGuidance')}
+          </Typography.Text>
           <Form.Item
             name="principal_id"
             label={t('principals.principalId')}
             rules={[{ required: true }]}
-            extra={t('principals.principalIdHint')}
+            extra={t(
+              nativePrincipal
+                ? 'principals.nativePrincipalIdHint'
+                : 'principals.principalIdHint',
+            )}
           >
-            <Input autoComplete="off" />
+            <Input autoComplete="off" disabled={nativePrincipal} />
           </Form.Item>
           <Form.Item name="valid_until" label={t('principals.validUntil')}>
             <Input type="datetime-local" />

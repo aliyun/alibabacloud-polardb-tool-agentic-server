@@ -12,9 +12,12 @@ import {
   Divider,
   Empty,
   Modal,
+  Radio,
+  Select,
   Skeleton,
   Space,
   Table,
+  Tabs,
   Tag,
   Typography,
 } from 'antd'
@@ -26,12 +29,15 @@ import {
   deleteAgentPolarRAGBinding,
   getAgent,
   listAgentPolarRAGBindings,
+  listAgentPolarRAGPublicResources,
   regenerateAgentToken,
   revealAgentToken,
   revokeAgentToken,
   updateAgent,
+  updateAgentPolarRAGPublicResources,
   type Agent,
   type AgentPolarRAGBinding,
+  type AgentPolarRAGPublicResource,
   type AgentToken,
   type AgentTokenStatus,
   type AgentTokenSummary,
@@ -110,20 +116,6 @@ type Confirmation =
   | { kind: 'delete-polarrag-access'; binding: AgentPolarRAGBinding }
   | null
 
-type InstanceAccessRow =
-  | {
-      key: string
-      kind: 'database'
-      name: string
-      access: AgentInstanceAccess
-    }
-  | {
-      key: string
-      kind: 'polarrag'
-      name: string
-      binding: AgentPolarRAGBinding
-    }
-
 interface RouteScope {
   agentId: string
   generation: number
@@ -188,6 +180,13 @@ export default function AgentDetail() {
   const [polarRAGBindings, setPolarRAGBindings] = useState<
     AgentPolarRAGBinding[]
   >([])
+  const [publicScopeBinding, setPublicScopeBinding] =
+    useState<AgentPolarRAGBinding | null>(null)
+  const [publicScopeOptions, setPublicScopeOptions] = useState<
+    AgentPolarRAGPublicResource[]
+  >([])
+  const [publicScopeDraft, setPublicScopeDraft] = useState<string[] | null>(null)
+  const [publicScopeLoading, setPublicScopeLoading] = useState(false)
   const [resources, setResources] = useState<AgentResource[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -293,6 +292,10 @@ export default function AgentDetail() {
     setBackends([])
     setInstanceAccess([])
     setPolarRAGBindings([])
+    setPublicScopeBinding(null)
+    setPublicScopeOptions([])
+    setPublicScopeDraft(null)
+    setPublicScopeLoading(false)
     setResources([])
     setLoading(true)
     setBusy(false)
@@ -395,28 +398,71 @@ export default function AgentDetail() {
       ),
     [backends, instanceNames],
   )
-  const combinedInstanceAccess = useMemo<InstanceAccessRow[]>(
-    () => [
-      ...instanceAccess.map((access) => ({
-        key: `database:${access.instance_id}`,
-        kind: 'database' as const,
-        name: instanceNames[access.instance_id] ?? access.instance_id,
-        access,
-      })),
-      ...polarRAGBindings.map((binding) => ({
-        key: `polarrag:${binding.id}`,
-        kind: 'polarrag' as const,
-        name: binding.instance_name,
-        binding,
-      })),
-    ],
-    [instanceAccess, instanceNames, polarRAGBindings],
-  )
-
   const showReconnectNotice = (summary: string) => {
     setNotice(
       `${summary} Reconnect the MCP client so it refreshes authentication and the available tool list.`,
     )
+  }
+
+  const openPublicScope = async (binding: AgentPolarRAGBinding) => {
+    const scope = { ...scopeRef.current }
+    setPublicScopeBinding(binding)
+    setPublicScopeDraft(binding.public_knowledge_resource_ids)
+    setPublicScopeOptions([])
+    setPublicScopeLoading(true)
+    setError(null)
+    try {
+      const response = await listAgentPolarRAGPublicResources(
+        scope.agentId,
+        binding.id,
+      )
+      if (isCurrentScope(scope)) setPublicScopeOptions(response.data)
+    } catch (requestError) {
+      if (isCurrentScope(scope)) {
+        setError(
+          getAPIErrorMessage(
+            requestError,
+            t('agentDetail.publicScopeLoadFailed'),
+          ),
+        )
+        setPublicScopeBinding(null)
+      }
+    } finally {
+      if (isCurrentScope(scope)) setPublicScopeLoading(false)
+    }
+  }
+
+  const savePublicScope = async () => {
+    if (!publicScopeBinding) return
+    const scope = { ...scopeRef.current }
+    setBusy(true)
+    setError(null)
+    try {
+      const response = await updateAgentPolarRAGPublicResources(
+        scope.agentId,
+        publicScopeBinding.id,
+        publicScopeDraft,
+      )
+      if (!isCurrentScope(scope)) return
+      setPolarRAGBindings((current) =>
+        current.map((binding) =>
+          binding.id === response.data.id ? response.data : binding,
+        ),
+      )
+      setNotice(t('agentDetail.publicScopeUpdated'))
+      setPublicScopeBinding(null)
+    } catch (requestError) {
+      if (isCurrentScope(scope)) {
+        setError(
+          getAPIErrorMessage(
+            requestError,
+            t('agentDetail.publicScopeSaveFailed'),
+          ),
+        )
+      }
+    } finally {
+      if (isCurrentScope(scope)) setBusy(false)
+    }
   }
 
   const tokenSummary = (
@@ -494,7 +540,7 @@ export default function AgentDetail() {
           ),
         )
         showReconnectNotice('Instance access removed.')
-      } else {
+      } else if (currentConfirmation.kind === 'delete-polarrag-access') {
         await deleteAgentPolarRAGBinding(
           currentAgent.id,
           currentConfirmation.binding.id,
@@ -504,6 +550,8 @@ export default function AgentDetail() {
           current.filter((item) => item.id !== currentConfirmation.binding.id),
         )
         showReconnectNotice('PolarRAG instance access removed.')
+      } else {
+        throw new Error('Unsupported confirmation action')
       }
       setConfirmation(null)
     } catch (requestError) {
@@ -648,6 +696,29 @@ export default function AgentDetail() {
     )
   }
 
+  const renderMCPConnectionPanel = (headingId: string) => (
+    <section aria-labelledby={headingId}>
+      <MCPConnectionPanel
+        agentName={agent.name}
+        headingId={headingId}
+        mcpUrl={mcpUrl}
+        tokenPrefix={agent.token_summary?.token_prefix ?? null}
+        tokenStatus={agent.token_summary?.status ?? null}
+        expiresAt={agent.token_summary?.expires_at ?? null}
+        lastUsedAt={agent.token_summary?.last_used_at ?? null}
+        revealToken={async (password) => {
+          const response = await revealAgentToken(agent.id, { password })
+          if (!response.data.token) {
+            throw new Error('Agent Token is not active')
+          }
+          return response.data.token
+        }}
+        onRegenerate={() => setConfirmation({ kind: 'regenerate' })}
+        onRevoke={() => setConfirmation({ kind: 'revoke' })}
+      />
+    </section>
+  )
+
   return (
     <PageContainer
       title={agent.name}
@@ -714,334 +785,439 @@ export default function AgentDetail() {
 
         <Divider style={{ margin: 0 }} />
 
-        <section aria-labelledby="agent-mcp-connection-heading">
-          <MCPConnectionPanel
-            agentName={agent.name}
-            mcpUrl={mcpUrl}
-            tokenPrefix={agent.token_summary?.token_prefix ?? null}
-            tokenStatus={agent.token_summary?.status ?? null}
-            expiresAt={agent.token_summary?.expires_at ?? null}
-            lastUsedAt={agent.token_summary?.last_used_at ?? null}
-            revealToken={async (password) => {
-              const response = await revealAgentToken(agent.id, { password })
-              if (!response.data.token) {
-                throw new Error('Agent Token is not active')
-              }
-              return response.data.token
-            }}
-            onRegenerate={() => setConfirmation({ kind: 'regenerate' })}
-            onRevoke={() => setConfirmation({ kind: 'revoke' })}
-          />
-        </section>
+        <Tabs
+          defaultActiveKey="database"
+          items={[
+            {
+              key: 'database',
+              label: t('agentDetail.databaseTab'),
+              children: (
+                <Space direction="vertical" size={24} style={{ width: '100%' }}>
+                  {renderMCPConnectionPanel(
+                    'agent-database-mcp-connection-heading',
+                  )}
 
-        <Divider style={{ margin: 0 }} />
+                  <Divider style={{ margin: 0 }} />
 
-        <section aria-labelledby="agent-rest-api-heading">
-          <RESTAPIConnectionPanel serverBaseUrl={serverBaseUrl} />
-        </section>
+                  <section aria-labelledby="agent-rest-api-heading">
+                    <RESTAPIConnectionPanel serverBaseUrl={serverBaseUrl} />
+                  </section>
 
-        <Divider style={{ margin: 0 }} />
+                  <Divider style={{ margin: 0 }} />
 
-        <section aria-label={t('agentDetail.polarragAccessLabel')}>
-          <PolarRAGAccessPanel
-            agentId={agent.id}
-            bindings={polarRAGBindings}
-            onBindingsChange={setPolarRAGBindings}
-          />
-        </section>
-
-        <Divider style={{ margin: 0 }} />
-
-        <section aria-labelledby="agent-instance-access-heading">
-          <SectionHeading
-            id="agent-instance-access-heading"
-            title={t('agentDetail.combinedAccessTitle')}
-            description={t('agentDetail.combinedAccessDescription')}
-            action={
-              <Button
-                onClick={() => {
-                  setAccessDraft({ ...EMPTY_INSTANCE_ACCESS })
-                  setAccessDraftInstanceId(null)
-                  setAccessDraftValid(false)
-                }}
-                disabled={
-                  accessDraft !== null ||
-                  availableInstances.length === 0
-                }
-              >
-                {t('agentDetail.addAccess')}
-              </Button>
-            }
-          />
-          {allRegisteredInstancesBound && !accessDraft && (
-            <Text type="secondary">
-              {t('agentDetail.allHaveAccess')}
-            </Text>
-          )}
-          {accessDraft && (
-            <div
-              style={{
-                background: 'var(--surface-tertiary)',
-                borderRadius: 'var(--radius-md)',
-                padding: 16,
-                marginTop: 16,
-              }}
-            >
-              <Title level={5} style={{ marginTop: 0 }}>
-                {accessDraftInstanceId
-                  ? t('agentDetail.editAccess')
-                  : t('agentDetail.newAccess')}
-              </Title>
-              <BindingEditor
-                mode={accessDraftInstanceId ? 'edit' : 'create'}
-                value={accessDraft}
-                onChange={updateAccessDraft}
-                onValidityChange={setAccessDraftValid}
-                instances={
-                  accessDraftInstanceId ? instances : availableInstances
-                }
-                credentials={credentials}
-                provisioningBackends={backends}
-                disabled={
-                  busy ||
-                  credentialLoadingId === accessDraft.instance_id
-                }
-              />
-              {accessDraft.instance_id &&
-                credentialErrors[accessDraft.instance_id] && (
-                  <Alert
-                    type="error"
-                    showIcon
-                    message={credentialErrors[accessDraft.instance_id]}
-                  />
-                )}
-              <Space style={{ marginTop: 16 }}>
-                <Button
-                  type="primary"
-                  disabled={!accessDraftValid}
-                  loading={busy}
-                  onClick={() => void saveInstanceAccess()}
-                >
-                  {t('agentDetail.saveAccess')}
-                </Button>
-                <Button
-                  disabled={busy}
-                  onClick={() => {
-                    setAccessDraft(null)
-                    setAccessDraftInstanceId(null)
-                  }}
-                >
-                  {t('common.cancel')}
-                </Button>
-              </Space>
-            </div>
-          )}
-          <Table
-            rowKey="key"
-            dataSource={combinedInstanceAccess}
-            pagination={false}
-            scroll={{ x: 820 }}
-            style={{ marginTop: 16 }}
-            locale={{
-              emptyText: (
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={t('agentDetail.combinedAccessEmpty')}
-                />
-              ),
-            }}
-            columns={[
-              {
-                title: 'Instance',
-                dataIndex: 'name',
-              },
-              {
-                title: 'Instance type',
-                key: 'instance_type',
-                render: (_: unknown, row: InstanceAccessRow) =>
-                  row.kind === 'polarrag'
-                    ? 'PolarRAG'
-                    : 'PolarDB for MySQL',
-              },
-              {
-                title: 'Permission',
-                key: 'permission',
-                render: (_: unknown, row: InstanceAccessRow) =>
-                  row.kind === 'polarrag'
-                    ? 'User ACL'
-                    : row.access.permission === 'readonly'
-                    ? 'Read only'
-                    : row.access.permission === 'readwrite'
-                      ? 'Read and write'
-                      : '—',
-              },
-              {
-                title: 'Capabilities',
-                key: 'capabilities',
-                render: (_: unknown, row: InstanceAccessRow) => (
-                  <Space wrap>
-                    {row.kind === 'polarrag' ? (
-                      <Tag>{t('agentDetail.knowledgeRetrieval')}</Tag>
-                    ) : (
-                      row.access.capabilities.map((value) => (
-                        <Tag key={value}>{value}</Tag>
-                      ))
-                    )}
-                  </Space>
-                ),
-              },
-              {
-                title: t('agentDetail.state'),
-                key: 'state',
-                render: (_: unknown, row: InstanceAccessRow) =>
-                  row.kind === 'polarrag' ? (
-                    <Tag color="success">{t('agentDetail.bound')}</Tag>
-                  ) : (
-                  <Space wrap>
-                    {row.access.direct_binding_id && (
-                      <Tag
-                        color={
-                          row.access.direct_enabled ? 'success' : 'default'
-                        }
-                      >
-                        {t('agentDetail.direct')}{' '}
-                        {row.access.direct_enabled
-                          ? t('common.enabled')
-                          : t('common.disabled')}
-                      </Tag>
-                    )}
-                    {row.access.provisioning_binding_id && (
-                      <Tag
-                        color={
-                          row.access.capabilities.includes('db_instance:create')
-                            ? 'success'
-                            : 'default'
-                        }
-                      >
-                        {t('agentDetail.create')}{' '}
-                        {row.access.capabilities.includes('db_instance:create')
-                          ? t('common.enabled')
-                          : t('common.disabled')}
-                      </Tag>
-                    )}
-                  </Space>
-                  ),
-              },
-              {
-                title: t('instances.actions'),
-                key: 'actions',
-                render: (_: unknown, row: InstanceAccessRow) =>
-                  row.kind === 'polarrag' ? (
-                    <Button
-                      size="small"
-                      danger
-                      onClick={() =>
-                        setConfirmation({
-                          kind: 'delete-polarrag-access',
-                          binding: row.binding,
-                        })
+                  <section aria-labelledby="agent-instance-access-heading">
+                    <SectionHeading
+                      id="agent-instance-access-heading"
+                      title={t('agentDetail.accessTitle')}
+                      description={t('agentDetail.accessDescription')}
+                      action={
+                        <Button
+                          onClick={() => {
+                            setAccessDraft({ ...EMPTY_INSTANCE_ACCESS })
+                            setAccessDraftInstanceId(null)
+                            setAccessDraftValid(false)
+                          }}
+                          disabled={
+                            accessDraft !== null ||
+                            availableInstances.length === 0
+                          }
+                        >
+                          {t('agentDetail.addAccess')}
+                        </Button>
                       }
-                    >
-                      {t('agentDetail.remove')}
-                    </Button>
-                  ) : (
-                  <Space>
-                    <Button
-                      size="small"
-                      onClick={() => {
-                        const draft = {
-                          instance_id: row.access.instance_id,
-                          credential_id: row.access.credential_id,
-                          permission: row.access.permission,
-                          direct_enabled: row.access.direct_enabled,
-                          capabilities: editableAccessCapabilities(
-                            row.access.capabilities,
-                          ),
-                        }
-                        setAccessDraft(draft)
-                        void loadCredentialsForInstance(row.access.instance_id)
-                        setAccessDraftInstanceId(row.access.instance_id)
-                        setAccessDraftValid(false)
+                    />
+                    {allRegisteredInstancesBound && !accessDraft && (
+                      <Text type="secondary">
+                        {t('agentDetail.allHaveAccess')}
+                      </Text>
+                    )}
+                    {accessDraft && (
+                      <div
+                        style={{
+                          background: 'var(--surface-tertiary)',
+                          borderRadius: 'var(--radius-md)',
+                          padding: 16,
+                          marginTop: 16,
+                        }}
+                      >
+                        <Title level={5} style={{ marginTop: 0 }}>
+                          {accessDraftInstanceId
+                            ? t('agentDetail.editAccess')
+                            : t('agentDetail.newAccess')}
+                        </Title>
+                        <BindingEditor
+                          mode={accessDraftInstanceId ? 'edit' : 'create'}
+                          value={accessDraft}
+                          onChange={updateAccessDraft}
+                          onValidityChange={setAccessDraftValid}
+                          instances={
+                            accessDraftInstanceId ? instances : availableInstances
+                          }
+                          credentials={credentials}
+                          provisioningBackends={backends}
+                          disabled={
+                            busy ||
+                            credentialLoadingId === accessDraft.instance_id
+                          }
+                        />
+                        {accessDraft.instance_id &&
+                          credentialErrors[accessDraft.instance_id] && (
+                            <Alert
+                              type="error"
+                              showIcon
+                              message={credentialErrors[accessDraft.instance_id]}
+                            />
+                          )}
+                        <Space style={{ marginTop: 16 }}>
+                          <Button
+                            type="primary"
+                            disabled={!accessDraftValid}
+                            loading={busy}
+                            onClick={() => void saveInstanceAccess()}
+                          >
+                            {t('agentDetail.saveAccess')}
+                          </Button>
+                          <Button
+                            disabled={busy}
+                            onClick={() => {
+                              setAccessDraft(null)
+                              setAccessDraftInstanceId(null)
+                            }}
+                          >
+                            {t('common.cancel')}
+                          </Button>
+                        </Space>
+                      </div>
+                    )}
+                    <Table
+                      rowKey="instance_id"
+                      dataSource={instanceAccess}
+                      pagination={false}
+                      scroll={{ x: 720 }}
+                      style={{ marginTop: 16 }}
+                      locale={{
+                        emptyText: (
+                          <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description={t('agentDetail.noAccess')}
+                          />
+                        ),
                       }}
-                    >
-                      {t('agentDetail.edit')}
-                    </Button>
-                    <Button
-                      size="small"
-                      danger
-                      onClick={() =>
-                        setConfirmation({
-                          kind: 'delete-access',
-                          access: row.access,
-                        })
-                      }
-                    >
-                      {t('agentDetail.remove')}
-                    </Button>
-                  </Space>
-                  ),
-              },
-            ]}
-          />
-        </section>
+                      columns={[
+                        {
+                          title: t('instances.instance'),
+                          dataIndex: 'instance_id',
+                          render: (instanceId: string) =>
+                            instanceNames[instanceId] ?? instanceId,
+                        },
+                        {
+                          title: t('agentDetail.permission'),
+                          dataIndex: 'permission',
+                          render: (permission: AgentInstanceAccess['permission']) =>
+                            permission === 'readonly'
+                              ? t('users.readOnly')
+                              : permission === 'readwrite'
+                                ? t('users.readWrite')
+                                : '—',
+                        },
+                        {
+                          title: t('agentDetail.capabilities'),
+                          dataIndex: 'capabilities',
+                          render: (capabilities: string[]) => (
+                            <Space wrap>
+                              {capabilities.map((value) => (
+                                <Tag key={value}>{value}</Tag>
+                              ))}
+                            </Space>
+                          ),
+                        },
+                        {
+                          title: t('agentDetail.state'),
+                          key: 'state',
+                          render: (_: unknown, access: AgentInstanceAccess) => (
+                            <Space wrap>
+                              {access.direct_binding_id && (
+                                <Tag
+                                  color={
+                                    access.direct_enabled ? 'success' : 'default'
+                                  }
+                                >
+                                  {t('agentDetail.direct')}{' '}
+                                  {access.direct_enabled
+                                    ? t('common.enabled')
+                                    : t('common.disabled')}
+                                </Tag>
+                              )}
+                              {access.provisioning_binding_id && (
+                                <Tag
+                                  color={
+                                    access.capabilities.includes('db_instance:create')
+                                      ? 'success'
+                                      : 'default'
+                                  }
+                                >
+                                  {t('agentDetail.create')}{' '}
+                                  {access.capabilities.includes('db_instance:create')
+                                    ? t('common.enabled')
+                                    : t('common.disabled')}
+                                </Tag>
+                              )}
+                            </Space>
+                          ),
+                        },
+                        {
+                          title: t('instances.actions'),
+                          key: 'actions',
+                          render: (_: unknown, access: AgentInstanceAccess) => (
+                            <Space>
+                              <Button
+                                size="small"
+                                onClick={() => {
+                                  const draft = {
+                                    instance_id: access.instance_id,
+                                    credential_id: access.credential_id,
+                                    permission: access.permission,
+                                    direct_enabled: access.direct_enabled,
+                                    capabilities: editableAccessCapabilities(
+                                      access.capabilities,
+                                    ),
+                                  }
+                                  setAccessDraft(draft)
+                                  void loadCredentialsForInstance(access.instance_id)
+                                  setAccessDraftInstanceId(access.instance_id)
+                                  setAccessDraftValid(false)
+                                }}
+                              >
+                                {t('agentDetail.edit')}
+                              </Button>
+                              <Button
+                                size="small"
+                                danger
+                                onClick={() =>
+                                  setConfirmation({
+                                    kind: 'delete-access',
+                                    access,
+                                  })
+                                }
+                              >
+                                {t('agentDetail.remove')}
+                              </Button>
+                            </Space>
+                          ),
+                        },
+                      ]}
+                    />
+                  </section>
 
-        <Divider style={{ margin: 0 }} />
+                  <Divider style={{ margin: 0 }} />
 
-        <DedicatedPoolRoutes
-          agentId={agent.id}
-          resources={resources}
-          backends={backends}
-        />
+                  <DedicatedPoolRoutes
+                    agentId={agent.id}
+                    resources={resources}
+                    backends={backends}
+                  />
 
-        <Divider style={{ margin: 0 }} />
+                  <Divider style={{ margin: 0 }} />
 
-        <section aria-labelledby="agent-resources-heading">
-          <SectionHeading
-            id="agent-resources-heading"
-            title={t('agentDetail.resourcesTitle')}
-            description={t('agentDetail.resourcesDescription')}
-          />
-          <Table
-            rowKey="id"
-            dataSource={resources}
-            pagination={false}
-            scroll={{ x: 780 }}
-            style={{ marginTop: 16 }}
-            locale={{
-              emptyText: (
-                <Empty
-                  image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description={t('agentDetail.noResources')}
-                />
+                  <section aria-labelledby="agent-resources-heading">
+                    <SectionHeading
+                      id="agent-resources-heading"
+                      title={t('agentDetail.resourcesTitle')}
+                      description={t('agentDetail.resourcesDescription')}
+                    />
+                    <Table
+                      rowKey="id"
+                      dataSource={resources}
+                      pagination={false}
+                      scroll={{ x: 780 }}
+                      style={{ marginTop: 16 }}
+                      locale={{
+                        emptyText: (
+                          <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description={t('agentDetail.noResources')}
+                          />
+                        ),
+                      }}
+                      columns={[
+                        { title: t('instances.name'), dataIndex: 'name', render: (value) => value ?? '—' },
+                        { title: t('instances.engine'), dataIndex: 'engine' },
+                        {
+                          title: t('instances.status'),
+                          dataIndex: 'status',
+                          render: (status: string) => (
+                            <Tag color={status === 'ready' ? 'success' : 'processing'}>
+                              {status}
+                            </Tag>
+                          ),
+                        },
+                        {
+                          title: t('agentDetail.backend'),
+                          dataIndex: 'backend_id',
+                          render: (backendId: string) =>
+                            backendNames[backendId] ?? backendId,
+                        },
+                        { title: t('agentDetail.clientToken'), dataIndex: 'client_token' },
+                        {
+                          title: t('agents.created'),
+                          dataIndex: 'created_at',
+                          render: (value: string) => new Date(value).toLocaleString(),
+                        },
+                      ]}
+                    />
+                  </section>
+                </Space>
               ),
-            }}
-            columns={[
-              { title: t('instances.name'), dataIndex: 'name', render: (value) => value ?? '—' },
-              { title: t('instances.engine'), dataIndex: 'engine' },
-              {
-                title: t('instances.status'),
-                dataIndex: 'status',
-                render: (status: string) => (
-                  <Tag color={status === 'ready' ? 'success' : 'processing'}>
-                    {status}
-                  </Tag>
-                ),
-              },
-              {
-                title: t('agentDetail.backend'),
-                dataIndex: 'backend_id',
-                render: (backendId: string) =>
-                  backendNames[backendId] ?? backendId,
-              },
-              { title: t('agentDetail.clientToken'), dataIndex: 'client_token' },
-              {
-                title: t('agents.created'),
-                dataIndex: 'created_at',
-                render: (value: string) => new Date(value).toLocaleString(),
-              },
-            ]}
-          />
-        </section>
+            },
+            {
+              key: 'polarrag',
+              label: t('agentDetail.polarragTab'),
+              children: (
+                <Space direction="vertical" size={24} style={{ width: '100%' }}>
+                  {renderMCPConnectionPanel(
+                    'agent-polarrag-mcp-connection-heading',
+                  )}
+
+                  <Divider style={{ margin: 0 }} />
+
+                  <section aria-labelledby="agent-polarrag-bindings-heading">
+                    <SectionHeading
+                      id="agent-polarrag-bindings-heading"
+                      title={t('agentDetail.polarragBindingsTitle')}
+                      description={t('agentDetail.polarragBindingsDescription')}
+                    />
+                    <Table
+                      rowKey="id"
+                      dataSource={polarRAGBindings}
+                      pagination={false}
+                      style={{ marginTop: 16 }}
+                      locale={{
+                        emptyText: (
+                          <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description={t('agentDetail.noPolarragBindings')}
+                          />
+                        ),
+                      }}
+                      columns={[
+                        {
+                          title: t('instances.instance'),
+                          dataIndex: 'instance_name',
+                        },
+                        {
+                          title: t('agentDetail.permission'),
+                          key: 'permission',
+                          render: () => t('agentDetail.userAcl'),
+                        },
+                        {
+                          title: t('agentDetail.publicScope'),
+                          key: 'publicScope',
+                          render: (_: unknown, binding: AgentPolarRAGBinding) =>
+                            binding.public_knowledge_resource_ids === null
+                              ? t('agentDetail.allPublicResources')
+                              : t('agentDetail.selectedPublicResources', {
+                                  count:
+                                    binding.public_knowledge_resource_ids.length,
+                                }),
+                        },
+                        {
+                          title: t('agentDetail.state'),
+                          key: 'state',
+                          render: () => (
+                            <Tag color="success">{t('agentDetail.bound')}</Tag>
+                          ),
+                        },
+                        {
+                          title: t('instances.actions'),
+                          key: 'actions',
+                          render: (_: unknown, binding: AgentPolarRAGBinding) => (
+                            <Space>
+                              <Button
+                                size="small"
+                                onClick={() => void openPublicScope(binding)}
+                              >
+                                {t('agentDetail.configurePublicScope')}
+                              </Button>
+                              <Button
+                                size="small"
+                                danger
+                                onClick={() =>
+                                  setConfirmation({
+                                    kind: 'delete-polarrag-access',
+                                    binding,
+                                  })
+                                }
+                              >
+                                {t('agentDetail.remove')}
+                              </Button>
+                            </Space>
+                          ),
+                        },
+                      ]}
+                    />
+                  </section>
+
+                  <Modal
+                    open={publicScopeBinding !== null}
+                    title={t('agentDetail.configurePublicScope')}
+                    okText={t('agentDetail.savePublicScope')}
+                    confirmLoading={busy}
+                    okButtonProps={{ disabled: publicScopeLoading }}
+                    onOk={() => void savePublicScope()}
+                    onCancel={() => setPublicScopeBinding(null)}
+                  >
+                    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+                      <Text type="secondary">
+                        {t('agentDetail.publicScopeDescription')}
+                      </Text>
+                      <Radio.Group
+                        aria-label={t('agentDetail.publicScope')}
+                        value={publicScopeDraft === null ? 'all' : 'selected'}
+                        onChange={(event) =>
+                          setPublicScopeDraft(
+                            event.target.value === 'all' ? null : [],
+                          )
+                        }
+                      >
+                        <Space direction="vertical">
+                          <Radio value="all">
+                            {t('agentDetail.allPublicResources')}
+                          </Radio>
+                          <Radio value="selected">
+                            {t('agentDetail.selectedPublicResourceOption')}
+                          </Radio>
+                        </Space>
+                      </Radio.Group>
+                      <Select
+                        mode="multiple"
+                        aria-label={t('agentDetail.publicKnowledgeResources')}
+                        loading={publicScopeLoading}
+                        disabled={publicScopeDraft === null}
+                        value={publicScopeDraft ?? []}
+                        onChange={setPublicScopeDraft}
+                        options={publicScopeOptions.map((resource) => ({
+                          value: resource.knowledge_resource_id,
+                          label: `${resource.name} · ${resource.knowledge_space_name}`,
+                        }))}
+                        style={{ width: '100%' }}
+                      />
+                    </Space>
+                  </Modal>
+
+                  <Divider style={{ margin: 0 }} />
+
+                  <section aria-label={t('agentDetail.polarragAccessLabel')}>
+                    <PolarRAGAccessPanel
+                      agentId={agent.id}
+                      bindings={polarRAGBindings}
+                      onBindingsChange={setPolarRAGBindings}
+                    />
+                  </section>
+                </Space>
+              ),
+            },
+          ]}
+        />
       </Space>
 
       <Modal

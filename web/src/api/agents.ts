@@ -82,7 +82,14 @@ export interface AgentPolarRAGBinding {
   id: string
   polarrag_instance_id: string
   instance_name: string
+  public_knowledge_resource_ids: string[] | null
   created_at: string
+}
+
+export interface AgentPolarRAGPublicResource {
+  knowledge_resource_id: string
+  name: string
+  knowledge_space_name: string
 }
 
 export interface AgentUserTokenSummary {
@@ -148,6 +155,24 @@ export const createAgentPolarRAGBinding = (
   api.post<AgentPolarRAGBinding>(
     `/api/agents/${encodeURIComponent(agentId)}/polarrag-bindings`,
     { polarrag_instance_id: polarragInstanceId },
+  )
+
+export const listAgentPolarRAGPublicResources = (
+  agentId: string,
+  bindingId: string,
+) =>
+  api.get<AgentPolarRAGPublicResource[]>(
+    `/api/agents/${encodeURIComponent(agentId)}/polarrag-bindings/${encodeURIComponent(bindingId)}/public-resources`,
+  )
+
+export const updateAgentPolarRAGPublicResources = (
+  agentId: string,
+  bindingId: string,
+  publicKnowledgeResourceIds: string[] | null,
+) =>
+  api.put<AgentPolarRAGBinding>(
+    `/api/agents/${encodeURIComponent(agentId)}/polarrag-bindings/${encodeURIComponent(bindingId)}/public-resources`,
+    { public_knowledge_resource_ids: publicKnowledgeResourceIds },
   )
 
 export const deleteAgentPolarRAGBinding = (

@@ -172,7 +172,12 @@ async def test_sync_space_catalog_applies_domain_owner_and_unknown_rules(
         ).scalars()
     }
 
-    assert result == {"active": 2, "disabled": 1, "owner_unresolved": 0}
+    assert result == {
+        "knowledge_bases": 3,
+        "active": 2,
+        "disabled": 1,
+        "owner_unresolved": 0,
+    }
     assert resources["public-kb"].binding_mode == KnowledgeBindingMode.DOMAIN
     assert resources["personal-kb"].binding_mode == KnowledgeBindingMode.OWNER
     assert resources["personal-kb"].owner_pas_user_id == owner.id
@@ -210,6 +215,68 @@ async def test_sync_space_catalog_hides_unresolved_personal_owner(
     assert resource.sync_status == KnowledgeResourceSyncStatus.OWNER_UNRESOLVED
     assert resource.enabled is False
     assert resource.owner_pas_user_id is None
+
+
+async def test_sync_space_catalog_resolves_trusted_polarrag_user_owner(
+    seeded,
+) -> None:
+    session, space, owner = seeded
+    record = PolarRAGKnowledgeBaseRecord(
+        space_id="space-a",
+        kb_id="native-personal-kb",
+        name="Native Personal",
+        kb_type="PERSONAL",
+        identity_domain="tenant-a",
+        owner={
+            "provider": "polarrag",
+            "type": "user",
+            "id": owner.external_id,
+        },
+    )
+
+    result = await sync_space_catalog(
+        session,
+        space,
+        FakeCatalogClient([record]),
+    )
+    resource = (
+        await session.execute(select(KnowledgeResource))
+    ).scalar_one()
+
+    assert result["active"] == 1
+    assert resource.owner_pas_user_id == owner.id
+    assert resource.sync_status == KnowledgeResourceSyncStatus.ACTIVE
+
+
+async def test_sync_space_catalog_rejects_internal_user_id_as_polarrag_owner(
+    seeded,
+) -> None:
+    session, space, owner = seeded
+    record = PolarRAGKnowledgeBaseRecord(
+        space_id="space-a",
+        kb_id="untrusted-native-personal-kb",
+        name="Untrusted Native Personal",
+        kb_type="PERSONAL",
+        identity_domain="tenant-a",
+        owner={
+            "provider": "polarrag",
+            "type": "user",
+            "id": owner.id,
+        },
+    )
+
+    result = await sync_space_catalog(
+        session,
+        space,
+        FakeCatalogClient([record]),
+    )
+    resource = (
+        await session.execute(select(KnowledgeResource))
+    ).scalar_one()
+
+    assert result["owner_unresolved"] == 1
+    assert resource.owner_pas_user_id is None
+    assert resource.sync_status == KnowledgeResourceSyncStatus.OWNER_UNRESOLVED
 
 
 async def test_periodic_sync_worker_visits_enabled_spaces(seeded) -> None:

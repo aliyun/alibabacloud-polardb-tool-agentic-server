@@ -18,6 +18,7 @@ import {
   type AgentUserAssignment,
 } from '../../api/agents'
 import api, { getAPIErrorMessage } from '../../api/client'
+import { formatDateTime } from '../../i18n/format'
 import {
   listPolarRAGInstances,
   type PolarRAGInstance,
@@ -70,7 +71,7 @@ export default function PolarRAGAccessPanel({
   bindings: AgentPolarRAGBinding[]
   onBindingsChange: (bindings: AgentPolarRAGBinding[]) => void
 }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const [instances, setInstances] = useState<PolarRAGInstance[]>([])
   const [users, setUsers] = useState<UserOption[]>([])
   const [assignments, setAssignments] = useState<AgentUserAssignment[]>([])
@@ -110,12 +111,12 @@ export default function PolarRAGAccessPanel({
       setGroupAssignments(groupAssignmentResponse.data)
     } catch (requestError) {
       setError(
-        getAPIErrorMessage(requestError, 'Could not load PolarRAG access.'),
+        getAPIErrorMessage(requestError, t('polarragAccess.loadFailed')),
       )
     } finally {
       setLoading(false)
     }
-  }, [agentId])
+  }, [agentId, t])
 
   useEffect(() => {
     void load()
@@ -142,7 +143,7 @@ export default function PolarRAGAccessPanel({
       await load()
     } catch (requestError) {
       setError(
-        getAPIErrorMessage(requestError, 'Could not update PolarRAG access.'),
+        getAPIErrorMessage(requestError, t('polarragAccess.updateFailed')),
       )
     } finally {
       setBusy(false)
@@ -157,7 +158,7 @@ export default function PolarRAGAccessPanel({
           {t('polarragAccess.title')}
         </Title>
         <Text type="secondary">
-          {t('polarragAccess.description')}
+          {t('polarragAccess.tabDescription')}
         </Text>
       </div>
       <Space.Compact style={{ width: '100%' }}>
@@ -168,8 +169,8 @@ export default function PolarRAGAccessPanel({
           placeholder={t('polarragAccess.selectInstance')}
           notFoundContent={
             instances.length > 0 && availableInstances.length === 0
-              ? 'All PolarRAG instances are already bound'
-              : 'No PolarRAG instances available'
+              ? t('polarragAccess.allBound')
+              : t('polarragAccess.noneAvailable')
           }
           options={availableInstances.map((instance) => ({
             value: instance.id,
@@ -239,21 +240,25 @@ export default function PolarRAGAccessPanel({
         loading={loading}
         pagination={false}
         dataSource={groupAssignments}
-        locale={{ emptyText: 'No groups assigned' }}
+        locale={{ emptyText: t('polarragAccess.noGroups') }}
         columns={[
           {
-            title: 'Group',
+            title: t('polarragAccess.group'),
             render: (_value, row: AgentGroupAssignment) => groupLabel(row),
           },
           {
-            title: 'Type',
+            title: t('polarragAccess.type'),
             render: (_value, row: AgentGroupAssignment) => (
-              <Tag>{row.group_kind === 'department' ? 'Department' : 'Enterprise'}</Tag>
+              <Tag>
+                {row.group_kind === 'department'
+                  ? t('polarragAccess.department')
+                  : t('polarragAccess.enterprise')}
+              </Tag>
             ),
           },
-          { title: 'Members', dataIndex: 'member_count' },
+          { title: t('polarragAccess.members'), dataIndex: 'member_count' },
           {
-            title: 'Actions',
+            title: t('polarragAccess.actions'),
             render: (_value, row: AgentGroupAssignment) => (
               <Button
                 danger
@@ -261,9 +266,8 @@ export default function PolarRAGAccessPanel({
                 disabled={busy}
                 onClick={() =>
                   Modal.confirm({
-                    title: 'Remove group assignment?',
-                    content:
-                      'Users without another direct or group assignment lose Agent access immediately.',
+                    title: t('polarragAccess.removeGroupTitle'),
+                    content: t('polarragAccess.removeGroupWarning'),
                     okButtonProps: { danger: true },
                     onOk: () =>
                       mutate(() =>
@@ -320,28 +324,31 @@ export default function PolarRAGAccessPanel({
         loading={loading}
         pagination={false}
         dataSource={assignments}
-        locale={{ emptyText: 'No users assigned' }}
+        locale={{ emptyText: t('polarragAccess.noUsers') }}
         columns={[
-          { title: 'User', dataIndex: 'user_name' },
+          { title: t('polarragAccess.user'), dataIndex: 'user_name' },
           {
-            title: 'User status',
+            title: t('polarragAccess.userStatus'),
             dataIndex: 'user_status',
             render: (value: string) => <Tag>{value}</Tag>,
           },
           {
-            title: 'Token status',
+            title: t('polarragAccess.tokenStatus'),
             render: (_value, row: AgentUserAssignment) =>
-              row.token ? <Tag>{row.token.status}</Tag> : 'Not issued',
+              row.token ? <Tag>{row.token.status}</Tag> : t('polarragAccess.notIssued'),
           },
           {
-            title: 'Last used',
+            title: t('polarragAccess.lastUsed'),
             render: (_value, row: AgentUserAssignment) =>
               row.token?.last_used_at
-                ? new Date(row.token.last_used_at).toLocaleString()
+                ? formatDateTime(
+                    row.token.last_used_at,
+                    i18n.resolvedLanguage ?? i18n.language,
+                  )
                 : '—',
           },
           {
-            title: 'Actions',
+            title: t('polarragAccess.actions'),
             render: (_value, row: AgentUserAssignment) => (
               <Space>
                 {row.token?.status === 'active' && (
@@ -351,7 +358,9 @@ export default function PolarRAGAccessPanel({
                     disabled={busy}
                     onClick={() =>
                       Modal.confirm({
-                        title: `Revoke ${row.user_name}'s Token?`,
+                        title: t('polarragAccess.revokeUserTokenTitle', {
+                          name: row.user_name,
+                        }),
                         okButtonProps: { danger: true },
                         onOk: () =>
                           mutate(() =>
@@ -369,7 +378,9 @@ export default function PolarRAGAccessPanel({
                   disabled={busy}
                   onClick={() =>
                     Modal.confirm({
-                      title: `Remove ${row.user_name} from this Agent?`,
+                      title: t('polarragAccess.removeUserTitle', {
+                        name: row.user_name,
+                      }),
                       okButtonProps: { danger: true },
                       onOk: () =>
                         mutate(() =>

@@ -192,6 +192,30 @@ describe('Instances page', () => {
     expect(within(dialog).getByLabelText(/^port$/i)).toHaveValue('9200')
   })
 
+  it('opens PolarRAG registration from the page action on its tab', async () => {
+    const user = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/instances?type=polarrag']}>
+        <Instances />
+      </MemoryRouter>,
+    )
+
+    expect(
+      await screen.findByRole('tab', {
+        name: /polarrag instances/i,
+        selected: true,
+      }),
+    ).toBeInTheDocument()
+    await user.click(
+      screen.getByRole('button', { name: /register instance/i }),
+    )
+
+    const dialog = screen.getByRole('dialog', { name: /register instance/i })
+    expect(within(dialog).queryByLabelText(/cluster id/i)).not.toBeInTheDocument()
+    expect(within(dialog).getByText('PolarRAG')).toBeInTheDocument()
+    expect(within(dialog).getByLabelText(/^port$/i)).toHaveValue('9200')
+  })
+
   it('shows provisioning state without implying general health', async () => {
     render(
       <MemoryRouter>

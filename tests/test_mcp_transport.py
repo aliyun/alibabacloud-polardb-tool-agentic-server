@@ -39,6 +39,7 @@ def _create_mcp_token(user_id: str) -> str:
     now = int(time.time())
     return jose_jwt.encode(
         {
+            "iss": config.server.public_base_url,
             "sub": user_id,
             "aud": f"{config.server.public_base_url}/mcp",
             "jti": str(uuid.uuid4()),
@@ -239,6 +240,26 @@ class TestMCPTransportAuth:
         )
         assert resp.status_code == 401
 
+    async def test_web_session_token_returns_401(self, client, setup_data):
+        token = create_access_token({
+            "sub": setup_data["admin"].id,
+            "role": "admin",
+        })
+        headers = {
+            **MCP_HEADERS,
+            "Authorization": f"Bearer {token}",
+        }
+        resp = await client.post(
+            "/mcp",
+            json=_jsonrpc("initialize", {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1.0"},
+            }),
+            headers=headers,
+        )
+        assert resp.status_code == 401
+
 
 class TestMCPTransportInitialize:
     async def test_initialize(self, client, auth_headers):
@@ -307,9 +328,7 @@ class TestMCPTransportTools:
         assert "delete_branch" in names
         assert not {
             "prepare_document_upload",
-            "resume_document_upload",
             "complete_document_upload",
-            "abort_document_upload",
         } & set(names)
 
     async def test_user_agent_token_lists_and_calls_upload_tools(
@@ -380,7 +399,7 @@ class TestMCPTransportTools:
             json=_jsonrpc(
                 "tools/call",
                 {
-                    "name": "resume_document_upload",
+                    "name": "complete_document_upload",
                     "arguments": {"upload_session_id": str(uuid.uuid4())},
                 },
                 req_id=93,

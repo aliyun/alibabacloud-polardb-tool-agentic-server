@@ -230,7 +230,7 @@ export default function InstancesPanel({
         space.space_id,
       )
       message.success(
-        `${space.name} enabled; ${response.data.sync.active} active knowledge resources synchronized`,
+        `${space.name} enabled; ${response.data.sync.knowledge_bases} knowledge bases, ${response.data.sync.active} active resources`,
       )
       await reloadSpaces()
     } catch (requestError) {
@@ -279,7 +279,7 @@ export default function InstancesPanel({
         space.space_id,
       )
       message.success(
-        `${space.name} synchronized; ${response.data.active} active resources`,
+        `${space.name} synchronized; ${response.data.knowledge_bases} knowledge bases, ${response.data.active} active resources`,
       )
       await reloadSpaces()
     } catch (requestError) {
@@ -447,7 +447,7 @@ export default function InstancesPanel({
             {
               title: 'Instance',
               dataIndex: 'name',
-              fixed: 'left',
+              width: 260,
               render: (name: string, record) => (
                 <Space direction="vertical" size={0}>
                   <Text strong>{name}</Text>
@@ -460,6 +460,7 @@ export default function InstancesPanel({
             {
               title: 'Status',
               dataIndex: 'status',
+              width: 140,
               render: (status: PolarRAGInstance['status']) => (
                 <Tag color={statusColor(status)}>{status}</Tag>
               ),
@@ -467,11 +468,13 @@ export default function InstancesPanel({
             {
               title: 'Plugin',
               dataIndex: 'plugin_version',
+              width: 180,
               render: (value: string | null) => value || 'Unknown',
             },
             {
               title: 'TLS',
               dataIndex: 'tls_verify',
+              width: 250,
               render: (value: boolean) => (
                 <Space size={4}>
                   <SafetyCertificateOutlined />
@@ -481,7 +484,7 @@ export default function InstancesPanel({
             },
             {
               title: 'Actions',
-              fixed: 'right',
+              width: 300,
               render: (_: unknown, record) => (
                 <Space wrap>
                   <Button
@@ -766,8 +769,13 @@ export default function InstancesPanel({
                   render: (_: unknown, record) => {
                     const key = `${record.space_id}:${record.kb_id}`
                     const candidates = ownerCandidates.filter(
-                      (candidate) =>
-                        candidate.identity_domain === record.identity_domain,
+                      (candidate, index, all) =>
+                        candidate.identity_domain === record.identity_domain
+                        && all.findIndex(
+                          (item) =>
+                            item.identity_domain === candidate.identity_domain
+                            && item.pas_user_id === candidate.pas_user_id,
+                        ) === index,
                     )
                     return (
                       <Select
@@ -784,7 +792,7 @@ export default function InstancesPanel({
                         optionFilterProp="label"
                         options={candidates.map((candidate) => ({
                           value: candidate.principal_assignment_id,
-                          label: `${candidate.user_name} · ${candidate.provider}:user:${candidate.principal_id}`,
+                          label: `${candidate.user_name} · ${candidate.user_external_id}`,
                         }))}
                         style={{ minWidth: 260 }}
                         notFoundContent="No eligible user principal in this identity domain"
@@ -816,7 +824,7 @@ export default function InstancesPanel({
             <Table
               rowKey="knowledge_resource_id"
               dataSource={knowledgeResources}
-              pagination={false}
+              pagination={{ pageSize: 10, showSizeChanger: true }}
               size="small"
               locale={{ emptyText: 'No synchronized knowledge bases' }}
               columns={[

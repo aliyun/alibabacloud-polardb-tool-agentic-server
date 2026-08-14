@@ -9,6 +9,9 @@ from sqlalchemy import select
 
 from server.core.crypto import encrypt
 from server.models import (
+    Agent,
+    AgentPolarRAGInstanceBinding,
+    AgentUserAssignment,
     AuditLog,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
@@ -65,6 +68,8 @@ class FakeDocumentManagementClient:
             "doc_id": "doc-a",
             "kb_id": self.kb_id,
             "filename": "guide.md",
+            "file_size_bytes": 1536,
+            "created_at": "2026-08-12T03:04:05Z",
             "status": "COMPLETED",
             "chunk_count": 12,
             "active_generation": 0,
@@ -89,6 +94,8 @@ class FakeDocumentManagementClient:
                     "doc_id": "doc-a",
                     "kb_id": self.kb_id,
                     "filename": "guide.md",
+                    "file_size_bytes": 1536,
+                    "created_at": "2026-08-12T03:04:05Z",
                     "status": "COMPLETED",
                     "chunk_count": 12,
                     "oss_path": "oss://secret/path",
@@ -208,14 +215,49 @@ async def _seed_upload_resource(setup):
         return resource.id
 
 
+async def _seed_document_agent(
+    setup,
+    resource_id: str,
+    *,
+    public_knowledge_resource_ids_json: str | None = None,
+) -> str:
+    factory, admin, member = setup
+    async with factory() as session:
+        resource = await session.get(KnowledgeResource, resource_id)
+        assert resource is not None
+        agent = Agent(name=f"document-agent-{resource_id}", created_by=admin.id)
+        session.add(agent)
+        await session.flush()
+        session.add_all(
+            [
+                AgentUserAssignment(
+                    agent_id=agent.id,
+                    user_id=member.id,
+                    created_by_user_id=admin.id,
+                ),
+                AgentPolarRAGInstanceBinding(
+                    agent_id=agent.id,
+                    polarrag_instance_id=resource.polarrag_instance_id,
+                    created_by_user_id=admin.id,
+                    public_knowledge_resource_ids_json=(
+                        public_knowledge_resource_ids_json
+                    ),
+                ),
+            ]
+        )
+        await session.commit()
+        return agent.id
+
+
 async def test_member_upload_uses_server_resource_oss_and_identity(
     client,
     setup,
     monkeypatch,
 ) -> None:
     http, admin_headers, member_headers = client
-    factory, _admin, _member = setup
+    factory, _admin, member = setup
     resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(setup, resource_id)
     store = FakeObjectStore()
     upstream = FakeSubmitClient()
     monkeypatch.setattr(
@@ -228,6 +270,7 @@ async def test_member_upload_uses_server_resource_oss_and_identity(
     )
     files = {"file": ("guide.md", b"trusted upload body", "text/markdown")}
     data = {
+        "agent_id": agent_id,
         "knowledge_resource_id": resource_id,
         "space_id": "attacker-space",
         "kb_id": "attacker-kb",
@@ -269,8 +312,17 @@ async def test_member_upload_uses_server_resource_oss_and_identity(
         "principals": [
             {"provider": "feishu", "type": "group", "id": "group-member"},
             {"provider": "feishu", "type": "user", "id": "ou-member"},
+            {
+                "provider": "polarrag",
+                "type": "user",
+                "id": member.external_id,
+            },
         ],
-        "actor": {"provider": "feishu", "type": "user", "id": "ou-member"},
+        "actor": {
+            "provider": "polarrag",
+            "type": "user",
+            "id": member.external_id,
+        },
     }
     assert "acl" not in upstream.calls[0]
     async with factory() as session:
@@ -284,7 +336,42 @@ async def test_member_upload_uses_server_resource_oss_and_identity(
         context = json.loads(json.loads(audit.metadata_json)["client_info"])
         assert context["knowledge_resource_ids"] == [resource_id]
         assert context["space_ids"] == ["space-a"]
-        assert context["kb_ids"] == ["public-kb"]
+    assert context["kb_ids"] == ["public-kb"]
+
+
+async def test_member_upload_rejects_kb_outside_selected_agent_scope(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, _admin_headers, member_headers = client
+    _factory, _admin, _member = setup
+    resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(
+        setup, resource_id, public_knowledge_resource_ids_json="[]"
+    )
+
+    monkeypatch.setattr(
+        "server.api.polarrag_documents.object_store_from_space",
+        lambda _space: FakeObjectStore(),
+    )
+    monkeypatch.setattr(
+        "server.api.polarrag_documents.client_from_instance",
+        lambda _instance: FakeSubmitClient(),
+    )
+
+    response = await http.post(
+        "/api/me/polarrag/documents",
+        data={
+            "agent_id": agent_id,
+            "knowledge_resource_id": resource_id,
+        },
+        files={"file": ("guide.md", b"body", "text/markdown")},
+        headers=member_headers,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE"
 
 
 async def test_submit_failure_deletes_uploaded_object_and_hides_upstream_body(
@@ -294,6 +381,7 @@ async def test_submit_failure_deletes_uploaded_object_and_hides_upstream_body(
 ) -> None:
     http, _admin_headers, member_headers = client
     resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(setup, resource_id)
     store = FakeObjectStore()
     upstream = FakeSubmitClient(fail=True)
     monkeypatch.setattr(
@@ -307,7 +395,7 @@ async def test_submit_failure_deletes_uploaded_object_and_hides_upstream_body(
 
     response = await http.post(
         "/api/me/polarrag/documents",
-        data={"knowledge_resource_id": resource_id},
+        data={"agent_id": agent_id, "knowledge_resource_id": resource_id},
         files={"file": ("guide.md", io.BytesIO(b"body"), "text/markdown")},
         headers=member_headers,
     )
@@ -324,10 +412,11 @@ async def test_upload_rejects_unsafe_or_extensionless_filename(
 ) -> None:
     http, _admin_headers, member_headers = client
     resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(setup, resource_id)
     for filename in ("../guide.md", "folder\\guide.md", "README"):
         response = await http.post(
             "/api/me/polarrag/documents",
-            data={"knowledge_resource_id": resource_id},
+            data={"agent_id": agent_id, "knowledge_resource_id": resource_id},
             files={"file": (filename, b"body", "application/octet-stream")},
             headers=member_headers,
         )
@@ -340,12 +429,13 @@ def test_document_actor_requires_user_principal() -> None:
         {
             "principals": [
                 {"provider": "feishu", "type": "user", "id": "ou-member"},
+                {"provider": "polarrag", "type": "user", "id": "pas-user"},
                 {"provider": "feishu", "type": "group", "id": "group-a"},
             ]
         }
     )
 
-    assert actor == {"provider": "feishu", "type": "user", "id": "ou-member"}
+    assert actor == {"provider": "polarrag", "type": "user", "id": "pas-user"}
     with pytest.raises(ValueError):
         document_actor({"principals": []})
     with pytest.raises(ValueError):
@@ -360,8 +450,9 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
     monkeypatch,
 ) -> None:
     http, admin_headers, member_headers = client
-    factory, _admin, _member = setup
+    factory, _admin, member = setup
     resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(setup, resource_id)
     upstream = FakeDocumentManagementClient()
     monkeypatch.setattr(
         "server.api.polarrag_documents.client_from_instance",
@@ -371,6 +462,7 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
     listed = await http.post(
         "/api/me/polarrag/documents/_list",
         json={
+            "agent_id": agent_id,
             "knowledge_resource_id": resource_id,
             "size": 20,
             "after_doc_id": "doc-before",
@@ -380,6 +472,7 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
     found = await http.post(
         "/api/me/polarrag/documents/_find",
         json={
+            "agent_id": agent_id,
             "knowledge_resource_id": resource_id,
             "filename": "guide",
             "limit": 20,
@@ -389,6 +482,7 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
     forbidden = await http.post(
         "/api/me/polarrag/documents/_find",
         json={
+            "agent_id": agent_id,
             "knowledge_resource_id": resource_id,
             "filename": "guide",
         },
@@ -397,6 +491,7 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
     injected = await http.post(
         "/api/me/polarrag/documents/_find",
         json={
+            "agent_id": agent_id,
             "knowledge_resource_id": resource_id,
             "filename": "guide",
             "acl_context": {"identity_domain": "attacker"},
@@ -406,12 +501,13 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
     deleted = await http.request(
         "DELETE",
         "/api/me/polarrag/documents/doc-a",
-        json={"knowledge_resource_id": resource_id},
+        json={"agent_id": agent_id, "knowledge_resource_id": resource_id},
         headers=member_headers,
     )
     rechunked = await http.post(
         "/api/me/polarrag/documents/doc-a/rechunk",
         json={
+            "agent_id": agent_id,
             "knowledge_resource_id": resource_id,
             "chunk_strategy": "hybrid",
             "chunk_max_tokens": 384,
@@ -425,6 +521,8 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
                 "doc_id": "doc-a",
                 "kb_id": "public-kb",
                 "filename": "guide.md",
+                "file_size_bytes": 1536,
+                "created_at": "2026-08-12T03:04:05Z",
                 "status": "COMPLETED",
                 "chunk_count": 12,
             }
@@ -440,6 +538,8 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
                 "doc_id": "doc-a",
                 "kb_id": "public-kb",
                 "filename": "guide.md",
+                "file_size_bytes": 1536,
+                "created_at": "2026-08-12T03:04:05Z",
                 "status": "COMPLETED",
                 "chunk_count": 12,
                 "active_generation": 0,
@@ -465,6 +565,11 @@ async def test_member_finds_and_mutates_only_documents_in_selected_resource(
         "principals": [
             {"provider": "feishu", "type": "group", "id": "group-member"},
             {"provider": "feishu", "type": "user", "id": "ou-member"},
+            {
+                "provider": "polarrag",
+                "type": "user",
+                "id": member.external_id,
+            },
         ],
     }
     assert upstream.calls == [
@@ -556,6 +661,7 @@ async def test_document_mutation_hides_cross_resource_document(
 ) -> None:
     http, _admin_headers, member_headers = client
     resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(setup, resource_id)
     upstream = FakeDocumentManagementClient(kb_id="another-kb")
     monkeypatch.setattr(
         "server.api.polarrag_documents.client_from_instance",
@@ -565,7 +671,7 @@ async def test_document_mutation_hides_cross_resource_document(
     response = await http.request(
         "DELETE",
         "/api/me/polarrag/documents/doc-a",
-        json={"knowledge_resource_id": resource_id},
+        json={"agent_id": agent_id, "knowledge_resource_id": resource_id},
         headers=member_headers,
     )
 
@@ -581,6 +687,7 @@ async def test_document_mutation_maps_upstream_permission_without_leaking_body(
 ) -> None:
     http, _admin_headers, member_headers = client
     resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(setup, resource_id)
     upstream = FakeDocumentManagementClient()
 
     async def denied(*_args, **_kwargs):
@@ -598,7 +705,7 @@ async def test_document_mutation_maps_upstream_permission_without_leaking_body(
     response = await http.request(
         "DELETE",
         "/api/me/polarrag/documents/doc-a",
-        json={"knowledge_resource_id": resource_id},
+        json={"agent_id": agent_id, "knowledge_resource_id": resource_id},
         headers=member_headers,
     )
 
@@ -682,3 +789,26 @@ async def test_oss_multipart_store_signs_exact_part_and_maps_sdk_results() -> No
     assert bucket.completed[2][0].etag == "etag-1"
     await store.abort_multipart("prefix/object.md", "upload-id")
     assert bucket.aborted == ("prefix/object.md", "upload-id", None)
+
+
+async def test_oss_abort_treats_missing_multipart_as_already_cleaned(
+    monkeypatch,
+) -> None:
+    from server.polarrag import oss as oss_module
+
+    class MissingUpload(Exception):
+        pass
+
+    class MissingBucket:
+        def abort_multipart_upload(self, *_args, **_kwargs):
+            raise MissingUpload
+
+    monkeypatch.setattr(
+        oss_module.oss2.exceptions,
+        "NoSuchUpload",
+        MissingUpload,
+    )
+    store = object.__new__(OssObjectStore)
+    store._bucket = MissingBucket()
+
+    await store.abort_multipart("prefix/object.md", "missing-upload")

@@ -101,7 +101,7 @@ operators should begin with the
 
 Codex, Claude Code, Cursor, and compatible Agent Skills clients can use the
 explicitly invoked [agent-assisted deployment skill](docs/en/deployment/agent-assisted-deployment.md).
-It validates a Linux target before mutation and pins PAS to release `0.0.7`.
+It validates a Linux target before mutation and pins PAS to release `0.0.8`.
 
 ## Administration workflow
 
@@ -188,6 +188,7 @@ for the complete UI workflow, security model, Tool examples, and lifecycle.
 - [Database instance access and provisioning](docs/en/database-instances/access-and-provisioning.md)
 - [Dedicated database hot pools](docs/en/database-instances/dedicated-hot-pools.md)
 - [Agent REST database provisioning](docs/en/database-instances/agent-rest-provisioning.md)
+- [PolarRAG administrator onboarding](docs/en/knowledge/polarrag-onboarding.md)
 - [PolarRAG MCP and enterprise identities](docs/en/knowledge/polarrag-mcp.md)
 - [Docker Compose deployment](docs/en/deployment/docker-compose.md)
 - [Agent-assisted single-host deployment](docs/en/deployment/agent-assisted-deployment.md)

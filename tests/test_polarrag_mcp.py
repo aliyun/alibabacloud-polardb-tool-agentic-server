@@ -23,6 +23,7 @@ from server.models import (
     PolarRAGInstance,
     PolarRAGInstanceStatus,
     PolarRAGSpace,
+    PolarRAGUploadCleanup,
     PolarRAGUploadSession,
     PolarRAGUploadStatus,
     User,
@@ -198,6 +199,7 @@ class FakeMultipartStore:
         self.completed: list[tuple[str, str, list[SimpleNamespace]]] = []
         self.aborted: list[tuple[str, str]] = []
         self.deleted: list[str] = []
+        self.fail_complete = False
 
     async def initiate_multipart(self, key: str) -> str:
         self.key = key
@@ -230,6 +232,8 @@ class FakeMultipartStore:
         parts: list[SimpleNamespace],
     ) -> None:
         self.completed.append((key, upload_id, parts))
+        if self.fail_complete:
+            raise RuntimeError("sensitive OSS failure")
 
     async def abort_multipart(self, key: str, upload_id: str) -> None:
         self.aborted.append((key, upload_id))
@@ -321,6 +325,31 @@ async def test_kb_search_returns_sanitized_reranker_configuration_error(
     }
 
 
+async def test_kb_search_maps_client_construction_failure_to_tool_error(
+    seeded,
+) -> None:
+    from server.mcp.tools.polarrag import handle_kb_search
+
+    session, user, resources = seeded
+
+    def unavailable_client(_instance):
+        raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+
+    result = await handle_kb_search(
+        session,
+        user,
+        query="acl",
+        knowledge_resource_ids=[resources[0].id],
+        client_factory=unavailable_client,
+    )
+
+    assert result.isError is True
+    assert json.loads(result.content[0].text) == {
+        "error": "POLARRAG_INVALID_RESPONSE",
+        "message": "POLARRAG_INVALID_RESPONSE",
+    }
+
+
 async def test_polarrag_audit_context_has_coordinates_without_principal_ids(
     seeded,
 ) -> None:
@@ -401,9 +430,7 @@ def test_polarrag_tool_catalog_has_exact_safe_schema(monkeypatch) -> None:
         "doc_delete",
         "doc_rechunk",
         "prepare_document_upload",
-        "resume_document_upload",
         "complete_document_upload",
-        "abort_document_upload",
     }
     for name in POLARRAG_TOOL_NAMES:
         tool = manager.get_tool(name)
@@ -432,9 +459,9 @@ def test_polarrag_tool_catalog_has_exact_safe_schema(monkeypatch) -> None:
     assert "MANAGE" in descriptions["doc_delete"]
     assert "EXECUTE" in descriptions["doc_rechunk"]
     assert "local upload script" in descriptions["prepare_document_upload"]
-    assert "missing parts" in descriptions["resume_document_upload"]
+    assert "missing parts" in descriptions["complete_document_upload"]
+    assert "call this tool again" in descriptions["complete_document_upload"]
     assert "authoritative doc_id" in descriptions["complete_document_upload"]
-    assert "unfinished" in descriptions["abort_document_upload"]
     prepare_schema = manager.get_tool("prepare_document_upload").parameters
     assert set(prepare_schema["required"]) == {
         "knowledge_resource_id",
@@ -443,16 +470,12 @@ def test_polarrag_tool_catalog_has_exact_safe_schema(monkeypatch) -> None:
         "file_md5",
         "file_sha256",
     }
-    assert manager.get_tool("resume_document_upload").parameters["required"] == [
+    assert manager.get_tool("complete_document_upload").parameters["required"] == [
         "upload_session_id"
     ]
-    assert set(manager.get_tool("complete_document_upload").parameters["required"]) == {
-        "upload_session_id",
-        "parts",
+    assert set(manager.get_tool("complete_document_upload").parameters["properties"]) == {
+        "upload_session_id"
     }
-    assert manager.get_tool("abort_document_upload").parameters["required"] == [
-        "upload_session_id"
-    ]
     assert manager.get_tool("doc_delete").annotations.destructiveHint is True
     assert manager.get_tool("doc_delete").annotations.readOnlyHint is False
     assert manager.get_tool("doc_rechunk").annotations.destructiveHint is False
@@ -612,9 +635,14 @@ async def test_document_mutations_verify_resource_and_use_trusted_identity(
         {
             "acl_context": {
                 "identity_domain": "tenant-a",
-                "principals": [
-                    {"provider": "feishu", "type": "user", "id": "ou-user"}
-                ],
+                    "principals": [
+                        {"provider": "feishu", "type": "user", "id": "ou-user"},
+                        {
+                            "provider": "polarrag",
+                            "type": "user",
+                            "id": user.external_id,
+                        },
+                    ],
             }
         },
         {
@@ -622,9 +650,14 @@ async def test_document_mutations_verify_resource_and_use_trusted_identity(
             "chunk_max_tokens": 384,
             "acl_context": {
                 "identity_domain": "tenant-a",
-                "principals": [
-                    {"provider": "feishu", "type": "user", "id": "ou-user"}
-                ],
+                    "principals": [
+                        {"provider": "feishu", "type": "user", "id": "ou-user"},
+                        {
+                            "provider": "polarrag",
+                            "type": "user",
+                            "id": user.external_id,
+                        },
+                    ],
             },
         },
     ]
@@ -664,12 +697,11 @@ async def test_document_mutations_hide_cross_resource_document(seeded) -> None:
     assert document_client.calls == ["document_info", "document_info"]
 
 
-async def test_prepare_and_resume_document_upload_use_server_owned_destination(
+async def test_prepare_document_upload_uses_server_owned_destination(
     seeded,
 ) -> None:
     from server.mcp.tools.polarrag import (
         handle_prepare_document_upload,
-        handle_resume_document_upload,
     )
 
     session, user, resources = seeded
@@ -715,34 +747,15 @@ async def test_prepare_and_resume_document_upload_use_server_owned_destination(
     assert row.oss_bucket == "tenant-a-documents"
     assert row.oss_object_key.startswith("pas/documents/")
     assert row.status == PolarRAGUploadStatus.PREPARED
-
-    store.parts = [
-        SimpleNamespace(
-            part_number=1,
-            etag="etag-1",
-            size=8 * 1024 * 1024,
-        )
-    ]
-    resumed = await handle_resume_document_upload(
-        session,
-        user,
-        agent_id=agent.id,
-        upload_session_id=row.id,
-        object_store_factory=lambda _space: store,
+    cleanup = await session.get(PolarRAGUploadCleanup, row.id)
+    assert cleanup is not None
+    assert cleanup.object_state == "multipart"
+    assert cleanup.oss_access_key_id_ciphertext == (
+        resources[0].space.oss_access_key_id_ciphertext
     )
-    resumed_upload = json.loads(resumed.content[0].text)["result"]
-
-    assert resumed.isError is False
-    assert resumed_upload["uploaded_parts"] == [
-        {"part_number": 1, "etag": "etag-1", "size_bytes": 8 * 1024 * 1024}
-    ]
-    assert resumed_upload["parts"] == [
-        {
-            "part_number": 2,
-            "upload_url": "https://upload.example.test/part/2",
-        }
-    ]
-
+    assert cleanup.oss_access_key_secret_ciphertext == (
+        resources[0].space.oss_access_key_secret_ciphertext
+    )
 
 async def test_complete_document_upload_verifies_parts_and_returns_polarrag_id(
     seeded,
@@ -753,6 +766,10 @@ async def test_complete_document_upload_verifies_parts_and_returns_polarrag_id(
     )
 
     session, user, resources = seeded
+    resources[0].kb_type = "PERSONAL"
+    resources[0].binding_mode = KnowledgeBindingMode.OWNER
+    resources[0].owner_pas_user_id = user.id
+    await session.commit()
     agent = await _upload_agent(session)
     store = FakeMultipartStore()
     upstream = FakeUploadClient()
@@ -788,10 +805,6 @@ async def test_complete_document_upload_verifies_parts_and_returns_polarrag_id(
         user,
         agent_id=agent.id,
         upload_session_id=upload_session_id,
-        parts=[
-            {"part_number": 1, "etag": '"etag-1"'},
-            {"part_number": 2, "etag": '"etag-2"'},
-        ],
         object_store_factory=lambda _space: store,
         client_factory=lambda _instance: upstream,
     )
@@ -809,25 +822,25 @@ async def test_complete_document_upload_verifies_parts_and_returns_polarrag_id(
     assert upstream.calls[0]["kb_id"] == "low"
     assert "doc_id" not in upstream.calls[0]
     assert upstream.calls[0]["acl_context"]["actor"] == {
-        "provider": "feishu",
+        "provider": "polarrag",
         "type": "user",
-        "id": "ou-user",
+        "id": user.external_id,
     }
     assert upstream.calls[0]["metadata"] == {"sha256": "b" * 64}
     row = await session.get(PolarRAGUploadSession, upload_session_id)
     assert row is not None
     assert row.status == PolarRAGUploadStatus.COMPLETED
     assert row.doc_id == "polarrag-doc-id"
+    assert (
+        await session.get(PolarRAGUploadCleanup, upload_session_id)
+        is None
+    )
 
     repeated = await handle_complete_document_upload(
         session,
         user,
         agent_id=agent.id,
         upload_session_id=upload_session_id,
-        parts=[
-            {"part_number": 1, "etag": "etag-1"},
-            {"part_number": 2, "etag": "etag-2"},
-        ],
         object_store_factory=lambda _space: store,
         client_factory=lambda _instance: upstream,
     )
@@ -839,10 +852,11 @@ async def test_complete_document_upload_verifies_parts_and_returns_polarrag_id(
 async def test_upload_session_rejects_other_agent_and_abort_cleans_oss(
     seeded,
 ) -> None:
-    from server.mcp.tools.polarrag import (
-        handle_abort_document_upload,
-        handle_prepare_document_upload,
-        handle_resume_document_upload,
+    from server.mcp.tools.polarrag import handle_prepare_document_upload
+    from server.polarrag.mcp_upload import (
+        UploadSessionError,
+        abort_upload,
+        resume_upload,
     )
 
     session, user, resources = seeded
@@ -865,34 +879,154 @@ async def test_upload_session_rejects_other_agent_and_abort_cleans_oss(
         "upload_session_id"
     ]
 
-    inaccessible = await handle_resume_document_upload(
-        session,
-        user,
-        agent_id=other.id,
-        upload_session_id=upload_session_id,
-        object_store_factory=lambda _space: store,
-    )
-    assert inaccessible.isError is True
-    assert json.loads(inaccessible.content[0].text)["error"] == (
-        "UPLOAD_SESSION_NOT_ACCESSIBLE"
-    )
+    with pytest.raises(
+        UploadSessionError, match="UPLOAD_SESSION_NOT_ACCESSIBLE"
+    ):
+        await resume_upload(
+            session,
+            user,
+            agent_id=other.id,
+            upload_session_id=upload_session_id,
+            resource_scope=None,
+            object_store_factory=lambda _space: store,
+        )
 
-    aborted = await handle_abort_document_upload(
+    _resource, aborted = await abort_upload(
         session,
         user,
         agent_id=owner.id,
         upload_session_id=upload_session_id,
         object_store_factory=lambda _space: store,
     )
-    assert aborted.isError is False
-    assert json.loads(aborted.content[0].text)["result"]["status"] == "aborted"
+    assert aborted["status"] == "aborted"
     assert store.aborted == [(store.key, store.upload_id)]
     row = await session.get(PolarRAGUploadSession, upload_session_id)
     assert row is not None
     assert row.status == PolarRAGUploadStatus.ABORTED
+    assert (
+        await session.get(PolarRAGUploadCleanup, upload_session_id)
+        is None
+    )
 
 
-async def test_complete_document_upload_rejects_unverified_parts(seeded) -> None:
+async def test_complete_document_upload_returns_safe_acl_denial(
+    seeded,
+    monkeypatch,
+) -> None:
+    from server.mcp.tools.polarrag import handle_complete_document_upload
+    from server.polarrag.mcp_upload import UploadSessionError
+
+    session, user, _resources = seeded
+    agent = await _upload_agent(session)
+
+    async def deny_upload(*_args, **_kwargs):
+        raise UploadSessionError("POLARRAG_DOCUMENT_UPLOAD_FORBIDDEN")
+
+    monkeypatch.setattr(
+        "server.mcp.tools.polarrag.complete_upload",
+        deny_upload,
+    )
+
+    result = await handle_complete_document_upload(
+        session,
+        user,
+        agent_id=agent.id,
+        upload_session_id=str(uuid.uuid4()),
+    )
+
+    assert result.isError is True
+    assert json.loads(result.content[0].text) == {
+        "error": "POLARRAG_DOCUMENT_UPLOAD_FORBIDDEN",
+        "message": (
+            "PolarRAG denied document upload for this enterprise identity. "
+            "Ask an administrator to verify the Space identity domain and "
+            "canonical PAS user ownership."
+        ),
+    }
+
+
+async def test_complete_document_upload_returns_only_missing_parts_then_completes(
+    seeded,
+) -> None:
+    from server.mcp.tools.polarrag import (
+        handle_complete_document_upload,
+        handle_prepare_document_upload,
+    )
+
+    session, user, resources = seeded
+    agent = await _upload_agent(session)
+    store = FakeMultipartStore()
+    prepared = await handle_prepare_document_upload(
+        session,
+        user,
+        agent_id=agent.id,
+        knowledge_resource_id=resources[0].id,
+        filename="guide.md",
+        file_size_bytes=9 * 1024 * 1024,
+        file_md5="a" * 32,
+        file_sha256="b" * 64,
+        content_type=None,
+        object_store_factory=lambda _space: store,
+    )
+    upload_session_id = json.loads(prepared.content[0].text)["result"][
+        "upload_session_id"
+    ]
+    store.parts = [
+        SimpleNamespace(
+            part_number=1,
+            etag="server-etag-1",
+            size=8 * 1024 * 1024,
+        )
+    ]
+    incomplete = await handle_complete_document_upload(
+        session,
+        user,
+        agent_id=agent.id,
+        upload_session_id=upload_session_id,
+        object_store_factory=lambda _space: store,
+        client_factory=lambda _instance: FakeUploadClient(),
+    )
+    assert incomplete.isError is False
+    incomplete_result = json.loads(incomplete.content[0].text)["result"]
+    assert incomplete_result["status"] == "prepared"
+    assert incomplete_result["parts"] == [
+        {
+            "part_number": 2,
+            "upload_url": "https://upload.example.test/part/2",
+        }
+    ]
+    store.parts = [
+        SimpleNamespace(
+            part_number=1,
+            etag="server-etag-1",
+            size=8 * 1024 * 1024,
+        ),
+        SimpleNamespace(
+            part_number=2,
+            etag="server-etag-2",
+            size=1024 * 1024,
+        ),
+    ]
+
+    result = await handle_complete_document_upload(
+        session,
+        user,
+        agent_id=agent.id,
+        upload_session_id=upload_session_id,
+        object_store_factory=lambda _space: store,
+        client_factory=lambda _instance: FakeUploadClient(),
+    )
+
+    assert result.isError is False
+    assert json.loads(result.content[0].text)["result"]["doc_id"] == (
+        "polarrag-doc-id"
+    )
+    assert len(store.completed) == 1
+
+
+async def test_complete_document_upload_rejects_invalid_oss_part_size(
+    seeded,
+) -> None:
     from server.mcp.tools.polarrag import (
         handle_complete_document_upload,
         handle_prepare_document_upload,
@@ -917,7 +1051,7 @@ async def test_complete_document_upload_rejects_unverified_parts(seeded) -> None
         "upload_session_id"
     ]
     store.parts = [
-        SimpleNamespace(part_number=1, etag="etag-1", size=2048)
+        SimpleNamespace(part_number=1, etag="server-etag", size=2048)
     ]
 
     result = await handle_complete_document_upload(
@@ -925,7 +1059,6 @@ async def test_complete_document_upload_rejects_unverified_parts(seeded) -> None
         user,
         agent_id=agent.id,
         upload_session_id=upload_session_id,
-        parts=[{"part_number": 1, "etag": "etag-1"}],
         object_store_factory=lambda _space: store,
         client_factory=lambda _instance: FakeUploadClient(),
     )
@@ -937,14 +1070,61 @@ async def test_complete_document_upload_rejects_unverified_parts(seeded) -> None
     assert store.completed == []
 
 
+async def test_complete_failure_persists_finalizing_cleanup_state(
+    seeded,
+) -> None:
+    from server.mcp.tools.polarrag import (
+        handle_complete_document_upload,
+        handle_prepare_document_upload,
+    )
+
+    session, user, resources = seeded
+    agent = await _upload_agent(session)
+    store = FakeMultipartStore()
+    prepared = await handle_prepare_document_upload(
+        session,
+        user,
+        agent_id=agent.id,
+        knowledge_resource_id=resources[0].id,
+        filename="guide.md",
+        file_size_bytes=1024,
+        file_md5="a" * 32,
+        file_sha256="b" * 64,
+        content_type=None,
+        object_store_factory=lambda _space: store,
+    )
+    upload_session_id = json.loads(prepared.content[0].text)["result"][
+        "upload_session_id"
+    ]
+    store.parts = [
+        SimpleNamespace(part_number=1, etag="etag-1", size=1024)
+    ]
+    store.fail_complete = True
+
+    result = await handle_complete_document_upload(
+        session,
+        user,
+        agent_id=agent.id,
+        upload_session_id=upload_session_id,
+        object_store_factory=lambda _space: store,
+        client_factory=lambda _instance: FakeUploadClient(),
+    )
+
+    assert result.isError is True
+    assert json.loads(result.content[0].text)["error"] == "OSS_UPLOAD_FAILED"
+    cleanup = await session.get(PolarRAGUploadCleanup, upload_session_id)
+    assert cleanup is not None
+    assert cleanup.object_state == "finalizing"
+
+
 async def test_complete_document_upload_retries_only_polarrag_after_submit_failure(
     seeded,
 ) -> None:
     from server.mcp.tools.polarrag import (
         handle_complete_document_upload,
         handle_prepare_document_upload,
-        handle_resume_document_upload,
     )
+    from server.polarrag.mcp_upload import resume_upload
 
     session, user, resources = seeded
     agent = await _upload_agent(session)
@@ -973,10 +1153,10 @@ async def test_complete_document_upload_retries_only_polarrag_after_submit_failu
         user,
         agent_id=agent.id,
         upload_session_id=upload_session_id,
-        parts=[{"part_number": 1, "etag": "etag-1"}],
         object_store_factory=lambda _space: store,
         client_factory=lambda _instance: upstream,
     )
+    await session.commit()
     row = await session.get(PolarRAGUploadSession, upload_session_id)
 
     assert first.isError is True
@@ -986,16 +1166,24 @@ async def test_complete_document_upload_retries_only_polarrag_after_submit_failu
     }
     assert row is not None
     assert row.status == PolarRAGUploadStatus.UPLOADED
+    cleanup = await session.get(PolarRAGUploadCleanup, upload_session_id)
+    assert cleanup is not None
+    assert cleanup.object_state == "object"
+    assert cleanup.cleanup_lease_until is None
+    assert cleanup.operation_kind is None
+    assert cleanup.operation_token is None
+    assert cleanup.reconcile_required is True
+    assert cleanup.submission_payload_ciphertext is not None
     assert len(store.completed) == 1
 
-    resumed = await handle_resume_document_upload(
+    _resource, resumed_upload = await resume_upload(
         session,
         user,
         agent_id=agent.id,
         upload_session_id=upload_session_id,
+        resource_scope=None,
         object_store_factory=lambda _space: store,
     )
-    resumed_upload = json.loads(resumed.content[0].text)["result"]
     assert isinstance(resumed_upload.pop("session_expires_at"), str)
     assert resumed_upload == {
         "upload_session_id": upload_session_id,
@@ -1014,7 +1202,6 @@ async def test_complete_document_upload_retries_only_polarrag_after_submit_failu
         user,
         agent_id=agent.id,
         upload_session_id=upload_session_id,
-        parts=[{"part_number": 1, "etag": "etag-1"}],
         object_store_factory=lambda _space: store,
         client_factory=lambda _instance: upstream,
     )

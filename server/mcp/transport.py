@@ -16,7 +16,14 @@ from pydantic import AnyHttpUrl, Field
 from starlette.applications import Starlette
 
 from server.auth.auth_routes import handle_login_page, handle_login_callback, handle_sso_redirect, handle_oidc_callback
-from server.auth.oauth_provider import PASAuthProvider
+from server.auth.oauth_provider import (
+    OAuthRedirectURIExactMatchMiddleware,
+    PASAuthProvider,
+)
+from server.auth.rate_limit import (
+    AuthEndpointRateLimitMiddleware,
+    reset_auth_rate_limiters,
+)
 from server.auth.principal import (
     get_current_principal,
     PrincipalAuthenticationError,
@@ -850,7 +857,17 @@ def create_mcp_app() -> Starlette | DBInstanceMetricsMiddleware:
     global _mcp_app
     if _mcp_app is None:
         mcp = _get_mcp_server()
-        _mcp_app = cast(Any, DBInstanceMetricsMiddleware(mcp.streamable_http_app()))
+        _mcp_app = cast(
+            Any,
+            AuthEndpointRateLimitMiddleware(
+                OAuthRedirectURIExactMatchMiddleware(
+                    DBInstanceMetricsMiddleware(
+                        mcp.streamable_http_app()
+                    ),
+                    get_session_factory(),
+                )
+            ),
+        )
     return _mcp_app
 
 
@@ -864,6 +881,7 @@ def reset_mcp() -> None:
     _mcp_server = None
     _mcp_app = None
     reset_describe_rate_limiters()
+    reset_auth_rate_limiters()
 
 
 @asynccontextmanager

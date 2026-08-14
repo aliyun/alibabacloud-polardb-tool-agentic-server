@@ -10,11 +10,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   getAgent,
+  listAgentPolarRAGPublicResources,
   listAgentPolarRAGBindings,
   regenerateAgentToken,
   revealAgentToken,
   revokeAgentToken,
   updateAgent,
+  updateAgentPolarRAGPublicResources,
 } from '../../api/agents'
 import { executeConfig } from '../../api/configuration'
 import { listInstanceCredentials } from '../../api/credentials'
@@ -33,11 +35,13 @@ import AgentDetail from './index'
 
 vi.mock('../../api/agents', () => ({
   getAgent: vi.fn(),
+  listAgentPolarRAGPublicResources: vi.fn(),
   listAgentPolarRAGBindings: vi.fn(),
   regenerateAgentToken: vi.fn(),
   revealAgentToken: vi.fn(),
   revokeAgentToken: vi.fn(),
   updateAgent: vi.fn(),
+  updateAgentPolarRAGPublicResources: vi.fn(),
 }))
 
 vi.mock('../../api/credentials', () => ({
@@ -658,23 +662,50 @@ describe('Agent detail page', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('shows one instance access section and no separate provisioning section', async () => {
+  it('separates database and PolarRAG administration into capability tabs', async () => {
+    const user = userEvent.setup()
     renderPage()
 
     expect(
       await screen.findByRole('heading', { name: /identity & status/i }),
     ).toBeInTheDocument()
     expect(
+      screen.getByRole('tab', { name: /database instances/i }),
+    ).toHaveAttribute('aria-selected', 'true')
+    expect(
       screen.getByRole('heading', { name: /^instance access$/i }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: /rest api access/i }),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('heading', { name: /provisioning backends/i }),
     ).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: /^resources$/i })).toBeInTheDocument()
+    expect(screen.queryByText('PolarRAG access panel')).not.toBeInTheDocument()
     expect(listInstanceCredentials).not.toHaveBeenCalled()
+
+    await user.click(
+      screen.getByRole('tab', { name: /polarrag instances/i }),
+    )
+
+    expect(screen.getByText('PolarRAG access panel')).toBeInTheDocument()
+    expect(
+      screen.getByRole('heading', { name: /mcp connection/i }),
+    ).toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: /rest api access/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: /^instance access$/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('heading', { name: /^resources$/i }),
+    ).not.toBeInTheDocument()
   })
 
-  it('shows database and PolarRAG bindings with their instance types', async () => {
+  it('shows database and PolarRAG bindings only in their capability tabs', async () => {
+    const user = userEvent.setup()
     vi.mocked(listAgentInstanceAccess).mockResolvedValue({
       data: [instanceAccess],
     } as never)
@@ -684,6 +715,7 @@ describe('Agent detail page', () => {
           id: 'rag-binding-1',
           polarrag_instance_id: 'rag-1',
           instance_name: 'Primary RAG',
+          public_knowledge_resource_ids: null,
           created_at: '2026-08-05T00:00:00Z',
         },
       ],
@@ -697,13 +729,80 @@ describe('Agent detail page', () => {
     expect(section).not.toBeNull()
     const accessTable = within(section as HTMLElement)
 
-    expect(accessTable.getByRole('columnheader', {
-      name: /instance type/i,
-    })).toBeInTheDocument()
     expect(accessTable.getByText('Production')).toBeInTheDocument()
-    expect(accessTable.getByText('PolarDB for MySQL')).toBeInTheDocument()
-    expect(accessTable.getByText('Primary RAG')).toBeInTheDocument()
-    expect(accessTable.getByText('PolarRAG')).toBeInTheDocument()
+    expect(accessTable.queryByText('Primary RAG')).not.toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole('tab', { name: /polarrag instances/i }),
+    )
+
+    const bindingHeading = screen.getByRole('heading', {
+      name: /bound polarrag instances/i,
+    })
+    const bindingSection = bindingHeading.closest('section')
+    expect(bindingSection).not.toBeNull()
+    const bindingTable = within(bindingSection as HTMLElement)
+    expect(bindingTable.getByText('Primary RAG')).toBeInTheDocument()
+    expect(bindingTable.queryByText('Production')).not.toBeInTheDocument()
+  })
+
+  it('updates a binding to selected PUBLIC knowledge resources', async () => {
+    const user = userEvent.setup()
+    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue({
+      data: [
+        {
+          id: 'rag-binding-1',
+          polarrag_instance_id: 'rag-1',
+          instance_name: 'Primary RAG',
+          public_knowledge_resource_ids: null,
+          created_at: '2026-08-05T00:00:00Z',
+        },
+      ],
+    } as never)
+    vi.mocked(listAgentPolarRAGPublicResources).mockResolvedValue({
+      data: [
+        {
+          knowledge_resource_id: 'resource-1',
+          name: 'Public handbook',
+          knowledge_space_name: 'Corporate',
+        },
+      ],
+    } as never)
+    vi.mocked(updateAgentPolarRAGPublicResources).mockResolvedValue({
+      data: {
+        id: 'rag-binding-1',
+        polarrag_instance_id: 'rag-1',
+        instance_name: 'Primary RAG',
+        public_knowledge_resource_ids: ['resource-1'],
+        created_at: '2026-08-05T00:00:00Z',
+      },
+    } as never)
+    renderPage()
+
+    await user.click(
+      await screen.findByRole('tab', { name: /polarrag instances/i }),
+    )
+    expect(screen.getByText('All PUBLIC knowledge resources')).toBeInTheDocument()
+    await user.click(
+      screen.getByRole('button', { name: /configure public scope/i }),
+    )
+    await user.click(
+      await screen.findByRole('radio', {
+        name: /selected public knowledge resources/i,
+      }),
+    )
+    await user.click(
+      screen.getByRole('combobox', { name: /public knowledge resources/i }),
+    )
+    await user.click(await screen.findByText('Public handbook · Corporate'))
+    await user.click(screen.getByRole('button', { name: /save public scope/i }))
+
+    expect(updateAgentPolarRAGPublicResources).toHaveBeenCalledWith(
+      'agent-1',
+      'rag-binding-1',
+      ['resource-1'],
+    )
+    expect(await screen.findByText('1 selected PUBLIC resource')).toBeInTheDocument()
   })
 
   it('prevents saving new access before an instance and capability are selected', async () => {

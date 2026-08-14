@@ -419,6 +419,7 @@ async def lifespan(app: FastAPI):
     # Background loops
     from server.core.audit_retention import audit_retention_loop
     from server.polarrag.catalog import catalog_sync_loop
+    from server.polarrag.upload_cleanup import upload_cleanup_loop
 
     async def _oauth_cleanup_loop():
         while True:
@@ -431,6 +432,9 @@ async def lifespan(app: FastAPI):
     cleanup_task = asyncio.create_task(_oauth_cleanup_loop())
     polarrag_catalog_task = asyncio.create_task(
         catalog_sync_loop(session_factory)
+    )
+    polarrag_upload_cleanup_task = asyncio.create_task(
+        upload_cleanup_loop(session_factory)
     )
     audit_retention_task = (
         asyncio.create_task(
@@ -449,6 +453,7 @@ async def lifespan(app: FastAPI):
         config_poll_task,
         cleanup_task,
         polarrag_catalog_task,
+        polarrag_upload_cleanup_task,
     ]
     if audit_retention_task is not None:
         lifecycle_tasks.append(audit_retention_task)
