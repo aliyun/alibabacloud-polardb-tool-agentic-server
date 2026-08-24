@@ -31,6 +31,9 @@ _EXCLUDED_PREFIXES = (
     "/.well-known/",
     "/mcp-auth/",
     "/auth/oidc/callback",
+    "/auth/feishu/tenant-verification/callback",
+    "/auth/feishu/login",
+    "/auth/sharepoint/login",
     "/auth/web-sso-guard/",
 )
 

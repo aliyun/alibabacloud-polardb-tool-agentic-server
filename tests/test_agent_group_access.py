@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.core.agent_access import has_agent_access, list_accessible_agent_ids
+from server.enterprise_identity.service import (
+    upsert_directory_group,
+    upsert_directory_membership,
+    upsert_external_user,
+)
 from server.models import (
     Agent,
     AgentGroupAssignment,
@@ -16,6 +21,10 @@ from server.models import (
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalType,
+    EnterpriseDirectoryMembershipType,
+    EnterpriseIdentitySource,
+    EnterpriseIdentitySourceStatus,
+    IdentitySourceProvider,
     User,
     UserDepartment,
 )
@@ -102,6 +111,112 @@ async def test_enterprise_group_grant_uses_active_registered_principal(
     principal.valid_until = utc_now() - timedelta(seconds=1)
     await session.commit()
     assert not await has_agent_access(session, agent.id, alice.id)
+
+
+async def test_identity_source_group_grant_tracks_synced_membership(
+    access_rows,
+) -> None:
+    session, admin, _alice, agent, _department = access_rows
+    source = EnterpriseIdentitySource.create(
+        name="Feishu directory",
+        provider=IdentitySourceProvider.FEISHU,
+        tenant_id="tenant-001",
+    )
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    source.last_synced_at = datetime.now(UTC)
+    session.add(source)
+    await session.flush()
+    member = await upsert_external_user(
+        session,
+        source,
+        external_user_id="ou-member",
+        display_name="Member",
+        email=None,
+    )
+    group = await upsert_directory_group(
+        session,
+        source,
+        external_group_id="oc-engineering",
+        display_name="Engineering",
+    )
+    membership = await upsert_directory_membership(
+        session,
+        source,
+        external_group_id=group.external_group_id,
+        member_type=EnterpriseDirectoryMembershipType.USER,
+        external_member_id="ou-member",
+    )
+    session.add(
+        AgentGroupAssignment.for_identity_source_group(
+            agent_id=agent.id,
+            identity_source_id=source.id,
+            external_group_id=group.external_group_id,
+            created_by_user_id=admin.id,
+        )
+    )
+    await session.commit()
+
+    await session.refresh(source)
+    assert source.last_synced_at is not None
+    assert source.last_synced_at.tzinfo is None
+
+    assert await has_agent_access(session, agent.id, member.id)
+
+    await session.delete(membership)
+    await session.commit()
+    assert not await has_agent_access(session, agent.id, member.id)
+
+    await upsert_directory_membership(
+        session,
+        source,
+        external_group_id=group.external_group_id,
+        member_type=EnterpriseDirectoryMembershipType.USER,
+        external_member_id="ou-member",
+    )
+    source.last_synced_at = datetime.now(UTC) - timedelta(
+        seconds=source.stale_after_seconds + 1
+    )
+    await session.commit()
+    assert not await has_agent_access(session, agent.id, member.id)
+
+
+async def test_identity_source_all_users_grant_tracks_source_freshness(
+    access_rows,
+) -> None:
+    session, admin, alice, agent, _department = access_rows
+    source = EnterpriseIdentitySource.create(
+        name="Feishu directory",
+        provider=IdentitySourceProvider.FEISHU,
+        tenant_id="tenant-001",
+    )
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    source.last_synced_at = datetime.now(UTC)
+    session.add(source)
+    await session.flush()
+    member = await upsert_external_user(
+        session,
+        source,
+        external_user_id="ou-member",
+        display_name="Member",
+        email=None,
+    )
+    session.add(
+        AgentGroupAssignment.for_identity_source_all_users(
+            agent_id=agent.id,
+            identity_source_id=source.id,
+            created_by_user_id=admin.id,
+        )
+    )
+    await session.commit()
+
+    assert await has_agent_access(session, agent.id, member.id)
+    assert not await has_agent_access(session, agent.id, alice.id)
+
+    source.last_synced_at = datetime.now(UTC) - timedelta(
+        seconds=source.stale_after_seconds + 1
+    )
+    await session.commit()
+    assert not await has_agent_access(session, agent.id, member.id)
 
 
 async def test_direct_grant_is_independent_from_groups(access_rows) -> None:

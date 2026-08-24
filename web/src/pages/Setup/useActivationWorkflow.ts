@@ -1,7 +1,11 @@
 import { useCallback } from 'react'
 
 import type { ConfigModule, ConfigResponse } from '../../api/configuration'
-import { getResponseRevision, parseActivationProof } from './workflowSafety'
+import {
+  createIdempotencyKey,
+  getResponseRevision,
+  parseActivationProof,
+} from './workflowSafety'
 
 export interface ActivationCandidate {
   moduleName: string
@@ -101,7 +105,7 @@ export function useActivationWorkflow({
         module: candidate.moduleName,
         expected_revision: proof.validatedRevision,
         validation_id: proof.validationId,
-        idempotency_key: crypto.randomUUID(),
+        idempotency_key: createIdempotencyKey(),
         config: candidate.activationConfig,
       }, bootstrapToken)
       if (candidate.moduleName === 'core_admin') {

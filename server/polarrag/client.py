@@ -526,7 +526,7 @@ class HttpPolarRAGClient(PolarRAGClient):
         return PolarRAGSpaceRecord(
             space_id=space_id,
             name=HttpPolarRAGClient._required_string(item, "space_name"),
-            identity_domain=HttpPolarRAGClient._required_string(
+            identity_domain=HttpPolarRAGClient._optional_string(
                 item,
                 "identity_domain",
             ),

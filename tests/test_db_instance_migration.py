@@ -17,10 +17,8 @@ PRE_AGENTIC_DB_REVISION = "ad71f04a14b5"
 AGENTIC_DB_REVISION = "c0f1a2b3c4d5"
 DEDICATED_POOL_BASE_REVISION = "d4e5f6a7b8c9"
 DEDICATED_POOL_REVISION = "f3a4b5c6d7e8"
-HEAD_REVISION = "c1d2e3f4a5b6"
-ENCRYPTION_KEY = base64.b64encode(
-    b"01234567890123456789012345678901"
-).decode()
+HEAD_REVISION = "a4b5c6d7e8f9"
+ENCRYPTION_KEY = base64.b64encode(b"01234567890123456789012345678901").decode()
 NEW_TABLES = {
     "agents",
     "agent_api_tokens",
@@ -55,6 +53,14 @@ NEW_TABLES = {
     "agent_user_tokens",
     "agent_group_assignments",
     "polarrag_upload_sessions",
+    "enterprise_identity_sources",
+    "enterprise_identity_source_space_bindings",
+    "enterprise_directory_users",
+    "enterprise_directory_groups",
+    "enterprise_directory_memberships",
+    "feishu_tenant_verification_states",
+    "feishu_user_login_states",
+    "sharepoint_user_login_states",
 }
 REMOVED_TABLES = {
     "db_accounts",
@@ -73,6 +79,14 @@ POLARRAG_TABLES = {
     "agent_user_tokens",
     "agent_group_assignments",
     "polarrag_upload_sessions",
+    "enterprise_identity_sources",
+    "enterprise_identity_source_space_bindings",
+    "enterprise_directory_users",
+    "enterprise_directory_groups",
+    "enterprise_directory_memberships",
+    "feishu_tenant_verification_states",
+    "feishu_user_login_states",
+    "sharepoint_user_login_states",
 }
 
 
@@ -154,9 +168,7 @@ def test_native_polarrag_principal_constraint_round_trip(
 
     with sqlite3.connect(database) as connection:
         table_sql = connection.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'table' "
-            "AND name = 'enterprise_principal_assignments'"
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'enterprise_principal_assignments'"
         ).fetchone()[0]
         assert "'polarrag'" in table_sql
         assert "ck_enterprise_principal_native_user" in table_sql
@@ -165,9 +177,7 @@ def test_native_polarrag_principal_constraint_round_trip(
     _downgrade(monkeypatch, database, "b0c1d2e3f4a5")
     with sqlite3.connect(database) as connection:
         table_sql = connection.execute(
-            "SELECT sql FROM sqlite_master "
-            "WHERE type = 'table' "
-            "AND name = 'enterprise_principal_assignments'"
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'enterprise_principal_assignments'"
         ).fetchone()[0]
         assert "'polarrag'" not in table_sql
         assert "ck_enterprise_principal_native_user" not in table_sql
@@ -175,9 +185,7 @@ def test_native_polarrag_principal_constraint_round_trip(
 
     _upgrade(monkeypatch, database, "head")
     with sqlite3.connect(database) as connection:
-        assert connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD_REVISION,)
 
 
 def test_target_migration_replaces_legacy_instance_and_audit_columns(tmp_path, monkeypatch):
@@ -189,35 +197,12 @@ def test_target_migration_replaces_legacy_instance_and_audit_columns(tmp_path, m
         instance_columns = {row[1] for row in connection.execute("PRAGMA table_info(instances)")}
         audit_columns = {row[1] for row in connection.execute("PRAGMA table_info(audit_logs)")}
         token_columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_api_tokens)")}
-        backend_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(provisioning_backends)"
-            )
-        }
-        resource_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(db_instance_resources)"
-            )
-        }
-        member_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(dedicated_pool_members)"
-            )
-        }
-        pool_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(dedicated_pools)"
-            )
-        }
+        backend_columns = {row[1] for row in connection.execute("PRAGMA table_info(provisioning_backends)")}
+        resource_columns = {row[1] for row in connection.execute("PRAGMA table_info(db_instance_resources)")}
+        member_columns = {row[1] for row in connection.execute("PRAGMA table_info(dedicated_pool_members)")}
+        pool_columns = {row[1] for row in connection.execute("PRAGMA table_info(dedicated_pools)")}
         provisioning_binding_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(agent_provisioning_bindings)"
-            )
+            row[1] for row in connection.execute("PRAGMA table_info(agent_provisioning_bindings)")
         }
 
     assert {"engine", "topology", "allocation_mode", "usage"} <= instance_columns
@@ -326,14 +311,8 @@ def test_consolidated_migration_does_not_adopt_legacy_pooled_instances(
     _upgrade(monkeypatch, database, "head")
 
     with sqlite3.connect(database) as connection:
-        modes = dict(
-            connection.execute(
-                "SELECT id, allocation_mode FROM instances ORDER BY id"
-            ).fetchall()
-        )
-        member_count = connection.execute(
-            "SELECT COUNT(*) FROM dedicated_pool_members"
-        ).fetchone()
+        modes = dict(connection.execute("SELECT id, allocation_mode FROM instances ORDER BY id").fetchall())
+        member_count = connection.execute("SELECT COUNT(*) FROM dedicated_pool_members").fetchone()
 
     assert modes == {
         "legacy-instance": "POOLED",
@@ -369,8 +348,7 @@ def test_hot_pool_migration_backfills_legacy_rows_without_touching_secrets(
             ),
         )
         connection.execute(
-            "INSERT INTO agents(id, name, status, created_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO agents(id, name, status, created_at) VALUES (?, ?, ?, ?)",
             (
                 "agent-1",
                 "legacy-agent",
@@ -459,8 +437,7 @@ def test_hot_pool_migration_backfills_legacy_rows_without_touching_secrets(
             ("resource-1",),
         ).fetchone()
         credential = connection.execute(
-            "SELECT username_ciphertext, password_ciphertext "
-            "FROM instance_credentials WHERE id = ?",
+            "SELECT username_ciphertext, password_ciphertext FROM instance_credentials WHERE id = ?",
             ("credential-1",),
         ).fetchone()
 
@@ -474,8 +451,7 @@ def test_hot_pool_migration_backfills_legacy_rows_without_touching_secrets(
     assert resource == (
         "MULTITENANT",
         None,
-        '{"grant_option":true,"legacy":true,'
-        '"privileges":["ALL PRIVILEGES"],"scope":"tenant"}',
+        '{"grant_option":true,"legacy":true,"privileges":["ALL PRIVILEGES"],"scope":"tenant"}',
     )
     assert credential == (
         "unchanged-username-ciphertext",
@@ -506,8 +482,7 @@ def test_consolidated_migration_keeps_existing_multitenant_routes_unordered(
             ),
         )
         connection.execute(
-            "INSERT INTO agents(id, name, status, created_at) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO agents(id, name, status, created_at) VALUES (?, ?, ?, ?)",
             (
                 "agent-route",
                 "route-agent",
@@ -590,8 +565,7 @@ def test_consolidated_migration_keeps_existing_multitenant_routes_unordered(
 
     with sqlite3.connect(database) as connection:
         route = connection.execute(
-            "SELECT routing_order FROM agent_provisioning_bindings "
-            "WHERE id = ?",
+            "SELECT routing_order FROM agent_provisioning_bindings WHERE id = ?",
             ("binding-route",),
         ).fetchone()
         template_name = connection.execute(
@@ -618,9 +592,7 @@ def test_consolidated_migration_can_reupgrade_after_downgrade(
     database = tmp_path / "permission-policy-reupgrade.db"
 
     _upgrade(monkeypatch, database, "head")
-    monkeypatch.setenv(
-        "PAS_DATABASE_URL", f"sqlite+aiosqlite:///{database}"
-    )
+    monkeypatch.setenv("PAS_DATABASE_URL", f"sqlite+aiosqlite:///{database}")
     monkeypatch.setenv("PAS_ENCRYPTION_KEY", ENCRYPTION_KEY)
     reset_config()
     command.downgrade(_alembic_config(), DEDICATED_POOL_BASE_REVISION)
@@ -629,14 +601,10 @@ def test_consolidated_migration_can_reupgrade_after_downgrade(
 
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
-            "SELECT id, privileges_json, grant_option "
-            "FROM permission_template_revisions "
-            "WHERE id = ?",
+            "SELECT id, privileges_json, grant_option FROM permission_template_revisions WHERE id = ?",
             ("builtin-mysql-default-v1",),
         ).fetchall()
-        revision = connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone()
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
 
     assert len(rows) == 1
     assert rows[0][2] == 0

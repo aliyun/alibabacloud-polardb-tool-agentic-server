@@ -17,7 +17,9 @@ describe('Login localization', () => {
     )
 
     expect(screen.getByRole('heading', { name: '欢迎回来' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /登\s*录/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /^登\s*录$/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '使用飞书登录' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '使用 SharePoint 登录' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '切换语言' })).toBeInTheDocument()
     expect(screen.getByRole('heading', {
       name: 'alibabacloud polardb tool agentic server',

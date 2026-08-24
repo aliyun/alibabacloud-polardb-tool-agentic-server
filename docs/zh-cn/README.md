@@ -38,6 +38,8 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
   实例访问和安全生命周期操作。
 - [认证](administration/authentication.md)：首次接管、内置登录、可选 SSO、
   Session 和 Agent 身份隔离。
+- [企业身份源](administration/enterprise-identity-sources.md)：最小权限的
+  飞书目录同步、Space 绑定、ACL 标识、Agent 群组授权和提供方交付边界。
 - [Agent 与 Token](administration/agents-and-tokens.md)：Agent 创建、Token
   生命周期、访问绑定和复查。
 - [审计与安全](administration/audit-and-security.md)：审计范围、密钥边界、
@@ -63,7 +65,7 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 
 - [Agent 辅助的单机部署](deployment/agent-assisted-deployment.md)：显式调用
   Codex、Claude Code、Cursor 和兼容 Agent Skills 的工作流，并固定到 PAS
-  0.0.8。
+  0.0.9。
 - [生产部署前提](deployment/prerequisites.md)：支持的平台、元数据库、根密钥
   管理、可写目录与镜像仓库访问要求。
 - [Docker Compose](deployment/docker-compose.md)：使用固定 MySQL、一次性迁移、
@@ -86,6 +88,8 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 - [配置模块](reference/configuration-modules.md)：模块目录、状态、依赖验证、
   外部检查和密钥行为。
 - [REST API](reference/rest-api.md)：认证、资源、配置命令和生成的 OpenAPI。
+- [企业身份源管理员 API](reference/enterprise-identity-sources-api.md)：飞书与
+  SharePoint 身份源、Space 绑定、用户身份映射和成员快照的自动化接口。
 - [兼容性](reference/compatibility.md)：支持的运行时、数据库迁移规则、API
   策略和预发布版本规则。
 - [发布流程](reference/release-process.md)：受保护的 tag 工作流、Draft

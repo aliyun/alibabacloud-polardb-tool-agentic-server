@@ -6,6 +6,9 @@ PAS 可以管理多个 PolarRAG 实例，并向经过认证的人类用户开放
 查询。该集成复用现有 PAS builtin 用户登录、User Token、MCP OAuth、元数据库、
 审计日志和 `PAS_ENCRYPTION_KEY`。
 
+飞书目录身份源及其 Space 绑定的管理员配置，请参见
+[企业身份源](../administration/enterprise-identity-sources.md)。
+
 ## 安全边界
 
 只有 subject 为 `user:<pas_user_id>` 的 MCP access token 才能看到并调用
@@ -44,20 +47,21 @@ PolarRAG 管理能力统一放在现有 PAS 页面：
   **PolarRAG Instances** 页签用于执行能力检查、轮换 write-only 凭证、停用
   实例，以及启用、同步或停用枚举得到的 Space。如果已启用 Space 中存在
   `UNCLAIMED` PERSONAL 知识库，管理员可在 Spaces 抽屉选择同一 identity domain
-  下符合条件的 PAS 用户主体，然后点击 **Assign owner and activate**。PAS 会将
-  所选用户的 PAS canonical 用户名（`User.external_id`）发送给 PolarRAG，再同步
-  active 目录；PolarRAG 根据 Space 的 identity domain 生成并持久化原生 owner
-  主体。PUBLIC 知识库
+  下符合条件的 PAS 用户，然后点击 **Assign owner and activate**。候选可以是已映射
+  的企业用户主体，也可以是活跃 PAS 用户的原生 `polarrag:user` 主体。PAS 会将所选
+  用户的 PAS canonical 用户名（`User.external_id`）发送给 PolarRAG，再同步 active
+  目录；PolarRAG 根据 Space 的 identity domain 生成并持久化原生 owner 主体。PUBLIC 知识库
   创建后直接为 active，永远不进入认领流程。页面永远不会显示已保存的凭证和
   CA Bundle。
-- 进入 **Users**，点击某个用户行的 **Enterprise Identity**，即可维护该用户在
-  allowlist 内的飞书或 SharePoint user/group 主体，或固定的 PolarRAG 原生 user
-  映射。PAS Department 与外部企业组仍相互独立。
+- 进入 **Users**，点击某个用户行的 **Enterprise Identity**，即可绑定已同步的飞书
+  或 SharePoint 身份，并新增、停用或删除手工维护的 Feishu、SharePoint 或原生
+  PolarRAG user/group 主体。PAS Department 与外部企业组仍相互独立。
 - 已认证用户可进入 **My Instances** 查看自己可访问的数据库实例和知识空间。
   非管理员用户选择已分配的 Agent 后，会在分页的 **知识库** 抽屉中查看该 Agent
   的知识库；每项显示知识库名称及其 opaque PAS 知识资源 ID。仅注册 PolarRAG
-  实例不会授予用户权限；管理员还必须启用并同步 Space，并为该用户维护属于该
-  identity domain 的有效主体映射；管理员身份不会绕过知识访问规则。
+  实例不会授予用户权限；管理员还必须启用并同步 Space，且用户必须在该
+  identity domain 中解析出企业主体或原生 `polarrag:user` 主体；管理员身份不会绕过
+  知识访问规则。
   用户可以向其中 upload-ready 的知识资源上传本地文档。浏览器提交 Agent ID、opaque
   资源 ID 和文件；PAS 根据已认证身份推导 Space、知识库、principals 和 actor，并校验
   Agent 的实例绑定和 PUBLIC 范围。上传 actor 固定为可信的
@@ -74,12 +78,14 @@ PolarRAG 管理能力统一放在现有 PAS 页面：
   READ ACL 加载一页 20 个文档及其当前状态；**Previous**、**Next** 和 **Refresh**
   都由用户显式触发，PAS 不在后台轮询。
   当 PolarRAG 返回相应字段时，表格同时显示文档大小、分块数和上传时间。
-- 管理员在 Agent 详情页绑定允许的 PolarRAG 实例并分配 PAS 用户。被分配用户
+- 管理员在 Agent 详情页使用**配置企业访问**完成常规的身份源、主体与 Space 配置；
+  既有实例、PUBLIC 范围、用户与组控件仍用于高级操作。被分配用户
   在 **My Instances > MCP connections** 管理自己的 `pas_user_agent_` Token。
   管理员只能查看状态和强制吊销，不能读取明文。builtin 用户通过确认密码读取已有
   Token；SSO 用户没有 PAS 密码，因此 `issue` 和 `regenerate` 只在带
-  `Cache-Control: no-store` 的响应中返回一次新明文，页面会立即复制且不渲染明文。
-  连续交付请求受限流保护。
+  `Cache-Control: no-store` 的响应中返回一次新明文。页面不渲染明文；在这一次
+  机会中，用户可明确选择**复制 Token**或**复制 JSON 配置**。重新生成需要确认，
+  并会立即使旧 Token 失效。连续交付请求受限流保护。
 - 管理员 Dashboard 的 **Instances** 和 **Active** 统计同时包含已注册的数据库
   实例与 PolarRAG 实例；资源池可用数量仍只统计数据库实例。普通用户只会看到自己
   可访问的数据库实例数和 PolarRAG 知识资源数，不显示全局管理统计或管理操作。
@@ -89,6 +95,36 @@ PolarRAG 管理能力统一放在现有 PAS 页面：
 上游插件无法提供可信 Space/知识库目录时，页面会显示
 `POLARRAG_CATALOG_CAPABILITY_MISSING`。管理员不能手工输入 identity domain，也
 不能绕过该能力检查。
+
+## 为 Agent 配置企业访问
+
+常规企业 PolarRAG 上线按以下顺序操作：
+
+1. 注册 PolarRAG 实例，然后启用并同步目标 Space。
+2. 创建飞书或 SharePoint 企业身份源，完成验证并同步目录。
+3. 在 Agent 的 **PolarRAG 实例**页签绑定目标实例，并配置共享 PUBLIC 资源范围。
+4. 点击**配置企业访问**。
+5. 选择一个 Source，显式选择**全部同步用户**或指定的同步组/PAS 用户，并选择一个或
+   多个可用 Space。**全部同步用户**展示在首位，但绝不会默认勾选。
+6. 点击**预览变更**，分别检查 Agent 局部授权、新增的全局 Source-Space 绑定以及将
+   复用的现有关系。新增 Source-Space 绑定可由其他 Agent 复用，删除当前 Agent 授权
+   时也会保留。
+7. 对预览确认一次。用户随后登录，在 **My Instances > MCP connections** 创建或使用
+   自己的 Agent 连接。
+8. 验证用户只能看到 Agent 实例与 PUBLIC 范围、Source-Space 绑定、用户当前企业成员
+   关系和 PolarRAG ACL 的交集。
+
+该操作只做附加写入并保证原子性，不会删除既有授权。删除用户、组或全部同步用户的 Agent
+授权时，全局 Source-Space 绑定、Agent-实例绑定和共享 PUBLIC 范围都保持不变。细粒度控件
+仍可用于高级管理。
+
+自动化先用可信内部 ID 和显式 `all_synced_users` 调用
+`POST /api/agents/{agent_id}/enterprise-access/preview`，再把返回的选择与
+`preview_hash` 发送到对应 `/enterprise-access/apply` 接口。收到 `409` 表示预览已变化，
+必须重新检查；不能自动重试并接受新影响。
+
+SSO 成功但知识资源列表为空，不等于 SSO 故障。应分别检查 Source 是否有效且新鲜、全局
+Source-Space 绑定、Agent 主体授权、Agent-实例绑定和 PUBLIC 范围。
 
 ## 注册实例
 

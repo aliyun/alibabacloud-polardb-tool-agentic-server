@@ -53,6 +53,11 @@ class PolarRAGInstanceStatus(str, enum.Enum):
     DISABLED = "disabled"
 
 
+class PolarRAGSpaceACLMode(str, enum.Enum):
+    ENFORCED = "ENFORCED"
+    DISABLED = "DISABLED"
+
+
 class EnterprisePrincipalType(str, enum.Enum):
     USER = "user"
     GROUP = "group"
@@ -129,6 +134,11 @@ class PolarRAGSpace(TimestampMixin, Base):
     space_id: Mapped[str] = mapped_column(String(255))
     name: Mapped[str] = mapped_column(String(255))
     identity_domain: Mapped[str] = mapped_column(String(255))
+    acl_mode: Mapped[PolarRAGSpaceACLMode] = mapped_column(
+        _enum_column(PolarRAGSpaceACLMode, length=16),
+        default=PolarRAGSpaceACLMode.ENFORCED,
+        server_default=PolarRAGSpaceACLMode.ENFORCED.value,
+    )
     oss_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
     oss_endpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
     oss_access_key_id_ciphertext: Mapped[str | None] = mapped_column(

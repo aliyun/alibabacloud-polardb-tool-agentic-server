@@ -210,6 +210,38 @@ async def test_catalog_clients_follow_opaque_pagination_and_parse_owner() -> Non
     ]
 
 
+async def test_client_lists_space_without_identity_domain() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "items": [
+                    {
+                        "space_id": "legacy-space",
+                        "space_name": "Legacy Space",
+                        "status": "ACTIVE",
+                    }
+                ],
+                "next_cursor": None,
+                "has_more": False,
+            },
+        )
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+    )
+
+    spaces = await client.list_spaces()
+
+    assert [(space.space_id, space.identity_domain) for space in spaces] == [
+        ("legacy-space", None)
+    ]
+
+
 async def test_client_lists_unclaimed_kbs_and_claims_with_canonical_owner() -> None:
     requests: list[tuple[str, dict[str, object]]] = []
 

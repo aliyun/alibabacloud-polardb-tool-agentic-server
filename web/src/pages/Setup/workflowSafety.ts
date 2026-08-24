@@ -32,6 +32,21 @@ export interface ActivationProof {
   validationId: string
 }
 
+export function createIdempotencyKey(): string {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    return cryptoApi.randomUUID()
+  }
+
+  const values = new Uint8Array(16)
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    cryptoApi.getRandomValues(values)
+    return `pas-${Array.from(values, (value) => value.toString(16).padStart(2, '0')).join('')}`
+  }
+
+  return `pas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+}
+
 const externalErrorCodes = new Set([
   'OPENAPI_CONNECT_FAILURE',
   'OPENAPI_CREDENTIAL_INVALID',

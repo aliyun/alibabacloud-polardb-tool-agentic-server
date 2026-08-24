@@ -34,6 +34,7 @@ LEGACY_RELEASE_UPLOAD_CONTRACT = {
     },
     "complete_required": {"upload_session_id", "parts"},
 }
+CURRENT_ONBOARDING_MIN_VERSION = "0.0.8"
 CURRENT_ONBOARDING_UPLOAD_CONTRACT = {
     "tools": {"prepare_document_upload", "complete_document_upload"},
     "complete_required": {"upload_session_id"},
@@ -192,6 +193,8 @@ def test_legacy_release_upload_contract_is_routed_away_from_current_onboarding()
     assert LEGACY_RELEASE_UPLOAD_CONTRACT["revision"] in skill
     assert "Legacy v0.0.7 upload contract" in skill
     assert f"Current v{CURRENT_VERSION} onboarding upload contract" in skill
+    assert f"released `v{CURRENT_VERSION}`" in skill
+    assert f"`v{CURRENT_ONBOARDING_MIN_VERSION}` or later `PAS_REF`" in skill
     for tool in LEGACY_RELEASE_UPLOAD_CONTRACT["tools"]:
         assert tool in skill
     for argument in LEGACY_RELEASE_UPLOAD_CONTRACT["complete_required"]:
@@ -208,7 +211,9 @@ def test_legacy_release_upload_contract_is_routed_away_from_current_onboarding()
         assert _documented_upload_contract(
             guide, LEGACY_RELEASE_UPLOAD_CONTRACT["version"]
         ) == release_contract
-        assert _documented_upload_contract(guide, CURRENT_VERSION) == (
+        assert _documented_upload_contract(
+            guide, CURRENT_ONBOARDING_MIN_VERSION
+        ) == (
             CURRENT_ONBOARDING_UPLOAD_CONTRACT
         )
 

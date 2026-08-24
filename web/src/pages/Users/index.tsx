@@ -12,10 +12,12 @@ import {
   Select,
   Skeleton,
   Switch,
+  Tabs,
   Typography,
 } from 'antd'
 import { useTranslation } from 'react-i18next'
 import {
+  CloseOutlined,
   EditOutlined,
   IdcardOutlined,
   PlusOutlined,
@@ -38,6 +40,7 @@ import {
 import CapabilityEditor from '../../components/CapabilityEditor'
 import PageContainer from '../../components/PageContainer'
 import PrincipalsPanel from '../PolarRAG/PrincipalsPanel'
+import EnterpriseIdentitySourcesPanel from './EnterpriseIdentitySourcesPanel'
 
 const { Text, Title } = Typography
 
@@ -45,10 +48,20 @@ interface UserItem {
   id: string
   external_id: string
   display_name: string
+  auth_provider?: string
   email: string | null
   role: string
   status: string
   departments: { id: string; name: string; is_primary: boolean }[]
+  identity_sources: { id: string; name: string; provider: string }[]
+  enterprise_identities: {
+    id: string
+    name: string
+    provider: string
+    external_user_id: string
+    departments: { id: string; name: string }[]
+    groups: { id: string; name: string }[]
+  }[]
 }
 
 interface DeptOption {
@@ -80,6 +93,7 @@ export default function Users() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [authMode, setAuthMode] = useState('builtin')
+  const [activeTab, setActiveTab] = useState('accounts')
   const [departments, setDepartments] = useState<DeptOption[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
@@ -503,20 +517,72 @@ export default function Users() {
   )
 
   const columns = [
-    { title: t('users.name'), dataIndex: 'display_name', key: 'name' },
-    { title: t('users.email'), dataIndex: 'email', key: 'email' },
+    {
+      title: t('users.name'),
+      key: 'name',
+      render: (_: unknown, record: UserItem) => (
+        <Space direction="vertical" size={2}>
+          <Text strong>{record.auth_provider === 'builtin' ? record.external_id : record.display_name}</Text>
+          {(record.enterprise_identities ?? []).map((identity) => (
+            <Text key={identity.id} type="secondary">
+              {t('users.enterpriseUserId')}: {identity.external_user_id}
+            </Text>
+          ))}
+        </Space>
+      ),
+    },
+    {
+      title: t('users.identitySource'),
+      key: 'identity_sources',
+      render: (_: unknown, record: UserItem) => (
+        <Space wrap>
+          {(record.identity_sources ?? []).length === 0 ? (
+            <Tag>{t('users.pasIdentity')}</Tag>
+          ) : (record.identity_sources ?? []).map((source) => (
+            <Tag key={source.id} color="blue">
+              {source.provider} · {source.name}
+            </Tag>
+          ))}
+        </Space>
+      ),
+    },
     { title: t('users.role'), dataIndex: 'role', key: 'role', render: (role: string) => <Tag color={role === 'admin' ? 'red' : 'blue'}>{role}</Tag> },
     {
       title: t('users.departments'),
       key: 'departments',
-      render: (_: unknown, record: UserItem) => (
-        <Space>
-          {record.departments.length === 0 && <Tag>{t('users.none')}</Tag>}
-          {record.departments.map((d) => (
-            <Tag key={d.id} color={d.is_primary ? 'green' : 'default'}>{d.name}</Tag>
-          ))}
-        </Space>
-      ),
+      render: (_: unknown, record: UserItem) => {
+        const memberships = (record.enterprise_identities ?? []).flatMap((identity) => [
+          ...identity.departments.map((department) => ({
+            key: `${identity.id}:department:${department.id}`,
+            label: `${t('users.enterpriseDepartment')}: ${department.name}`,
+            color: 'green',
+          })),
+          ...identity.groups.map((group) => ({
+            key: `${identity.id}:group:${group.id}`,
+            label: `${t('users.enterpriseGroup')}: ${group.name}`,
+            color: 'blue',
+          })),
+        ])
+        return (
+          <Space wrap size={[0, 4]}>
+            {record.departments.map((department) => (
+              <Tag
+                key={`pas-department:${department.id}`}
+                color={department.is_primary ? 'green' : 'default'}
+              >
+                {department.name}
+              </Tag>
+            ))}
+            {memberships.length === 0 ? (
+              record.departments.length === 0 && <Tag>{t('users.none')}</Tag>
+            ) : memberships.map((membership) => (
+              <Tag key={membership.key} color={membership.color}>
+                {membership.label}
+              </Tag>
+            ))}
+          </Space>
+        )
+      },
     },
     {
       title: t('users.status'),
@@ -528,36 +594,40 @@ export default function Users() {
       title: t('users.actions'),
       key: 'actions',
       render: (_: unknown, record: UserItem) => (
-        <Space>
-          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
-            {t('users.edit')}
-          </Button>
-          <Button
-            size="small"
-            aria-label={t('users.accessFor', { name: record.display_name })}
-            onClick={() => void openAccess(record)}
-          >
-            {t('users.instanceAccess')}
-          </Button>
-          <Button
-            size="small"
-            icon={<IdcardOutlined />}
-            aria-label={`Enterprise identity for ${record.display_name}`}
-            onClick={() => {
-              closeAccess()
-              setIdentityTarget(record)
-            }}
-          >
-            {t('users.enterpriseIdentity')}
-          </Button>
-          <Button size="small" onClick={() => toggleStatus(record)}>
-            {record.status === 'active' ? t('users.disable') : t('users.enable')}
-          </Button>
-          {authMode === 'builtin' && (
-            <Button size="small" onClick={() => setResetTarget(record)}>
-              {t('users.resetPassword')}
+        <Space direction="vertical" size={4}>
+          <Space>
+            <Button
+              size="small"
+              aria-label={t('users.accessFor', { name: record.display_name })}
+              onClick={() => void openAccess(record)}
+            >
+              {t('users.instanceAccess')}
             </Button>
-          )}
+            <Button
+              size="small"
+              icon={<IdcardOutlined />}
+              aria-label={`Enterprise identity for ${record.display_name}`}
+              onClick={() => {
+                closeAccess()
+                setIdentityTarget(record)
+              }}
+            >
+              {t('users.enterpriseIdentity')}
+            </Button>
+          </Space>
+          <Space>
+            <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>
+              {t('users.edit')}
+            </Button>
+            <Button size="small" onClick={() => toggleStatus(record)}>
+              {record.status === 'active' ? t('users.disable') : t('users.enable')}
+            </Button>
+            {authMode === 'builtin' && (
+              <Button size="small" onClick={() => setResetTarget(record)}>
+                {t('users.resetPassword')}
+              </Button>
+            )}
+          </Space>
         </Space>
       ),
     },
@@ -568,7 +638,7 @@ export default function Users() {
       title={t('users.title')}
       description={t('users.description')}
       actions={
-        <>
+        activeTab === 'accounts' && <>
           <Input.Search
             placeholder={t('users.search')}
             onSearch={setSearch}
@@ -585,6 +655,14 @@ export default function Users() {
         </>
       }
     >
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: 'accounts',
+            label: t('users.accountsTab'),
+            children: <>
       <Table
         dataSource={users}
         columns={columns}
@@ -961,14 +1039,19 @@ export default function Users() {
             >
               {t('users.enterpriseIdentityFor', { name: identityTarget.display_name })}
             </Title>
-            <Button onClick={() => setIdentityTarget(null)}>
-              {t('users.closeEnterpriseIdentity')}
-            </Button>
+            <Button
+              type="text"
+              shape="circle"
+              icon={<CloseOutlined />}
+              aria-label={t('users.closeEnterpriseIdentity')}
+              onClick={() => setIdentityTarget(null)}
+            />
           </Space>
           <PrincipalsPanel
             userId={identityTarget.id}
             userName={identityTarget.display_name}
             userExternalId={identityTarget.external_id}
+            allowManualMapping={identityTarget.auth_provider !== 'oidc'}
           />
         </section>
       )}
@@ -1026,6 +1109,15 @@ export default function Users() {
           </Form.Item>
         </Form>
       </Modal>
+            </>,
+          },
+          {
+            key: 'identity-sources',
+            label: t('users.identitySourcesTab'),
+            children: <EnterpriseIdentitySourcesPanel />,
+          },
+        ]}
+      />
     </PageContainer>
   )
 }

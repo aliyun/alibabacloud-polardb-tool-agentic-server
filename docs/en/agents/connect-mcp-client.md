@@ -31,9 +31,13 @@ using the console-generated JSON. Store the Token in the client's secret
 storage, not source control.
 
 The user-specific PolarRAG action copies the same JSON fields shown above; only
-the Bearer value uses the `pas_user_agent_` credential. The plaintext is copied
-only after password-protected reveal. Setting an optional `expires_at` while
-issuing or regenerating does not add a field to this client JSON.
+the Bearer value uses the `pas_user_agent_` credential. Built-in users copy an
+existing Token only after password-protected reveal. For SSO users, issuing or
+regenerating opens a one-time copy dialog with separate **Copy Token** and
+**Copy JSON configuration** actions; closing it discards the plaintext.
+Regeneration requires confirmation and immediately invalidates the old Token.
+Setting an optional `expires_at` while issuing or regenerating does not add a
+field to this client JSON.
 
 Private-network HTTP is suitable only for an isolated development environment.
 Use HTTPS for production and any untrusted network.

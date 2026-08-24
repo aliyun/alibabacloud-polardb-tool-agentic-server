@@ -12,6 +12,7 @@ import {
   Tag,
   Typography,
 } from 'antd'
+import type { TableColumnsType } from 'antd'
 import { useTranslation } from 'react-i18next'
 import {
   DeleteOutlined,
@@ -73,6 +74,14 @@ function formatUploadTime(
   const timestamp = new Date(value)
   if (Number.isNaN(timestamp.getTime())) return '—'
   return formatDateTime(timestamp, locale)
+}
+
+function compareUploadTime(left: ManagedDocument, right: ManagedDocument): number {
+  const leftTime = left.created_at ? Date.parse(left.created_at) : Number.NaN
+  const rightTime = right.created_at ? Date.parse(right.created_at) : Number.NaN
+  const normalizedLeft = Number.isNaN(leftTime) ? 0 : leftTime
+  const normalizedRight = Number.isNaN(rightTime) ? 0 : rightTime
+  return normalizedLeft - normalizedRight
 }
 
 export default function DocumentManager({
@@ -236,6 +245,94 @@ export default function DocumentManager({
     }
   }
 
+  const documentColumns: TableColumnsType<ManagedDocument> = [
+    {
+      title: t('documentManager.document'),
+      dataIndex: 'filename',
+      width: 220,
+      ellipsis: true,
+      sorter: (left, right) => documentName(left).localeCompare(documentName(right)),
+      render: (value) => value || t('documentManager.unnamed'),
+    },
+    {
+      title: t('documentManager.documentId'),
+      dataIndex: 'doc_id',
+      width: 280,
+      ellipsis: true,
+      sorter: (left, right) => left.doc_id.localeCompare(right.doc_id),
+    },
+    {
+      title: t('documentManager.fileSize'),
+      dataIndex: 'file_size_bytes',
+      width: 110,
+      sorter: (left, right) => (left.file_size_bytes ?? 0) - (right.file_size_bytes ?? 0),
+      render: (value) => formatFileSize(value),
+    },
+    {
+      title: t('documentManager.chunks'),
+      dataIndex: 'chunk_count',
+      width: 100,
+      sorter: (left, right) => (left.chunk_count ?? 0) - (right.chunk_count ?? 0),
+      render: (value) => value ?? '—',
+    },
+    {
+      title: t('documentManager.uploadedAt'),
+      dataIndex: 'created_at',
+      width: 190,
+      sorter: compareUploadTime,
+      render: (value) => formatUploadTime(
+        value,
+        i18n.resolvedLanguage ?? i18n.language,
+      ),
+    },
+    {
+      title: t('documentManager.status'),
+      dataIndex: 'status',
+      width: 140,
+      sorter: (left, right) => (left.status ?? '').localeCompare(right.status ?? ''),
+      render: (value) => <Tag>{value || t('documentManager.unknown')}</Tag>,
+    },
+    {
+      title: t('documentManager.actions'),
+      width: 240,
+      fixed: 'right',
+      render: (_, document) => (
+        <Space>
+          <Button
+            size="small"
+            icon={<RetweetOutlined />}
+            aria-label={t('documentManager.rechunkDocument', { name: documentName(document) })}
+            loading={working === `rechunk:${document.doc_id}`}
+            onClick={() => {
+              setChunkStrategy('inherit')
+              setChunkMaxTokens(null)
+              setRechunkDocument(document)
+            }}
+          >
+            {t('documentManager.rechunk')}
+          </Button>
+          <Popconfirm
+            title={t('documentManager.deleteTitle', { name: documentName(document) })}
+            description={t('documentManager.deleteDescription')}
+            okText={t('documentManager.confirmDelete')}
+            okButtonProps={{ danger: true }}
+            onConfirm={() => void remove(document)}
+          >
+            <Button
+              size="small"
+              danger
+              icon={<DeleteOutlined />}
+              aria-label={t('documentManager.deleteDocument', { name: documentName(document) })}
+              loading={working === `delete:${document.doc_id}`}
+            >
+              {t('documentManager.delete')}
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
   return (
     <>
       <Modal
@@ -287,87 +384,7 @@ export default function DocumentManager({
                 ? t('documentManager.noMatches')
                 : t('documentManager.noDocuments'),
             }}
-            columns={[
-              {
-                title: t('documentManager.document'),
-                dataIndex: 'filename',
-                width: 220,
-                ellipsis: true,
-                render: (value) => value || t('documentManager.unnamed'),
-              },
-              {
-                title: t('documentManager.documentId'),
-                dataIndex: 'doc_id',
-                width: 280,
-                ellipsis: true,
-              },
-              {
-                title: t('documentManager.fileSize'),
-                dataIndex: 'file_size_bytes',
-                width: 110,
-                render: (value) => formatFileSize(value),
-              },
-              {
-                title: t('documentManager.chunks'),
-                dataIndex: 'chunk_count',
-                width: 100,
-                render: (value) => value ?? '—',
-              },
-              {
-                title: t('documentManager.uploadedAt'),
-                dataIndex: 'created_at',
-                width: 190,
-                render: (value) => formatUploadTime(
-                  value,
-                  i18n.resolvedLanguage ?? i18n.language,
-                ),
-              },
-              {
-                title: t('documentManager.status'),
-                dataIndex: 'status',
-                width: 140,
-                render: (value) => <Tag>{value || t('documentManager.unknown')}</Tag>,
-              },
-              {
-                title: t('documentManager.actions'),
-                width: 240,
-                fixed: 'right',
-                render: (_, document) => (
-                  <Space>
-                    <Button
-                      size="small"
-                      icon={<RetweetOutlined />}
-                      aria-label={t('documentManager.rechunkDocument', { name: documentName(document) })}
-                      loading={working === `rechunk:${document.doc_id}`}
-                      onClick={() => {
-                        setChunkStrategy('inherit')
-                        setChunkMaxTokens(null)
-                        setRechunkDocument(document)
-                      }}
-                    >
-                      {t('documentManager.rechunk')}
-                    </Button>
-                    <Popconfirm
-                      title={t('documentManager.deleteTitle', { name: documentName(document) })}
-                      description={t('documentManager.deleteDescription')}
-                      okText={t('documentManager.confirmDelete')}
-                      okButtonProps={{ danger: true }}
-                      onConfirm={() => void remove(document)}
-                    >
-                      <Button
-                        size="small"
-                        danger
-                        icon={<DeleteOutlined />}
-                        aria-label={t('documentManager.deleteDocument', { name: documentName(document) })}
-                        loading={working === `delete:${document.doc_id}`}
-                      >
-                        {t('documentManager.delete')}
-                      </Button>
-                    </Popconfirm>
-                  </Space>
-                ),
-              },
-            ]}
+            columns={documentColumns}
           />
           {!searchMode && (
             <Space style={{ display: 'flex', justifyContent: 'center' }}>

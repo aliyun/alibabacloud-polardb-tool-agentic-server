@@ -2743,6 +2743,12 @@
     },
     {
       "ecosystem": "python",
+      "name": "markdown",
+      "version": "3.10.3",
+      "license": "BSD-3-Clause"
+    },
+    {
+      "ecosystem": "python",
       "name": "markupsafe",
       "version": "3.0.3",
       "license": "BSD-3-Clause"
@@ -2932,6 +2938,12 @@
       "name": "starlette",
       "version": "1.3.1",
       "license": "BSD-3-Clause"
+    },
+    {
+      "ecosystem": "python",
+      "name": "types-markdown",
+      "version": "3.10.2.20260712",
+      "license": "Apache-2.0"
     },
     {
       "ecosystem": "python",

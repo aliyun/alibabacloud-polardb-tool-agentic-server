@@ -30,8 +30,10 @@ Server 名称默认使用 Agent 名称。使用控制台生成的 JSON 时无需
 Token 应放入客户端密钥存储，而不是源代码仓库。
 
 用户专用 PolarRAG 操作复制的 JSON 字段与上例完全相同，只有 Bearer 值改为
-`pas_user_agent_` 凭证。明文只会在密码保护的查看操作后复制。签发或重新生成时
-设置可选 `expires_at` 不会给客户端 JSON 增加字段。
+`pas_user_agent_` 凭证。builtin 用户只能在密码保护的查看操作后复制已有 Token。
+SSO 用户在签发或重新生成后会看到一次性复制窗口，可分别选择**复制 Token**或
+**复制 JSON 配置**；关闭窗口即丢弃明文。重新生成需要确认，并会立即使旧 Token
+失效。签发或重新生成时设置可选 `expires_at` 不会给客户端 JSON 增加字段。
 
 私网 HTTP 只适用于隔离的开发环境；生产环境和不可信网络必须使用 HTTPS。
 

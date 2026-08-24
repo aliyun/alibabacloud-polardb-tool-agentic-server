@@ -69,6 +69,18 @@ class FakeAdminClient:
         ]
 
 
+class MissingIdentityDomainClient(FakeAdminClient):
+    async def list_spaces(self):
+        return [
+            PolarRAGSpaceRecord(
+                space_id="legacy-space",
+                name="Legacy Space",
+                identity_domain=None,
+                status="ACTIVE",
+            )
+        ]
+
+
 class FakeClaimClient(FakeAdminClient):
     def __init__(self) -> None:
         super().__init__()
@@ -342,6 +354,53 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
         assert resource.kb_id == "public-kb"
         assert space.enabled is False
         assert resource.enabled is False
+
+
+async def test_admin_lists_unconfigured_space_but_cannot_enable_it(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: MissingIdentityDomainClient(),
+    )
+
+    created = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "Legacy RAG",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "secret",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    instance_id = created.json()["id"]
+
+    spaces = await http.get(
+        f"/api/polarrag/instances/{instance_id}/spaces",
+        headers=admin_headers,
+    )
+    assert spaces.status_code == 200
+    items = spaces.json()["items"]
+    assert len(items) == 1
+    assert items[0]["space_id"] == "legacy-space"
+    assert items[0]["identity_domain"] is None
+    assert items[0]["enabled"] is False
+
+    enabled = await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/enable",
+        json={"space_id": "legacy-space"},
+        headers=admin_headers,
+    )
+    assert enabled.status_code == 409
+    assert enabled.json()["detail"]["code"] == "POLARRAG_IDENTITY_DOMAIN_UNAVAILABLE"
 
 
 async def test_instance_create_rolls_back_when_required_audit_fails(
@@ -621,30 +680,26 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
         headers=admin_headers,
     )
     assert pending.status_code == 200
-    assert pending.json() == {
-        "items": [
-            {
-                "space_id": "space-a",
-                "space_name": "Space A",
-                "identity_domain": "tenant-a",
-                "kb_id": "personal-kb",
-                "name": "Personal KB",
-                "kb_type": "PERSONAL",
-                "status": "UNCLAIMED",
-            }
-        ],
-        "owner_candidates": [
-            {
-                "principal_assignment_id": principal_id,
-                "pas_user_id": member.id,
-                "user_name": "Member",
-                "user_external_id": member.external_id,
-                "identity_domain": "tenant-a",
-                "provider": "feishu",
-                "principal_id": "ou-owner",
-            }
-        ],
-    }
+    assert pending.json()["items"] == [
+        {
+            "space_id": "space-a",
+            "space_name": "Space A",
+            "identity_domain": "tenant-a",
+            "kb_id": "personal-kb",
+            "name": "Personal KB",
+            "kb_type": "PERSONAL",
+            "status": "UNCLAIMED",
+        }
+    ]
+    assert {
+        "principal_assignment_id": principal_id,
+        "pas_user_id": member.id,
+        "user_name": "Member",
+        "user_external_id": member.external_id,
+        "identity_domain": "tenant-a",
+        "provider": "feishu",
+        "principal_id": "ou-owner",
+    } in pending.json()["owner_candidates"]
 
     claimed = await http.post(
         f"/api/polarrag/instances/{instance_id}/spaces/space-a/knowledge-bases/personal-kb/claim",
@@ -671,11 +726,68 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
             await session.execute(
                 select(AuditLog).where(
                     AuditLog.action == "polarrag.knowledge_base.claim"
-                )
+        )
             )
         ).scalar_one()
         assert audit.actor_user_id == admin.id
         assert audit.target_id == "space-a/personal-kb"
+
+
+async def test_admin_assigns_unclaimed_kb_to_active_native_pas_user(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    _factory, _admin, member = setup
+    fake = FakeClaimClient()
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: fake,
+    )
+    created = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "RAG native owner",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "not-returned",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+    instance_id = created.json()["id"]
+    enabled = await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/enable",
+        json={"space_id": "space-a"},
+        headers=admin_headers,
+    )
+    assert enabled.status_code == 200
+
+    pending = await http.get(
+        f"/api/polarrag/instances/{instance_id}/unclaimed-knowledge-bases",
+        headers=admin_headers,
+    )
+
+    assert pending.status_code == 200
+    native_owner = next(
+        candidate
+        for candidate in pending.json()["owner_candidates"]
+        if candidate["pas_user_id"] == member.id
+        and candidate["provider"] == "polarrag"
+        and candidate["identity_domain"] == "tenant-a"
+    )
+    assert native_owner["principal_assignment_id"] is None
+    claimed = await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/space-a/knowledge-bases/personal-kb/claim",
+        json={"pas_user_id": member.id},
+        headers=admin_headers,
+    )
+
+    assert claimed.status_code == 200
+    assert fake.claim_owner == member.external_id
 
 
 async def test_claim_retry_recovers_after_upstream_success_and_sync_failure(

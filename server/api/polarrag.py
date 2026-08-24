@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -167,7 +174,16 @@ class PrincipalUpdate(BaseModel):
 class ClaimKnowledgeBaseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    principal_assignment_id: str = Field(min_length=1, max_length=36)
+    principal_assignment_id: str | None = Field(default=None, min_length=1, max_length=36)
+    pas_user_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+    @model_validator(mode="after")
+    def validate_owner_reference(self) -> "ClaimKnowledgeBaseRequest":
+        if (self.principal_assignment_id is None) == (self.pas_user_id is None):
+            raise ValueError(
+                "exactly one of principal_assignment_id or pas_user_id is required"
+            )
+        return self
 
 
 class OssConfigRequest(BaseModel):
@@ -621,6 +637,14 @@ async def enable_space(
     )
     if upstream is None or upstream.status.upper() != "ACTIVE":
         raise HTTPException(status_code=404, detail="PolarRAG Space not available")
+    if upstream.identity_domain is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "POLARRAG_IDENTITY_DOMAIN_UNAVAILABLE",
+                "message": "PolarRAG Space identity domain is not configured.",
+            },
+        )
     space = await _find_space(session, instance.id, upstream.space_id)
     if space is None:
         space = PolarRAGSpace(
@@ -853,10 +877,18 @@ async def list_unclaimed_knowledge_bases(
         _raise_upstream(exc)
     domains = {space.identity_domain for space in spaces}
     current = datetime.now(UTC)
-    candidates: list[tuple[EnterprisePrincipalAssignment, User]] = []
+    candidates: list[dict[str, str | None]] = []
     if domains:
-        candidates = [
-            (assignment, user)
+        candidates.extend(
+            {
+                "principal_assignment_id": assignment.id,
+                "pas_user_id": user.id,
+                "user_name": user.display_name,
+                "user_external_id": user.external_id,
+                "identity_domain": assignment.identity_domain,
+                "provider": assignment.provider,
+                "principal_id": assignment.principal_id,
+            }
             for assignment, user in (
                 await session.execute(
                     select(EnterprisePrincipalAssignment, User)
@@ -890,22 +922,41 @@ async def list_unclaimed_knowledge_bases(
                     )
                 )
             ).all()
-        ]
-    return {
-        "items": items,
-        "owner_candidates": [
+            if principal_assignment_is_valid_for_user(assignment, user)
+        )
+        active_users = list(
+            (
+                await session.execute(
+                    select(User)
+                    .where(User.status == UserStatus.ACTIVE)
+                    .order_by(User.display_name, User.external_id)
+                )
+            ).scalars()
+        )
+        candidates.extend(
             {
-                "principal_assignment_id": assignment.id,
+                "principal_assignment_id": None,
                 "pas_user_id": user.id,
                 "user_name": user.display_name,
                 "user_external_id": user.external_id,
-                "identity_domain": assignment.identity_domain,
-                "provider": assignment.provider,
-                "principal_id": assignment.principal_id,
+                "identity_domain": domain,
+                "provider": "polarrag",
+                "principal_id": user.external_id,
             }
-            for assignment, user in candidates
-            if principal_assignment_is_valid_for_user(assignment, user)
-        ],
+            for domain in sorted(domains)
+            for user in active_users
+        )
+    return {
+        "items": items,
+        "owner_candidates": sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate["identity_domain"] or "",
+                candidate["user_name"] or "",
+                candidate["provider"] or "",
+                candidate["principal_id"] or "",
+            ),
+        ),
     }
 
 
@@ -926,33 +977,39 @@ async def claim_knowledge_base(
     if space is None:
         raise HTTPException(status_code=404, detail="Enabled Space not found")
     current = datetime.now(UTC)
-    owner = (
-        await session.execute(
-            select(EnterprisePrincipalAssignment, User)
-            .join(User, User.id == EnterprisePrincipalAssignment.pas_user_id)
-            .where(
-                EnterprisePrincipalAssignment.id
-                == body.principal_assignment_id,
-                EnterprisePrincipalAssignment.identity_domain
-                == space.identity_domain,
-                EnterprisePrincipalAssignment.principal_type
-                == EnterprisePrincipalType.USER,
-                EnterprisePrincipalAssignment.status
-                == EnterprisePrincipalStatus.ACTIVE,
-                or_(
-                    EnterprisePrincipalAssignment.valid_until.is_(None),
-                    EnterprisePrincipalAssignment.valid_until > current,
-                ),
-                User.status == UserStatus.ACTIVE,
+    assignment: EnterprisePrincipalAssignment | None = None
+    if body.principal_assignment_id is not None:
+        owner = (
+            await session.execute(
+                select(EnterprisePrincipalAssignment, User)
+                .join(User, User.id == EnterprisePrincipalAssignment.pas_user_id)
+                .where(
+                    EnterprisePrincipalAssignment.id == body.principal_assignment_id,
+                    EnterprisePrincipalAssignment.identity_domain == space.identity_domain,
+                    EnterprisePrincipalAssignment.principal_type == EnterprisePrincipalType.USER,
+                    EnterprisePrincipalAssignment.status == EnterprisePrincipalStatus.ACTIVE,
+                    or_(
+                        EnterprisePrincipalAssignment.valid_until.is_(None),
+                        EnterprisePrincipalAssignment.valid_until > current,
+                    ),
+                    User.status == UserStatus.ACTIVE,
+                )
             )
-        )
-    ).one_or_none()
-    if owner is None or not principal_assignment_is_valid_for_user(*owner):
-        raise HTTPException(
-            status_code=422,
-            detail="Eligible KB owner principal not found",
-        )
-    assignment, user = owner
+        ).one_or_none()
+        if owner is None or not principal_assignment_is_valid_for_user(*owner):
+            raise HTTPException(
+                status_code=422,
+                detail="Eligible KB owner principal not found",
+            )
+        assignment, user = owner
+    else:
+        assert body.pas_user_id is not None
+        user = await session.get(User, body.pas_user_id)
+        if user is None or user.status != UserStatus.ACTIVE:
+            raise HTTPException(
+                status_code=422,
+                detail="Eligible KB owner principal not found",
+            )
     client = client_from_instance(instance)
     try:
         pending = await client.list_unclaimed_knowledge_bases(space.space_id)
@@ -979,10 +1036,9 @@ async def claim_knowledge_base(
                 (item for item in active if item.kb_id == kb_id),
                 None,
             )
-            expected_owners = (
-                ("polarrag", user.external_id),
-                (assignment.provider, assignment.principal_id),
-            )
+            expected_owners = {("polarrag", user.external_id)}
+            if assignment is not None:
+                expected_owners.add((assignment.provider, assignment.principal_id))
             owner_value = record.owner if record is not None else None
             if (
                 record is None

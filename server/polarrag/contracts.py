@@ -65,7 +65,7 @@ class PolarRAGCapabilities:
 class PolarRAGSpaceRecord:
     space_id: str
     name: str
-    identity_domain: str
+    identity_domain: str | None
     status: str
     oss_bucket: str | None = None
     oss_endpoint: str | None = None

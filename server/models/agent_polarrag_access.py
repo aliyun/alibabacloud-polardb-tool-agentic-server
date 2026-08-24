@@ -31,6 +31,8 @@ if TYPE_CHECKING:
 class AgentGroupKind(str, enum.Enum):
     DEPARTMENT = "department"
     ENTERPRISE = "enterprise"
+    IDENTITY_SOURCE = "identity_source"
+    IDENTITY_SOURCE_ALL = "identity_source_all"
 
 
 class AgentGroupAssignment(TimestampMixin, Base):
@@ -42,10 +44,17 @@ class AgentGroupAssignment(TimestampMixin, Base):
         CheckConstraint(
             "(group_kind = 'department' AND department_id IS NOT NULL "
             "AND identity_domain IS NULL AND provider IS NULL "
+            "AND identity_source_id IS NULL "
             "AND principal_id IS NULL) OR "
             "(group_kind = 'enterprise' AND department_id IS NULL "
             "AND identity_domain IS NOT NULL AND provider IS NOT NULL "
-            "AND principal_id IS NOT NULL)",
+            "AND identity_source_id IS NULL AND principal_id IS NOT NULL) OR "
+            "(group_kind = 'identity_source' AND department_id IS NULL "
+            "AND identity_domain IS NULL AND provider IS NULL "
+            "AND identity_source_id IS NOT NULL AND principal_id IS NOT NULL) OR "
+            "(group_kind = 'identity_source_all' AND department_id IS NULL "
+            "AND identity_domain IS NULL AND provider IS NULL "
+            "AND identity_source_id IS NOT NULL AND principal_id IS NULL)",
             name="ck_agent_group_assignment_shape",
         ),
         CheckConstraint(
@@ -64,7 +73,7 @@ class AgentGroupAssignment(TimestampMixin, Base):
         Enum(
             AgentGroupKind,
             native_enum=False,
-            length=16,
+            length=32,
             values_callable=lambda enum_type: [item.value for item in enum_type],
         )
     )
@@ -79,6 +88,12 @@ class AgentGroupAssignment(TimestampMixin, Base):
         String(255), nullable=True
     )
     provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    identity_source_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("enterprise_identity_sources.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     principal_id: Mapped[str | None] = mapped_column(
         String(255), nullable=True
     )
@@ -144,6 +159,49 @@ class AgentGroupAssignment(TimestampMixin, Base):
             identity_domain=normalized_domain,
             provider=normalized_provider,
             principal_id=normalized_principal,
+            created_by_user_id=created_by_user_id,
+        )
+
+    @classmethod
+    def for_identity_source_group(
+        cls,
+        *,
+        agent_id: str,
+        identity_source_id: str,
+        external_group_id: str,
+        created_by_user_id: str | None,
+    ) -> AgentGroupAssignment:
+        normalized_source_id = identity_source_id.strip()
+        normalized_group_id = external_group_id.strip()
+        if not normalized_source_id or not normalized_group_id:
+            raise ValueError("identity source group is required")
+        return cls(
+            agent_id=agent_id,
+            group_kind=AgentGroupKind.IDENTITY_SOURCE,
+            group_key=cls._key(
+                "identity_source", normalized_source_id, normalized_group_id
+            ),
+            identity_source_id=normalized_source_id,
+            principal_id=normalized_group_id,
+            created_by_user_id=created_by_user_id,
+        )
+
+    @classmethod
+    def for_identity_source_all_users(
+        cls,
+        *,
+        agent_id: str,
+        identity_source_id: str,
+        created_by_user_id: str | None,
+    ) -> AgentGroupAssignment:
+        normalized_source_id = identity_source_id.strip()
+        if not normalized_source_id:
+            raise ValueError("identity source is required")
+        return cls(
+            agent_id=agent_id,
+            group_kind=AgentGroupKind.IDENTITY_SOURCE_ALL,
+            group_key=cls._key("identity_source_all", normalized_source_id),
+            identity_source_id=normalized_source_id,
             created_by_user_id=created_by_user_id,
         )
 

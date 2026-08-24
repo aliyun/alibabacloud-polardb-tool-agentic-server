@@ -51,9 +51,17 @@ Agent 详情页按 **数据库实例** 和 **PolarRAG 实例** 两个页签管�
 
 ## PolarRAG 用户连接
 
-管理员在 Agent 详情页的 **PolarRAG 实例** 页签绑定允许访问的 PolarRAG 实例，
-并明确分配 PAS 用户。管理员只能查看分配关系和 Token 状态，也可以强制吊销，
-但永远看不到用户 Token 明文。
+常规配置先绑定允许访问的 PolarRAG 实例并设置其 PUBLIC 范围，再在 Agent 详情页的
+**PolarRAG 实例**页签点击**配置企业访问**。选择一个有效身份源、指定组或同步 PAS 用户，
+以及 Agent 已绑定实例下的 Space。**全部同步用户**展示在首位但绝不会默认勾选，必须由
+管理员显式选择。
+
+预览会区分 Agent 局部授权、新增的全局 Source-Space 绑定以及已配置并复用的关系。确认缺失
+的 Source-Space 绑定会改变全局共享状态。从当前 Agent 删除用户、组或全部同步用户授权时，
+只删除该 Agent 授权；全局 Source-Space 绑定、Agent-实例绑定和共享 PUBLIC 范围都保留。
+既有实例、PUBLIC 范围、用户、组和删除控件仍可用于高级管理。
+
+管理员只能查看分配关系和 Token 状态，也可以强制吊销，但永远看不到用户 Token 明文。
 
 被分配的用户登录后，在 **My Instances** 的 **MCP connections** 中签发、查看、
 重新生成或吊销自己的 Token。每个分配关系最多有一个有效 Token。最终知识

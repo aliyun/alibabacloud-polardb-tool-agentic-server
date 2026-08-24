@@ -1,10 +1,21 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  createIdempotencyKey,
   getResponseRevision,
   normalizeDryRunDetails,
   parseActivationProof,
 } from './workflowSafety'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
+it('creates an idempotency key when randomUUID is unavailable over HTTP', () => {
+  vi.stubGlobal('crypto', undefined)
+
+  expect(createIdempotencyKey()).toMatch(/^pas-/)
+})
 
 describe('normalizeDryRunDetails', () => {
   it('keeps only reviewed Aliyun fields and bounded values', () => {

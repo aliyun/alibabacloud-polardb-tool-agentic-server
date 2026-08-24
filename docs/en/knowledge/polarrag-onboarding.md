@@ -10,7 +10,8 @@ For the API and authorization contract, see [PolarRAG MCP integration](polarrag-
 
 At the end, the user can connect an MCP client with a `pas_user_agent_` token, discover authorized knowledge resources, search or fetch documents, and upload a local document through an approved upload client.
 
-This guide requires the current upload contract: the MCP catalog exposes
+This guide uses the current upload contract shipped by default in PAS
+`v0.0.9`: the MCP catalog exposes
 `prepare_document_upload` and `complete_document_upload`, and completion takes
 only `upload_session_id`. Do not use it with PAS `v0.0.7`: that release exposes
 the legacy `prepare_document_upload`, `resume_document_upload`,

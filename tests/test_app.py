@@ -60,6 +60,50 @@ class TestHealthEndpoints:
         assert data["status"] == "ok"
         assert "dependencies" in data
 
+    async def test_enterprise_identity_source_help_renders_html(self, client):
+        response = await client.get(
+            "/help/enterprise-identity-sources?locale=zh-CN"
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/html")
+        assert "<h1>企业身份源接入</h1>" in response.text
+        assert "飞书接入" in response.text
+        assert "SharePoint 接入" in response.text
+        assert "provider=feishu" in response.text
+        assert "provider=sharepoint" in response.text
+        assert "export PAS_URL='https://pas.example.com'" not in response.text
+        assert 'aria-label="阅读字号"' in response.text
+
+        feishu = await client.get(
+            "/help/enterprise-identity-sources?locale=zh-CN&provider=feishu"
+        )
+        assert feishu.status_code == 200
+        assert "<h1>飞书接入</h1>" in feishu.text
+        assert "外部访问基础 URL" in feishu.text
+        assert "配置 SharePoint 身份源" not in feishu.text
+        assert (
+            '/help/enterprise-identity-sources-api?locale=zh-cn'
+            in feishu.text
+        )
+        assert "&amp;#x27;" not in feishu.text
+        assert "&amp;quot;" not in feishu.text
+
+        sharepoint = await client.get(
+            "/help/enterprise-identity-sources?locale=zh-CN&provider=sharepoint"
+        )
+        assert sharepoint.status_code == 200
+        assert "<h1>SharePoint 接入</h1>" in sharepoint.text
+        assert "配置 SharePoint 身份源" in sharepoint.text
+        assert "配置飞书身份源" not in sharepoint.text
+
+        reference = await client.get(
+            "/help/enterprise-identity-sources-api?locale=zh-CN"
+        )
+        assert reference.status_code == 200
+        assert "<h1>企业身份源管理员 API</h1>" in reference.text
+        assert "POST /api/identity-sources" in reference.text
+
     async def test_readyz_rejects_traffic_while_local_config_is_stale(
         self, app, client
     ):

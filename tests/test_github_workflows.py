@@ -88,6 +88,17 @@ def test_ci_has_all_release_gate_jobs() -> None:
     )
 
 
+def test_backend_ci_fetches_frozen_contract_history() -> None:
+    workflow = _workflow("ci.yml")
+    checkout = next(
+        step
+        for step in workflow["jobs"]["backend"]["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
+
+    assert checkout["with"]["fetch-depth"] == 0
+
+
 def test_public_commit_policy_validates_only_the_pushed_main_head() -> None:
     workflow = _workflow("ci.yml")
     steps = workflow["jobs"]["public-boundary"]["steps"]

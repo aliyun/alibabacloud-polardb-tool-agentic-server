@@ -8,7 +8,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.auth.dependencies import require_admin
 from server.core import user_manager
 from server.db.engine import get_session
-from server.models import Instance, InstanceStatus, User, UserRole, UserStatus
+from server.enterprise_identity.service import identity_provider_key
+from server.models import (
+    AuthProvider,
+    EnterpriseDirectoryEntryStatus,
+    EnterpriseDirectoryGroup,
+    EnterpriseDirectoryMembership,
+    EnterpriseDirectoryMembershipType,
+    EnterpriseDirectoryPrincipalType,
+    EnterpriseIdentitySource,
+    Instance,
+    InstanceStatus,
+    User,
+    UserExternalIdentity,
+    UserRole,
+    UserStatus,
+)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -17,13 +32,22 @@ class UserResponse(BaseModel):
     id: str
     external_id: str
     display_name: str
+    auth_provider: str
     email: str | None
     role: str
     status: str
     departments: list[dict] = []
+    identity_sources: list[dict[str, str]] = []
+    enterprise_identities: list[dict[str, object]] = []
 
     @classmethod
-    def from_model(cls, user: User) -> "UserResponse":
+    def from_model(
+        cls,
+        user: User,
+        *,
+        identity_sources: list[dict[str, str]] | None = None,
+        enterprise_identities: list[dict[str, object]] | None = None,
+    ) -> "UserResponse":
         departments = []
         for m in (user.department_memberships or []):
             departments.append({
@@ -35,10 +59,13 @@ class UserResponse(BaseModel):
             id=user.id,
             external_id=user.external_id,
             display_name=user.display_name,
+            auth_provider=user.auth_provider.value,
             email=user.email,
             role=user.role.value,
             status=user.status.value,
             departments=departments,
+            identity_sources=identity_sources or [],
+            enterprise_identities=enterprise_identities or [],
         )
 
 
@@ -63,6 +90,178 @@ class CreateUserRequest(BaseModel):
     role: str = "member"
     department_ids: list[str] | None = None
     primary_department_id: str | None = None
+
+
+async def _enterprise_sources_by_user(
+    session: AsyncSession,
+    user_ids: list[str],
+) -> dict[str, list[dict[str, str]]]:
+    result: dict[str, list[dict[str, str]]] = {
+        user_id: [] for user_id in user_ids
+    }
+    if not user_ids:
+        return result
+    sources = list(
+        (
+            await session.execute(
+                select(EnterpriseIdentitySource).order_by(EnterpriseIdentitySource.name)
+            )
+        ).scalars()
+    )
+    users = list(
+        (
+            await session.execute(
+                select(User.id, User.external_id, User.auth_provider).where(
+                    User.id.in_(user_ids)
+                )
+            )
+        ).all()
+    )
+    for source in sources:
+        prefix = f"{identity_provider_key(source)}:"
+        for user_id, external_id, auth_provider in users:
+            if auth_provider == AuthProvider.OIDC and external_id.startswith(prefix):
+                result[user_id].append(
+                    {
+                        "id": source.id,
+                        "name": source.name,
+                        "provider": source.provider.value,
+                    }
+                )
+    return result
+
+
+async def _enterprise_identities_by_user(
+    session: AsyncSession,
+    user_ids: list[str],
+) -> dict[str, list[dict[str, object]]]:
+    result: dict[str, list[dict[str, object]]] = {
+        user_id: [] for user_id in user_ids
+    }
+    if not user_ids:
+        return result
+
+    sources = list(
+        (
+            await session.execute(
+                select(EnterpriseIdentitySource).order_by(EnterpriseIdentitySource.name)
+            )
+        ).scalars()
+    )
+    sources_by_provider = {
+        identity_provider_key(source): source for source in sources
+    }
+    identities = list(
+        (
+            await session.execute(
+                select(UserExternalIdentity)
+                .where(UserExternalIdentity.user_id.in_(user_ids))
+                .order_by(
+                    UserExternalIdentity.identity_provider,
+                    UserExternalIdentity.external_subject,
+                )
+            )
+        ).scalars()
+    )
+    resolved: list[tuple[str, EnterpriseIdentitySource, str]] = []
+    for identity in identities:
+        source = sources_by_provider.get(identity.identity_provider)
+        if source is not None:
+            resolved.append((identity.user_id, source, identity.external_subject))
+    resolved_keys = {
+        (user_id, source.id, external_user_id)
+        for user_id, source, external_user_id in resolved
+    }
+    source_users = list(
+        (
+            await session.execute(
+                select(User.id, User.external_id, User.auth_provider).where(
+                    User.id.in_(user_ids)
+                )
+            )
+        ).all()
+    )
+    for user_id, external_id, auth_provider in source_users:
+        if auth_provider != AuthProvider.OIDC:
+            continue
+        for provider_key, source in sources_by_provider.items():
+            prefix = f"{provider_key}:"
+            if external_id.startswith(prefix):
+                external_user_id = external_id.removeprefix(prefix)
+                key = (user_id, source.id, external_user_id)
+                if key not in resolved_keys:
+                    resolved.append((user_id, source, external_user_id))
+                break
+    source_ids = {source.id for _user_id, source, _external_user_id in resolved}
+    external_user_ids = {
+        external_user_id for _user_id, _source, external_user_id in resolved
+    }
+    memberships = []
+    if source_ids and external_user_ids:
+        memberships = list(
+            (
+                await session.execute(
+                    select(EnterpriseDirectoryMembership).where(
+                        EnterpriseDirectoryMembership.identity_source_id.in_(source_ids),
+                        EnterpriseDirectoryMembership.member_type
+                        == EnterpriseDirectoryMembershipType.USER,
+                        EnterpriseDirectoryMembership.external_member_id.in_(external_user_ids),
+                    )
+                )
+            ).scalars()
+        )
+    group_ids = {membership.external_group_id for membership in memberships}
+    groups_by_id: dict[tuple[str, str], EnterpriseDirectoryGroup] = {}
+    if source_ids and group_ids:
+        directory_groups = list(
+            (
+                await session.execute(
+                    select(EnterpriseDirectoryGroup).where(
+                        EnterpriseDirectoryGroup.identity_source_id.in_(source_ids),
+                        EnterpriseDirectoryGroup.external_group_id.in_(group_ids),
+                        EnterpriseDirectoryGroup.status
+                        == EnterpriseDirectoryEntryStatus.ACTIVE,
+                    )
+                )
+            ).scalars()
+        )
+        groups_by_id = {
+            (group.identity_source_id, group.external_group_id): group
+            for group in directory_groups
+        }
+
+    memberships_by_user: dict[tuple[str, str], list[EnterpriseDirectoryGroup]] = {}
+    for membership in memberships:
+        group = groups_by_id.get(
+            (membership.identity_source_id, membership.external_group_id)
+        )
+        if group is not None:
+            memberships_by_user.setdefault(
+                (membership.identity_source_id, membership.external_member_id), []
+            ).append(group)
+
+    for user_id, source, external_user_id in resolved:
+        departments: list[dict[str, str]] = []
+        group_items: list[dict[str, str]] = []
+        for group in memberships_by_user.get((source.id, external_user_id), []):
+            item = {"id": group.external_group_id, "name": group.display_name}
+            if group.principal_type == EnterpriseDirectoryPrincipalType.DEPARTMENT:
+                departments.append(item)
+            else:
+                group_items.append(item)
+        departments.sort(key=lambda item: (item["name"], item["id"]))
+        group_items.sort(key=lambda item: (item["name"], item["id"]))
+        result[user_id].append(
+            {
+                "id": source.id,
+                "name": source.name,
+                "provider": source.provider.value,
+                "external_user_id": external_user_id,
+                "departments": departments,
+                "groups": group_items,
+            }
+        )
+    return result
 
 
 @router.post("", response_model=UserResponse, status_code=201)
@@ -116,8 +315,23 @@ async def list_users(
     users, total = await user_manager.list_users(
         session, search=search, department_id=department_id, status=status, offset=offset, limit=limit
     )
+    identity_sources = await _enterprise_sources_by_user(
+        session,
+        [user.id for user in users],
+    )
+    enterprise_identities = await _enterprise_identities_by_user(
+        session,
+        [user.id for user in users],
+    )
     return UserListResponse(
-        items=[UserResponse.from_model(u) for u in users],
+        items=[
+            UserResponse.from_model(
+                user,
+                identity_sources=identity_sources[user.id],
+                enterprise_identities=enterprise_identities[user.id],
+            )
+            for user in users
+        ],
         total=total, offset=offset, limit=limit,
     )
 

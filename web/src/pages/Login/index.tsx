@@ -106,6 +106,22 @@ export default function Login({ onLogin }: LoginProps) {
               {t('auth.signIn')}
             </Button>
           </Form.Item>
+          <Form.Item>
+            <Button
+              block
+              onClick={() => window.location.assign('/auth/feishu/login')}
+            >
+              {t('auth.signInWithFeishu')}
+            </Button>
+          </Form.Item>
+          <Form.Item>
+            <Button
+              block
+              onClick={() => window.location.assign('/auth/sharepoint/login')}
+            >
+              {t('auth.signInWithSharePoint')}
+            </Button>
+          </Form.Item>
         </Form>
 
         <div className="login-footer">

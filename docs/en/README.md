@@ -40,6 +40,9 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
   identities, organization, instance access, and safe lifecycle operations.
 - [Authentication](administration/authentication.md): bootstrap, built-in
   login, optional SSO, sessions, and Agent identity separation.
+- [Enterprise identity sources](administration/enterprise-identity-sources.md):
+  least-privilege Feishu directory synchronization, Space binding, ACL
+  identifiers, Agent group grants, and provider rollout boundaries.
 - [Agents and tokens](administration/agents-and-tokens.md): Agent creation,
   Token lifecycle, access bindings, and review.
 - [Audit and security](administration/audit-and-security.md): audit scope,
@@ -67,7 +70,7 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
 - [Agent-assisted single-host deployment](deployment/agent-assisted-deployment.md):
   explicitly invoked Codex, Claude Code, Cursor, and compatible Agent Skills
-  workflows pinned to PAS 0.0.8.
+  workflows pinned to PAS 0.0.9.
 - [Production prerequisites](deployment/prerequisites.md): supported
   platforms, metadata database, root-key handling, writable paths, and
   registry access.
@@ -93,6 +96,9 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
   states, dependency validation, external checks, and secret behavior.
 - [REST API](reference/rest-api.md): authentication, resources, configuration
   commands, and generated OpenAPI.
+- [Enterprise identity source administrator API](reference/enterprise-identity-sources-api.md):
+  automation APIs for Feishu and SharePoint sources, Space bindings, user
+  mappings, and membership snapshots.
 - [Compatibility](reference/compatibility.md): supported runtimes, database
   migration rules, API policy, and pre-release versioning.
 - [Release process](reference/release-process.md): protected tag workflow,

@@ -9,8 +9,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from markdown import markdown
 
 from server.api.router import router as api_router
 from server.auth.router import router as auth_router
@@ -27,6 +28,106 @@ from server.mcp.transport import LazyMCPApplication, mcp_lifespan
 from server.version import __version__
 
 logger = logging.getLogger(__name__)
+
+
+_IDENTITY_SOURCE_HELP_PROVIDERS = ("feishu", "sharepoint")
+
+
+def _identity_source_help_labels(language: str) -> dict[str, str]:
+    if language == "zh-cn":
+        return {
+            "title": "企业身份源接入",
+            "description": "选择要配置的企业身份源。",
+            "feishu": "飞书接入",
+            "sharepoint": "SharePoint 接入",
+            "api": "企业身份源管理员 API",
+            "back": "返回接入指南",
+        }
+    return {
+        "title": "Enterprise identity source integration",
+        "description": "Choose the enterprise identity source to configure.",
+        "feishu": "Feishu integration",
+        "sharepoint": "SharePoint integration",
+        "api": "Enterprise identity source administrator API",
+        "back": "Back to integration guides",
+    }
+
+
+def _extract_identity_source_help_section(
+    document_markdown: str,
+    heading: str,
+) -> str:
+    marker = f"## {heading}\n"
+    start = document_markdown.find(marker)
+    if start < 0:
+        raise ValueError("identity source help section is missing")
+    section = document_markdown[start:]
+    next_section = section.find("\n## ", len(marker))
+    return section if next_section < 0 else section[:next_section]
+
+
+def _render_enterprise_identity_source_help(
+    content: str,
+    *,
+    language: str,
+    title: str,
+    provider: str | None = None,
+) -> str:
+    alternate_locale = "en" if language == "zh-cn" else "zh-cn"
+    alternate_label = "English" if language == "zh-cn" else "简体中文"
+    zoom_label = "阅读字号" if language == "zh-cn" else "Reading size"
+    provider_query = f"&provider={provider}" if provider is not None else ""
+    language_link = (
+        f'/help/enterprise-identity-sources?locale={alternate_locale}'
+        f"{provider_query}"
+    )
+    return f"""<!doctype html>
+<html lang="{language}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title} · PAS</title>
+  <style>
+    :root {{ color: #1f2937; background: #f6f8fb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
+    body {{ margin: 0; }}
+    header {{ background: #fff; border-bottom: 1px solid #e5e7eb; }}
+    header > div, main {{ box-sizing: border-box; max-width: 980px; margin: 0 auto; padding: 20px 28px; }}
+    header > div {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; }}
+    header strong {{ color: #1677ff; font-size: 18px; }}
+    a {{ color: #1677ff; }}
+    .help-actions {{ display: inline-flex; align-items: center; gap: 12px; }}
+    .zoom {{ display: inline-flex; overflow: hidden; border: 1px solid #cbd5e1; border-radius: 6px; }}
+    .zoom input {{ position: absolute; opacity: 0; }}
+    .zoom label {{ min-width: 30px; padding: 5px 8px; cursor: pointer; text-align: center; }}
+    .zoom input:checked + label {{ color: #fff; background: #1677ff; }}
+    main {{ background: #fff; margin-top: 28px; margin-bottom: 28px; border: 1px solid #e5e7eb; border-radius: 12px; box-shadow: 0 4px 18px rgb(15 23 42 / 6%); }}
+    .guide-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-top: 28px; }}
+    .guide-card {{ display: block; padding: 24px; border: 1px solid #bfdbfe; border-radius: 10px; background: #eff6ff; color: #1d4ed8; font-size: 20px; font-weight: 600; text-decoration: none; }}
+    .guide-card:hover {{ background: #dbeafe; }}
+    .guide-back {{ margin-bottom: 24px; }}
+    h1 {{ margin-top: 0; font-size: 30px; }}
+    h2 {{ margin-top: 36px; padding-top: 8px; border-top: 1px solid #e5e7eb; font-size: 23px; }}
+    p, li {{ line-height: 1.75; }}
+    code {{ padding: 2px 5px; border-radius: 4px; background: #f1f5f9; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }}
+    pre {{ overflow-x: auto; padding: 16px; border-radius: 8px; background: #0f172a; color: #e2e8f0; }}
+    pre code {{ padding: 0; background: transparent; color: inherit; }}
+    table {{ width: 100%; border-collapse: collapse; margin: 16px 0; }}
+    th, td {{ padding: 10px 12px; border: 1px solid #dbe3ef; text-align: left; vertical-align: top; }}
+    th {{ background: #f1f5f9; }}
+    body:has(#help-zoom-small:checked) main {{ font-size: 0.9rem; }}
+    body:has(#help-zoom-large:checked) main {{ font-size: 1.12rem; }}
+    @media (max-width: 640px) {{ header > div, main {{ padding: 16px; }} main {{ margin: 16px 12px; }} }}
+  </style>
+</head>
+<body>
+  <header><div><strong>PAS</strong><div class="help-actions"><div class="zoom" aria-label="{zoom_label}">
+    <input id="help-zoom-small" name="help-zoom" type="radio"><label for="help-zoom-small">A−</label>
+    <input id="help-zoom-normal" name="help-zoom" type="radio" checked><label for="help-zoom-normal">A</label>
+    <input id="help-zoom-large" name="help-zoom" type="radio"><label for="help-zoom-large">A+</label>
+  </div><a href="{language_link}">{alternate_label}</a></div></div></header>
+  <main>{content}</main>
+</body>
+</html>"""
 
 
 @dataclass
@@ -418,6 +519,7 @@ async def lifespan(app: FastAPI):
 
     # Background loops
     from server.core.audit_retention import audit_retention_loop
+    from server.enterprise_identity.sync import identity_source_sync_loop
     from server.polarrag.catalog import catalog_sync_loop
     from server.polarrag.upload_cleanup import upload_cleanup_loop
 
@@ -435,6 +537,9 @@ async def lifespan(app: FastAPI):
     )
     polarrag_upload_cleanup_task = asyncio.create_task(
         upload_cleanup_loop(session_factory)
+    )
+    identity_source_sync_task = asyncio.create_task(
+        identity_source_sync_loop(session_factory)
     )
     audit_retention_task = (
         asyncio.create_task(
@@ -454,6 +559,7 @@ async def lifespan(app: FastAPI):
         cleanup_task,
         polarrag_catalog_task,
         polarrag_upload_cleanup_task,
+        identity_source_sync_task,
     ]
     if audit_retention_task is not None:
         lifecycle_tasks.append(audit_retention_task)
@@ -612,6 +718,138 @@ def create_app() -> FastAPI:
     # Admin API router
     app.include_router(api_router)
 
+    @app.get("/help/enterprise-identity-sources", include_in_schema=False)
+    async def enterprise_identity_source_help(
+        locale: str = "en",
+        provider: str | None = None,
+    ):
+        language = "zh-cn" if locale.casefold().startswith("zh") else "en"
+        document = (
+            Path(__file__).resolve().parents[1]
+            / "docs"
+            / language
+            / "administration"
+            / "enterprise-identity-sources.md"
+        )
+        if not document.is_file():
+            return Response(status_code=404)
+        labels = _identity_source_help_labels(language)
+        document_markdown = document.read_text(encoding="utf-8")
+        document_markdown = document_markdown.replace(
+            "[English](../../en/administration/enterprise-identity-sources.md)\n\n",
+            "",
+            1,
+        ).replace(
+            "[简体中文](../../zh-cn/administration/enterprise-identity-sources.md)\n\n",
+            "",
+            1,
+        )
+        document_markdown = document_markdown.replace(
+            "(../reference/enterprise-identity-sources-api.md)",
+            f"(/help/enterprise-identity-sources-api?locale={language})",
+        )
+        normalized_provider = provider.casefold() if provider else None
+        if normalized_provider is None:
+            content = (
+                f"<h1>{labels['title']}</h1>"
+                f"<p>{labels['description']}</p>"
+                '<div class="guide-grid">'
+                f'<a class="guide-card" href="?locale={language}&provider=feishu">'
+                f"{labels['feishu']}</a>"
+                f'<a class="guide-card" href="?locale={language}&provider=sharepoint">'
+                f"{labels['sharepoint']}</a>"
+                "</div>"
+            )
+            title = labels["title"]
+        elif normalized_provider in _IDENTITY_SOURCE_HELP_PROVIDERS:
+            headings = {
+                "zh-cn": {
+                    "feishu": "配置飞书身份源",
+                    "sharepoint": "配置 SharePoint 身份源",
+                },
+                "en": {
+                    "feishu": "Configure a Feishu identity source",
+                    "sharepoint": "Configure a SharePoint identity source",
+                },
+            }
+            section = _extract_identity_source_help_section(
+                document_markdown,
+                headings[language][normalized_provider],
+            )
+            content = (
+                f'<p class="guide-back"><a href="?locale={language}">'
+                f"← {labels['back']}</a></p>"
+                + markdown(
+                    f"# {labels[normalized_provider]}\n\n{section}",
+                    extensions=("fenced_code", "sane_lists", "tables"),
+                )
+            )
+            title = labels[normalized_provider]
+        else:
+            return Response(status_code=404)
+        return HTMLResponse(
+            _render_enterprise_identity_source_help(
+                content,
+                language=language,
+                title=title,
+                provider=normalized_provider,
+            ),
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; "
+                    "base-uri 'none'; form-action 'none'"
+                )
+            },
+        )
+
+    @app.get("/help/enterprise-identity-sources-api", include_in_schema=False)
+    async def enterprise_identity_source_api_help(locale: str = "en"):
+        language = "zh-cn" if locale.casefold().startswith("zh") else "en"
+        document = (
+            Path(__file__).resolve().parents[1]
+            / "docs"
+            / language
+            / "reference"
+            / "enterprise-identity-sources-api.md"
+        )
+        if not document.is_file():
+            return Response(status_code=404)
+        document_markdown = document.read_text(encoding="utf-8")
+        document_markdown = document_markdown.replace(
+            "[English](../../en/reference/enterprise-identity-sources-api.md)\n\n",
+            "",
+            1,
+        ).replace(
+            "[简体中文](../../zh-cn/reference/enterprise-identity-sources-api.md)\n\n",
+            "",
+            1,
+        ).replace(
+            "(../administration/enterprise-identity-sources.md)",
+            f"(/help/enterprise-identity-sources?locale={language})",
+        )
+        labels = _identity_source_help_labels(language)
+        content = (
+            f'<p class="guide-back"><a href="/help/enterprise-identity-sources?locale={language}">'
+            f"← {labels['back']}</a></p>"
+            + markdown(
+                document_markdown,
+                extensions=("fenced_code", "sane_lists", "tables"),
+            )
+        )
+        return HTMLResponse(
+            _render_enterprise_identity_source_help(
+                content,
+                language=language,
+                title=labels["api"],
+            ),
+            headers={
+                "Content-Security-Policy": (
+                    "default-src 'none'; style-src 'unsafe-inline'; "
+                    "base-uri 'none'; form-action 'none'"
+                )
+            },
+        )
+
     # Legacy REST endpoints (must be before mount to avoid shadowing)
     app.include_router(mcp_router)
     # Agent lifecycle routes deliberately use a different principal under the
@@ -624,8 +862,6 @@ def create_app() -> FastAPI:
 
     if _static_dir is not None:
         app.mount("/assets", StaticFiles(directory=str(_static_dir / "assets")), name="static-assets")
-
-        from fastapi.responses import FileResponse
 
         @app.get("/favicon.ico")
         async def favicon():

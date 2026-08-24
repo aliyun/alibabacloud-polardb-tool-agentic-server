@@ -306,10 +306,10 @@ async def test_spoofed_native_principal_cannot_enable_discovery(seeded) -> None:
     assert captured.value.code == KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
 
 
-async def test_personal_owner_without_domain_principal_is_not_visible(
+async def test_native_personal_owner_is_visible_without_domain_principal(
     seeded,
 ) -> None:
-    session, user, _resources, owner_resource = seeded
+    session, user, resources, owner_resource = seeded
     owner_resource.owner_pas_user_id = user.id
     await session.execute(
         delete(EnterprisePrincipalAssignment).where(
@@ -318,10 +318,19 @@ async def test_personal_owner_without_domain_principal_is_not_visible(
     )
     await session.commit()
 
-    assert await list_visible_knowledge_resources(session, user) == []
-    with pytest.raises(KnowledgeAccessError) as captured:
-        await plan_knowledge_access(session, user, [owner_resource.id])
-    assert captured.value.code == KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
+    visible = await list_visible_knowledge_resources(session, user)
+    assert {resource.id for resource in visible} == {
+        *(resource.id for resource in resources),
+        owner_resource.id,
+    }
+    plan = await plan_knowledge_access(session, user, [owner_resource.id])
+    assert [resource.id for resource in plan.resources] == [owner_resource.id]
+    assert plan.acl_context == {
+        "identity_domain": "tenant-a",
+        "principals": [
+            {"provider": "polarrag", "type": "user", "id": user.external_id}
+        ],
+    }
 
 
 async def test_agent_instance_scope_includes_future_enabled_spaces_with_acl(

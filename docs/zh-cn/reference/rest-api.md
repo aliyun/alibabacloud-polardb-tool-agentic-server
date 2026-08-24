@@ -29,6 +29,9 @@ Dedicated 管理还增加 `/api/dedicated-pools`、`/api/permission-templates`�
 同步，以及逐用户企业主体映射。密钥字段只写不读。详见
 [PolarRAG MCP 与企业身份](../knowledge/polarrag-mcp.md)。
 
+[企业身份源管理员 API](enterprise-identity-sources-api.md)单独列出飞书与
+SharePoint 身份源、Space 绑定、用户身份映射和飞书 ACL 成员快照的管理接口、参数与作用。
+
 Agent 范围的 PolarRAG 访问通过
 `/api/agents/{agent_id}/polarrag-bindings` 和
 `/api/agents/{agent_id}/user-assignments` 管理。已认证用户通过

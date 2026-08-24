@@ -147,6 +147,100 @@ describe('User instance access editor', () => {
     expect(screen.queryByText(/^provisioning$/i)).not.toBeInTheDocument()
   })
 
+  it('keeps a PAS username as the account list name after binding an enterprise identity', async () => {
+    const pasUser = {
+      ...member,
+      external_id: 'xiaoyuan',
+      display_name: '翁小院',
+      auth_provider: 'builtin',
+      identity_sources: [{ id: 'source-1', name: '飞书同步测试', provider: 'feishu' }],
+      enterprise_identities: [{
+        id: 'identity-1',
+        name: '飞书同步测试',
+        provider: 'feishu',
+        external_user_id: '55g21ca2',
+        departments: [],
+        groups: [],
+      }],
+    }
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/users') {
+        return Promise.resolve({
+          data: { items: [pasUser], total: 1, offset: 0, limit: 20 },
+        } as never)
+      }
+      if (url === '/auth/mode') {
+        return Promise.resolve({ data: { mode: 'builtin' } } as never)
+      }
+      return Promise.resolve({ data: [] } as never)
+    })
+
+    render(<Users />)
+
+    expect(await screen.findByText('xiaoyuan')).toBeInTheDocument()
+  })
+
+  it('hides manual identity actions for an enterprise-synchronized account', async () => {
+    const user = userEvent.setup()
+    const syncedUser = {
+      ...member,
+      external_id: 'feishu:tenant-1:ou-1',
+      display_name: 'Feishu member',
+      auth_provider: 'oidc',
+    }
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/users') {
+        return Promise.resolve({
+          data: { items: [syncedUser], total: 1, offset: 0, limit: 20 },
+        } as never)
+      }
+      if (url === '/auth/mode') {
+        return Promise.resolve({ data: { mode: 'builtin' } } as never)
+      }
+      if (url === `/api/identity-sources/users/${syncedUser.id}/identities`) {
+        return Promise.resolve({
+          data: {
+            items: [{
+              id: 'identity-1',
+              identity_source_id: 'source-1',
+              source_name: 'Feishu directory',
+              provider: 'feishu',
+              external_user_id: 'ou-1',
+              display_name: 'Feishu member',
+              email: null,
+              status: 'active',
+              mapping_mode: 'synced',
+              native_principal_id: 'feishu:tenant-1:ou-1',
+              principals: [{ provider: 'feishu', type: 'user', id: 'ou-1' }],
+            }],
+          },
+        } as never)
+      }
+      if (url === `/api/polarrag/users/${syncedUser.id}/principals`) {
+        return Promise.resolve({ data: { items: [] } } as never)
+      }
+      return Promise.resolve({ data: [] } as never)
+    })
+
+    render(<Users />)
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: /enterprise identity for feishu member/i,
+      }),
+    )
+
+    expect(await screen.findByText('Feishu directory')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /bind enterprise identity/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add principal/i })).not.toBeInTheDocument()
+    expect(screen.queryByText(/pas-managed mapping/i)).not.toBeInTheDocument()
+
+    const closeButton = screen.getByRole('button', { name: /close enterprise identity/i })
+    expect(within(closeButton).queryByText('Close Enterprise Identity')).not.toBeInTheDocument()
+    await user.click(closeButton)
+    expect(screen.queryByRole('heading', { name: /enterprise identity: feishu member/i })).not.toBeInTheDocument()
+  })
+
   it('creates a builtin user with an administrator-set initial password', async () => {
     const user = userEvent.setup()
     const alice = {

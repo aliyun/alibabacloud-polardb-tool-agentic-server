@@ -9,6 +9,10 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from server.models import (
     AuthProvider,
     Base,
+    EnterpriseIdentitySource,
+    EnterpriseIdentitySourceSpaceBinding,
+    EnterpriseIdentitySourceStatus,
+    IdentitySourceProvider,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalType,
@@ -20,6 +24,7 @@ from server.models import (
     PolarRAGSpace,
     User,
 )
+from server.enterprise_identity.service import upsert_external_user
 from server.polarrag.catalog import (
     sync_enabled_spaces_once,
     sync_space_catalog,
@@ -246,6 +251,100 @@ async def test_sync_space_catalog_resolves_trusted_polarrag_user_owner(
     assert result["active"] == 1
     assert resource.owner_pas_user_id == owner.id
     assert resource.sync_status == KnowledgeResourceSyncStatus.ACTIVE
+
+
+async def test_sync_space_catalog_resolves_native_owner_for_bound_source_user(
+    seeded,
+) -> None:
+    session, space, _owner = seeded
+    source = EnterpriseIdentitySource.create(
+        name="Feishu source",
+        provider=IdentitySourceProvider.FEISHU,
+        tenant_id="tenant-source",
+    )
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    session.add(source)
+    await session.flush()
+    source_user = await upsert_external_user(
+        session,
+        source,
+        external_user_id="ou_alice",
+        display_name="Alice",
+        email="alice@example.com",
+    )
+    session.add(
+        EnterpriseIdentitySourceSpaceBinding(
+            identity_source_id=source.id,
+            knowledge_space_id=space.knowledge_space_id,
+        )
+    )
+    await session.commit()
+    record = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="source-native-personal-kb",
+        name="Source native personal",
+        kb_type="PERSONAL",
+        identity_domain=space.identity_domain,
+        owner={
+            "provider": "polarrag",
+            "type": "user",
+            "id": source_user.external_id,
+        },
+    )
+
+    result = await sync_space_catalog(
+        session,
+        space,
+        FakeCatalogClient([record]),
+    )
+    resource = (await session.execute(select(KnowledgeResource))).scalar_one()
+
+    assert result["active"] == 1
+    assert resource.owner_pas_user_id == source_user.id
+    assert resource.sync_status == KnowledgeResourceSyncStatus.ACTIVE
+
+
+async def test_sync_space_catalog_rejects_stale_source_owner(
+    seeded,
+) -> None:
+    session, space, _owner = seeded
+    source = EnterpriseIdentitySource.create(
+        name="Stale Feishu source",
+        provider=IdentitySourceProvider.FEISHU,
+        tenant_id="tenant-stale",
+    )
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    source.last_synced_at = datetime.now(UTC).replace(year=2020)
+    session.add(source)
+    await session.flush()
+    await upsert_external_user(
+        session,
+        source,
+        external_user_id="ou_stale",
+        display_name="Stale Alice",
+        email=None,
+    )
+    session.add(
+        EnterpriseIdentitySourceSpaceBinding(
+            identity_source_id=source.id,
+            knowledge_space_id=space.knowledge_space_id,
+        )
+    )
+    await session.commit()
+    record = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="stale-source-owner",
+        name="Stale source owner",
+        kb_type="PERSONAL",
+        identity_domain=space.identity_domain,
+        owner={"provider": "feishu", "type": "user", "id": "ou_stale"},
+    )
+
+    result = await sync_space_catalog(session, space, FakeCatalogClient([record]))
+    resource = (await session.execute(select(KnowledgeResource))).scalar_one()
+
+    assert result["owner_unresolved"] == 1
+    assert resource.owner_pas_user_id is None
 
 
 async def test_sync_space_catalog_rejects_internal_user_id_as_polarrag_owner(

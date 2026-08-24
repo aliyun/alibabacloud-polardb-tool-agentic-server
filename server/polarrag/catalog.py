@@ -11,6 +11,11 @@ from sqlalchemy.orm import selectinload
 
 from server.models import (
     EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS,
+    EnterpriseDirectoryEntryStatus,
+    EnterpriseDirectoryUser,
+    EnterpriseIdentitySource,
+    EnterpriseIdentitySourceSpaceBinding,
+    EnterpriseIdentitySourceStatus,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
@@ -19,8 +24,11 @@ from server.models import (
     KnowledgeResourceSyncStatus,
     PolarRAGSpace,
     User,
+    UserExternalIdentity,
     UserStatus,
 )
+from server.enterprise_identity.service import identity_provider_key
+from server.polarrag.identity import IdentityContextUnavailable, resolve_acl_context
 from server.polarrag.client import client_from_instance
 from server.polarrag.contracts import (
     PolarRAGClient,
@@ -34,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 async def _resolve_owner(
     session: AsyncSession,
+    space: PolarRAGSpace,
     record: PolarRAGKnowledgeBaseRecord,
     now: datetime,
 ) -> str | None:
@@ -59,18 +68,38 @@ async def _resolve_owner(
                 ),
             )
         )
-        return (
-            await session.execute(
-                select(User.id).where(
-                    User.external_id == owner["id"],
-                    User.status == UserStatus.ACTIVE,
-                    has_membership,
+        users = list(
+            (
+                await session.execute(
+                    select(User).where(
+                        User.external_id == owner["id"],
+                        User.status == UserStatus.ACTIVE,
+                    )
                 )
-            )
-        ).scalar_one_or_none()
+            ).scalars()
+        )
+        for user in users:
+            if (
+                await session.execute(
+                    select(User.id).where(User.id == user.id, has_membership)
+                )
+            ).scalar_one_or_none() is not None:
+                return user.id
+            try:
+                context = await resolve_acl_context(
+                    session,
+                    user.id,
+                    space.knowledge_space_id,
+                    now=now,
+                )
+            except IdentityContextUnavailable:
+                continue
+            if {"provider": "polarrag", "type": "user", "id": owner["id"]} in context["principals"]:
+                return user.id
+        return None
     if owner["provider"] not in EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS:
         return None
-    return (
+    mapped_owner = (
         await session.execute(
             select(EnterprisePrincipalAssignment.pas_user_id).where(
                 EnterprisePrincipalAssignment.identity_domain
@@ -88,6 +117,66 @@ async def _resolve_owner(
             )
         )
     ).scalar_one_or_none()
+    if mapped_owner is not None:
+        return mapped_owner
+    sources = list(
+        (
+            await session.execute(
+                select(EnterpriseIdentitySource)
+                .join(
+                    EnterpriseIdentitySourceSpaceBinding,
+                    EnterpriseIdentitySourceSpaceBinding.identity_source_id
+                    == EnterpriseIdentitySource.id,
+                )
+                .where(
+                    EnterpriseIdentitySourceSpaceBinding.knowledge_space_id
+                    == space.knowledge_space_id,
+                    EnterpriseIdentitySource.status
+                    == EnterpriseIdentitySourceStatus.ACTIVE,
+                    EnterpriseIdentitySource.provider == owner["provider"],
+                )
+            )
+        ).scalars()
+    )
+    owner_ids: set[str] = set()
+    for source in sources:
+        candidate = (
+            await session.execute(
+                select(UserExternalIdentity.user_id)
+                .join(
+                    EnterpriseDirectoryUser,
+                    EnterpriseDirectoryUser.external_user_id
+                    == UserExternalIdentity.external_subject,
+                )
+                .where(
+                    UserExternalIdentity.identity_provider == identity_provider_key(source),
+                    UserExternalIdentity.external_subject == owner["id"],
+                    EnterpriseDirectoryUser.identity_source_id == source.id,
+                    EnterpriseDirectoryUser.status == EnterpriseDirectoryEntryStatus.ACTIVE,
+                )
+            )
+        ).scalar_one_or_none()
+        if candidate is not None:
+            owner_ids.add(candidate)
+    verified_owner_ids: set[str] = set()
+    expected_principal = {
+        "provider": owner["provider"],
+        "type": "user",
+        "id": owner["id"],
+    }
+    for owner_id in owner_ids:
+        try:
+            context = await resolve_acl_context(
+                session,
+                owner_id,
+                space.knowledge_space_id,
+                now=now,
+            )
+        except IdentityContextUnavailable:
+            continue
+        if expected_principal in context["principals"]:
+            verified_owner_ids.add(owner_id)
+    return next(iter(verified_owner_ids)) if len(verified_owner_ids) == 1 else None
 
 
 async def sync_space_catalog(
@@ -171,7 +260,7 @@ async def sync_space_catalog(
             resource.enabled = True
             counts["active"] += 1
         elif resource.kb_type == "PERSONAL":
-            owner_id = await _resolve_owner(session, record, current)
+            owner_id = await _resolve_owner(session, space, record, current)
             resource.binding_mode = KnowledgeBindingMode.OWNER
             resource.owner_pas_user_id = owner_id
             if owner_id is None:

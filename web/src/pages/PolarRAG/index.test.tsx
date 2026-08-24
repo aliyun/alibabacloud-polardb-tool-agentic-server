@@ -262,7 +262,7 @@ describe('PolarRAG instance inventory', () => {
       screen.getByRole('combobox', { name: /owner for Public KB/i }),
     )
     await user.click(
-      await screen.findByText('Allen · allen'),
+      await screen.findByText('Allen · allen · feishu'),
     )
     await user.click(
       screen.getByRole('button', {
@@ -275,11 +275,87 @@ describe('PolarRAG instance inventory', () => {
         'rag-1',
         'space-a',
         'public-kb',
-        'principal-1',
+        { principal_assignment_id: 'principal-1' },
       ),
     )
     await waitFor(() =>
       expect(listUnclaimedPolarRAGKnowledgeBases).toHaveBeenCalledTimes(2),
+    )
+  })
+
+  it('assigns an active PAS user through the native PolarRAG principal', async () => {
+    const user = userEvent.setup()
+    vi.mocked(listPolarRAGSpaces).mockResolvedValue({
+      data: {
+        items: [{
+          space_id: 'space-a',
+          name: 'Engineering',
+          identity_domain: 'tenant-a',
+          status: 'ACTIVE',
+          enabled: true,
+          knowledge_space_id: 'opaque-space',
+          last_synced_at: null,
+          knowledge_resources: [],
+        }],
+      },
+    } as never)
+    vi.mocked(listUnclaimedPolarRAGKnowledgeBases)
+      .mockResolvedValueOnce({
+        data: {
+          items: [{
+            space_id: 'space-a',
+            space_name: 'Engineering',
+            identity_domain: 'tenant-a',
+            kb_id: 'personal-kb',
+            name: 'Personal KB',
+            kb_type: 'PERSONAL',
+            status: 'UNCLAIMED',
+          }],
+          owner_candidates: [{
+            principal_assignment_id: null,
+            pas_user_id: 'user-1',
+            user_name: 'Allen',
+            user_external_id: 'allen',
+            identity_domain: 'tenant-a',
+            provider: 'polarrag',
+            principal_id: 'allen',
+          }],
+        },
+      } as never)
+      .mockResolvedValue({
+        data: { items: [], owner_candidates: [] },
+      } as never)
+    vi.mocked(claimPolarRAGKnowledgeBase).mockResolvedValue({
+      data: {
+        kb_id: 'personal-kb',
+        status: 'ACTIVE',
+        sync: { active: 1, disabled: 0, owner_unresolved: 0 },
+      },
+    } as never)
+
+    render(<InstancesPanel />)
+    await user.click(
+      await screen.findByRole('button', {
+        name: /manage spaces for Primary RAG/i,
+      }),
+    )
+    await user.click(
+      screen.getByRole('combobox', { name: /owner for Personal KB/i }),
+    )
+    await user.click(await screen.findByText('Allen · allen · polarrag'))
+    await user.click(
+      screen.getByRole('button', {
+        name: /assign owner and activate Personal KB/i,
+      }),
+    )
+
+    await waitFor(() =>
+      expect(claimPolarRAGKnowledgeBase).toHaveBeenCalledWith(
+        'rag-1',
+        'space-a',
+        'personal-kb',
+        { pas_user_id: 'user-1' },
+      ),
     )
   })
 

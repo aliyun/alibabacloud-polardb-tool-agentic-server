@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   issueMyAgentToken,
   listMyAgentConnections,
+  regenerateMyAgentToken,
   revealMyAgentToken,
 } from '../../api/agentConnections'
 import MCPConnections from './MCPConnections'
@@ -98,12 +99,59 @@ describe('MCP connections', () => {
     await user.click(await screen.findByRole('button', { name: 'Issue Token' }))
     await user.click(screen.getByRole('button', { name: 'Issue' }))
 
+    expect(issueMyAgentToken).toHaveBeenCalledWith('agent-1', undefined)
+    expect(writeText).not.toHaveBeenCalled()
+    await user.click(
+      await screen.findByRole('button', { name: 'Copy Token' }),
+    )
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith('pas_user_agent_oidc_once'),
     )
-    expect(issueMyAgentToken).toHaveBeenCalledWith('agent-1', undefined)
     expect(screen.queryByText('pas_user_agent_oidc_once')).not.toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Copy Token' })).not.toBeInTheDocument()
+  })
+
+  it('requires confirmation before regenerating and offers a JSON copy', async () => {
+    const regeneratedToken = ['pas_user_agent', 'regenerated_once'].join('_')
+    const oidcConnection = {
+      ...activeConnection,
+      password_reveal_available: false,
+    }
+    vi.mocked(listMyAgentConnections)
+      .mockResolvedValueOnce({ data: [oidcConnection] } as never)
+      .mockResolvedValueOnce({ data: [oidcConnection] } as never)
+    vi.mocked(regenerateMyAgentToken).mockResolvedValue({
+      data: {
+        assignment_id: 'assignment-1',
+        token_prefix: 'pas_user_agent_example',
+        status: 'active',
+        expires_at: null,
+        last_used_at: null,
+        token: regeneratedToken,
+      },
+    } as never)
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText')
+    const user = userEvent.setup()
+    render(<MCPConnections />)
+
+    await user.click(await screen.findByRole('button', { name: 'Regenerate' }))
+
+    expect(
+      screen.getByText(/previous token becomes invalid immediately/i),
+    ).toHaveClass('ant-typography-danger')
+    expect(regenerateMyAgentToken).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'Confirm regenerate' }))
+
+    expect(regenerateMyAgentToken).toHaveBeenCalledWith('agent-1', undefined)
+    await user.click(
+      await screen.findByRole('button', { name: 'Copy JSON configuration' }),
+    )
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        expect.stringContaining(`Bearer ${regeneratedToken}`),
+      ),
+    )
+    expect(screen.queryByText(regeneratedToken)).not.toBeInTheDocument()
   })
 
   it('sends an optional expiration when issuing a Token', async () => {

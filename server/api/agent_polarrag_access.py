@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +15,15 @@ from sqlalchemy.orm import selectinload
 from server.auth.dependencies import require_admin
 from server.core import agent_user_token_service
 from server.core.agent_access import has_group_agent_access
+from server.core.agent_enterprise_access_service import (
+    EnterpriseAccessAuditError,
+    EnterpriseAccessPreviewStaleError,
+    EnterpriseAccessSelection,
+    EnterpriseAccessValidationError,
+    apply_enterprise_access,
+    preview_enterprise_access,
+)
+from server.core.resource_write_guard import serialized_resource_write
 from server.core.audit_logger import log_audit
 from server.db.engine import get_session
 from server.models import (
@@ -27,6 +37,14 @@ from server.models import (
     EnterprisePrincipalAssignment,
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
+    EnterpriseDirectoryEntryStatus,
+    EnterpriseDirectoryGroup,
+    EnterpriseDirectoryMembership,
+    EnterpriseDirectoryMembershipType,
+    EnterpriseDirectoryPrincipalType,
+    EnterpriseDirectoryUser,
+    EnterpriseIdentitySource,
+    EnterpriseIdentitySourceStatus,
     KnowledgeBindingMode,
     KnowledgeResource,
     KnowledgeResourceSyncStatus,
@@ -61,7 +79,22 @@ class GroupAssignmentRequest(BaseModel):
     department_id: str | None = None
     identity_domain: str | None = None
     provider: str | None = None
+    identity_source_id: str | None = None
     principal_id: str | None = None
+
+
+class EnterpriseAccessSelectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity_source_id: str = Field(min_length=1, max_length=36)
+    all_synced_users: bool = False
+    directory_group_ids: list[str] = Field(default_factory=list, max_length=500)
+    pas_user_ids: list[str] = Field(default_factory=list, max_length=500)
+    knowledge_space_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class EnterpriseAccessApplyRequest(EnterpriseAccessSelectionRequest):
+    preview_hash: str
 
 
 class GroupOptionResponse(BaseModel):
@@ -70,6 +103,10 @@ class GroupOptionResponse(BaseModel):
     department_name: str | None
     identity_domain: str | None
     provider: str | None
+    identity_source_id: str | None
+    identity_source_name: str | None
+    external_group_id: str | None
+    external_group_name: str | None
     principal_id: str | None
     member_count: int
 
@@ -207,6 +244,95 @@ async def _audit(
     )
 
 
+def _enterprise_access_selection(
+    body: EnterpriseAccessSelectionRequest,
+) -> EnterpriseAccessSelection:
+    return EnterpriseAccessSelection(
+        identity_source_id=body.identity_source_id,
+        all_synced_users=body.all_synced_users,
+        directory_group_ids=tuple(body.directory_group_ids),
+        pas_user_ids=tuple(body.pas_user_ids),
+        knowledge_space_ids=tuple(body.knowledge_space_ids),
+    )
+
+
+@router.post("/{agent_id}/enterprise-access/preview")
+async def preview_agent_enterprise_access(
+    agent_id: str,
+    body: EnterpriseAccessSelectionRequest,
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        preview = await preview_enterprise_access(
+            session,
+            agent_id=agent_id,
+            selection=_enterprise_access_selection(body),
+        )
+    except EnterpriseAccessValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return asdict(preview)
+
+
+@router.post("/{agent_id}/enterprise-access/apply")
+async def apply_agent_enterprise_access(
+    agent_id: str,
+    body: EnterpriseAccessApplyRequest,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    try:
+        if session.in_transaction():
+            await session.rollback()
+        async with serialized_resource_write(session):
+            result = await apply_enterprise_access(
+                session,
+                agent_id=agent_id,
+                admin=admin,
+                selection=_enterprise_access_selection(body),
+                preview_hash=body.preview_hash,
+            )
+            await session.commit()
+    except EnterpriseAccessPreviewStaleError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ENTERPRISE_ACCESS_PREVIEW_STALE",
+                "message": "Configuration changed; review the refreshed preview",
+                "preview": asdict(exc.preview),
+            },
+        ) from exc
+    except EnterpriseAccessValidationError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    except EnterpriseAccessAuditError as exc:
+        await session.rollback()
+        raise HTTPException(status_code=503, detail="Audit unavailable") from exc
+    except IntegrityError as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ENTERPRISE_ACCESS_CONFLICT",
+                "message": "Enterprise access configuration conflicted",
+            },
+        ) from exc
+    except Exception as exc:
+        await session.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Enterprise access configuration unavailable",
+        ) from exc
+    return asdict(result)
+
+
 async def _enterprise_group_exists(
     session: AsyncSession,
     identity_domain: str,
@@ -233,6 +359,49 @@ async def _enterprise_group_exists(
     ).first() is not None
 
 
+async def _identity_source_group_exists(
+    session: AsyncSession,
+    identity_source_id: str,
+    external_group_id: str,
+) -> bool:
+    return (
+        await session.execute(
+            select(EnterpriseDirectoryGroup.id)
+            .join(
+                EnterpriseIdentitySource,
+                EnterpriseIdentitySource.id
+                == EnterpriseDirectoryGroup.identity_source_id,
+            )
+            .where(
+                EnterpriseDirectoryGroup.identity_source_id
+                == identity_source_id,
+                EnterpriseDirectoryGroup.external_group_id == external_group_id,
+                EnterpriseDirectoryGroup.principal_type
+                == EnterpriseDirectoryPrincipalType.GROUP,
+                EnterpriseDirectoryGroup.status
+                == EnterpriseDirectoryEntryStatus.ACTIVE,
+                EnterpriseIdentitySource.status
+                == EnterpriseIdentitySourceStatus.ACTIVE,
+            )
+        )
+    ).first() is not None
+
+
+async def _identity_source_exists(
+    session: AsyncSession,
+    identity_source_id: str,
+) -> bool:
+    return (
+        await session.execute(
+            select(EnterpriseIdentitySource.id).where(
+                EnterpriseIdentitySource.id == identity_source_id,
+                EnterpriseIdentitySource.status
+                == EnterpriseIdentitySourceStatus.ACTIVE,
+            )
+        )
+    ).first() is not None
+
+
 async def _group_member_count(
     session: AsyncSession,
     row: AgentGroupAssignment,
@@ -242,6 +411,46 @@ async def _group_member_count(
             await session.scalar(
                 select(func.count(UserDepartment.user_id)).where(
                     UserDepartment.department_id == row.department_id
+                )
+            )
+            or 0
+        )
+    if row.group_kind == AgentGroupKind.IDENTITY_SOURCE_ALL:
+        return int(
+            await session.scalar(
+                select(func.count(EnterpriseDirectoryUser.id)).where(
+                    EnterpriseDirectoryUser.identity_source_id
+                    == row.identity_source_id,
+                    EnterpriseDirectoryUser.status
+                    == EnterpriseDirectoryEntryStatus.ACTIVE,
+                )
+            )
+            or 0
+        )
+    if row.group_kind == AgentGroupKind.IDENTITY_SOURCE:
+        return int(
+            await session.scalar(
+                select(func.count(distinct(EnterpriseDirectoryUser.id)))
+                .join(
+                    EnterpriseDirectoryMembership,
+                    (
+                        EnterpriseDirectoryMembership.identity_source_id
+                        == EnterpriseDirectoryUser.identity_source_id
+                    )
+                    & (
+                        EnterpriseDirectoryMembership.external_member_id
+                        == EnterpriseDirectoryUser.external_user_id
+                    ),
+                )
+                .where(
+                    EnterpriseDirectoryUser.identity_source_id
+                    == row.identity_source_id,
+                    EnterpriseDirectoryUser.status
+                    == EnterpriseDirectoryEntryStatus.ACTIVE,
+                    EnterpriseDirectoryMembership.external_group_id
+                    == row.principal_id,
+                    EnterpriseDirectoryMembership.member_type
+                    == EnterpriseDirectoryMembershipType.USER,
                 )
             )
             or 0
@@ -270,6 +479,24 @@ async def _group_assignment_response(
     session: AsyncSession,
     row: AgentGroupAssignment,
 ) -> GroupAssignmentResponse:
+    identity_source_name = None
+    external_group_name = None
+    if row.group_kind in {
+        AgentGroupKind.IDENTITY_SOURCE,
+        AgentGroupKind.IDENTITY_SOURCE_ALL,
+    }:
+        source = await session.get(EnterpriseIdentitySource, row.identity_source_id)
+        group = (
+            await session.execute(
+                select(EnterpriseDirectoryGroup).where(
+                    EnterpriseDirectoryGroup.identity_source_id
+                    == row.identity_source_id,
+                    EnterpriseDirectoryGroup.external_group_id == row.principal_id,
+                )
+            )
+        ).scalar_one_or_none()
+        identity_source_name = source.name if source is not None else None
+        external_group_name = group.display_name if group is not None else None
     return GroupAssignmentResponse(
         id=row.id,
         group_kind=row.group_kind,
@@ -277,6 +504,14 @@ async def _group_assignment_response(
         department_name=(row.department.name if row.department else None),
         identity_domain=row.identity_domain,
         provider=row.provider,
+        identity_source_id=row.identity_source_id,
+        identity_source_name=identity_source_name,
+        external_group_id=(
+            row.principal_id
+            if row.group_kind == AgentGroupKind.IDENTITY_SOURCE
+            else None
+        ),
+        external_group_name=external_group_name,
         principal_id=row.principal_id,
         member_count=await _group_member_count(session, row),
         created_at=row.created_at,
@@ -340,6 +575,107 @@ async def list_group_options(
             )
         )
     ).all()
+    identity_source_all_rows = list(
+        (
+            await session.execute(
+                select(
+                    EnterpriseIdentitySource.id,
+                    EnterpriseIdentitySource.name,
+                    func.count(EnterpriseDirectoryUser.id),
+                )
+                .outerjoin(
+                    EnterpriseDirectoryUser,
+                    (
+                        EnterpriseDirectoryUser.identity_source_id
+                        == EnterpriseIdentitySource.id
+                    )
+                    & (
+                        EnterpriseDirectoryUser.status
+                        == EnterpriseDirectoryEntryStatus.ACTIVE
+                    ),
+                )
+                .where(
+                    EnterpriseIdentitySource.status
+                    == EnterpriseIdentitySourceStatus.ACTIVE,
+                )
+                .group_by(
+                    EnterpriseIdentitySource.id,
+                    EnterpriseIdentitySource.name,
+                )
+                .order_by(
+                    EnterpriseIdentitySource.name,
+                    EnterpriseIdentitySource.id,
+                )
+            )
+        ).all()
+    )
+    identity_source_rows = list(
+        (
+            await session.execute(
+                select(
+                    EnterpriseIdentitySource.id,
+                    EnterpriseIdentitySource.name,
+                    EnterpriseDirectoryGroup.external_group_id,
+                    EnterpriseDirectoryGroup.display_name,
+                    func.count(distinct(EnterpriseDirectoryUser.id)),
+                )
+                .join(
+                    EnterpriseDirectoryGroup,
+                    EnterpriseDirectoryGroup.identity_source_id
+                    == EnterpriseIdentitySource.id,
+                )
+                .outerjoin(
+                    EnterpriseDirectoryMembership,
+                    (
+                        EnterpriseDirectoryMembership.identity_source_id
+                        == EnterpriseDirectoryGroup.identity_source_id
+                    )
+                    & (
+                        EnterpriseDirectoryMembership.external_group_id
+                        == EnterpriseDirectoryGroup.external_group_id
+                    )
+                    & (
+                        EnterpriseDirectoryMembership.member_type
+                        == EnterpriseDirectoryMembershipType.USER
+                    ),
+                )
+                .outerjoin(
+                    EnterpriseDirectoryUser,
+                    (
+                        EnterpriseDirectoryUser.identity_source_id
+                        == EnterpriseDirectoryMembership.identity_source_id
+                    )
+                    & (
+                        EnterpriseDirectoryUser.external_user_id
+                        == EnterpriseDirectoryMembership.external_member_id
+                    )
+                    & (
+                        EnterpriseDirectoryUser.status
+                        == EnterpriseDirectoryEntryStatus.ACTIVE
+                    ),
+                )
+                .where(
+                    EnterpriseIdentitySource.status
+                    == EnterpriseIdentitySourceStatus.ACTIVE,
+                    EnterpriseDirectoryGroup.status
+                    == EnterpriseDirectoryEntryStatus.ACTIVE,
+                    EnterpriseDirectoryGroup.principal_type
+                    == EnterpriseDirectoryPrincipalType.GROUP,
+                )
+                .group_by(
+                    EnterpriseIdentitySource.id,
+                    EnterpriseIdentitySource.name,
+                    EnterpriseDirectoryGroup.external_group_id,
+                    EnterpriseDirectoryGroup.display_name,
+                )
+                .order_by(
+                    EnterpriseIdentitySource.name,
+                    EnterpriseDirectoryGroup.display_name,
+                    EnterpriseDirectoryGroup.external_group_id,
+                )
+            )
+        ).all()
+    )
     return [
         GroupOptionResponse(
             group_kind=AgentGroupKind.DEPARTMENT,
@@ -347,10 +683,29 @@ async def list_group_options(
             department_name=name,
             identity_domain=None,
             provider=None,
+            identity_source_id=None,
+            identity_source_name=None,
+            external_group_id=None,
+            external_group_name=None,
             principal_id=None,
             member_count=count,
         )
         for department_id, name, count in department_rows
+    ] + [
+        GroupOptionResponse(
+            group_kind=AgentGroupKind.IDENTITY_SOURCE_ALL,
+            department_id=None,
+            department_name=None,
+            identity_domain=None,
+            provider=None,
+            identity_source_id=source_id,
+            identity_source_name=source_name,
+            external_group_id=None,
+            external_group_name=None,
+            principal_id=None,
+            member_count=count,
+        )
+        for source_id, source_name, count in identity_source_all_rows
     ] + [
         GroupOptionResponse(
             group_kind=AgentGroupKind.ENTERPRISE,
@@ -358,10 +713,35 @@ async def list_group_options(
             department_name=None,
             identity_domain=identity_domain,
             provider=provider,
+            identity_source_id=None,
+            identity_source_name=None,
+            external_group_id=None,
+            external_group_name=None,
             principal_id=principal_id,
             member_count=count,
         )
         for identity_domain, provider, principal_id, count in enterprise_rows
+    ] + [
+        GroupOptionResponse(
+            group_kind=AgentGroupKind.IDENTITY_SOURCE,
+            department_id=None,
+            department_name=None,
+            identity_domain=None,
+            provider=None,
+            identity_source_id=source_id,
+            identity_source_name=source_name,
+            external_group_id=external_group_id,
+            external_group_name=external_group_name,
+            principal_id=external_group_id,
+            member_count=count,
+        )
+        for (
+            source_id,
+            source_name,
+            external_group_id,
+            external_group_name,
+            count,
+        ) in identity_source_rows
     ]
 
 
@@ -420,7 +800,7 @@ async def create_group_assignment(
             created_by_user_id=admin.id,
         )
         row.department = department
-    else:
+    elif body.group_kind == AgentGroupKind.ENTERPRISE:
         if (
             body.department_id is not None
             or body.identity_domain is None
@@ -447,6 +827,64 @@ async def create_group_assignment(
             raise HTTPException(
                 status_code=404,
                 detail="Enterprise group is not registered",
+            )
+    elif body.group_kind == AgentGroupKind.IDENTITY_SOURCE:
+        if (
+            body.department_id is not None
+            or body.identity_domain is not None
+            or body.provider is not None
+            or body.identity_source_id is None
+            or body.principal_id is None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid identity source group",
+            )
+        try:
+            row = AgentGroupAssignment.for_identity_source_group(
+                agent_id=agent_id,
+                identity_source_id=body.identity_source_id,
+                external_group_id=body.principal_id,
+                created_by_user_id=admin.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not await _identity_source_group_exists(
+            session,
+            row.identity_source_id or "",
+            row.principal_id or "",
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="Identity source group is not available",
+            )
+    else:
+        if (
+            body.department_id is not None
+            or body.identity_domain is not None
+            or body.provider is not None
+            or body.identity_source_id is None
+            or body.principal_id is not None
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="Invalid identity source all-users assignment",
+            )
+        try:
+            row = AgentGroupAssignment.for_identity_source_all_users(
+                agent_id=agent_id,
+                identity_source_id=body.identity_source_id,
+                created_by_user_id=admin.id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not await _identity_source_exists(
+            session,
+            row.identity_source_id or "",
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="Identity source is not available",
             )
     session.add(row)
     try:

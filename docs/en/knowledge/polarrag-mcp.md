@@ -7,6 +7,9 @@ queries to authenticated human users. The integration uses the existing PAS
 built-in user login, User Token, MCP OAuth, metadata database, audit log, and
 `PAS_ENCRYPTION_KEY`.
 
+For administrator setup of a Feishu directory source and its Space bindings,
+see [Enterprise identity sources](../administration/enterprise-identity-sources.md).
+
 ## Security boundary
 
 Only an MCP access token whose subject is `user:<pas_user_id>` can list or call
@@ -51,24 +54,26 @@ PolarRAG administration is integrated into the existing PAS pages:
   checks, rotates write-only credentials, disables an instance, and enables or
   synchronizes or disables an enumerated Space. If an enabled Space contains an
   `UNCLAIMED` PERSONAL knowledge base, its Spaces drawer lets an administrator
-  select an eligible PAS user principal in the same identity domain and choose
-  **Assign owner and activate**. PAS sends the selected user's canonical PAS
-  username (`User.external_id`) to PolarRAG, then synchronizes the active
-  catalog. PolarRAG derives and persists the native owner principal for the
-  Space identity domain.
+  select an eligible PAS user in the same identity domain and choose
+  **Assign owner and activate**. The choice can be a mapped enterprise user
+  principal or an active PAS user's native `polarrag:user` principal. PAS sends
+  the selected user's canonical PAS username (`User.external_id`) to PolarRAG,
+  then synchronizes the active catalog. PolarRAG derives and persists the
+  native owner principal for the Space identity domain.
   PUBLIC knowledge bases are active immediately and never enter this claim
   flow. Stored credentials and CA bundles are never displayed.
-- Open **Users** and choose **Enterprise Identity** on a user row to maintain
-  that user's allowlisted Feishu or SharePoint user/group principals, or the
-  locked native PolarRAG user mapping. PAS departments and external groups
-  remain independent.
+- Open **Users** and choose **Enterprise Identity** on a user row to bind a
+  synchronized Feishu or SharePoint identity, and to add, disable, or delete
+  manual Feishu, SharePoint, or native PolarRAG user/group principals. PAS
+  departments and external groups remain independent.
 - Open **My Instances** as the authenticated user to review accessible database
   instances and knowledge spaces. A non-administrator can choose an assigned
   Agent to open its paginated **Knowledge bases** drawer. The drawer shows each
   knowledge-base name and its opaque PAS knowledge-resource ID. Registering
   a PolarRAG instance alone does not grant user access; the Space must be
-  enabled and synchronized, and the user must have a valid principal assignment
-  for its identity domain. A non-administrator can upload a local document to
+  enabled and synchronized, and the user must resolve to an enterprise
+  principal or a native `polarrag:user` principal in its identity domain. A
+  non-administrator can upload a local document to
   an upload-ready knowledge resource shown for the selected Agent. The browser
   submits the Agent ID, opaque resource ID, and file; PAS derives the Space,
   knowledge base, principals, and actor from the authenticated identity and
@@ -87,14 +92,18 @@ PolarRAG administration is integrated into the existing PAS pages:
   The table displays the document size, chunk count, and upload time when
   PolarRAG provides them.
   Administrator status does not bypass knowledge access rules.
-- On an Agent detail page, bind its allowed PolarRAG instances and assign PAS
-  users. An assigned user manages their own `pas_user_agent_` Token under
+- On an Agent detail page, use **Configure enterprise access** for normal
+  Source, subject, and Space setup; the existing instance, PUBLIC-scope, user,
+  and group controls remain available for advanced changes. An assigned user
+  manages their own `pas_user_agent_` Token under
   **My Instances > MCP connections**. Administrators see status only and can
   force-revoke the Token without reading its plaintext. Built-in users reveal
   an existing Token by confirming their password. SSO users have no PAS
   password, so `issue` and `regenerate` return the new plaintext once in a
-  `Cache-Control: no-store` response; the UI copies it immediately and never
-  renders it. Repeated deliveries are rate limited.
+  `Cache-Control: no-store` response. The UI never renders it: during that
+  one-time window, the user explicitly chooses **Copy Token** or **Copy JSON
+  configuration**. Regenerating requires confirmation and invalidates the old
+  Token immediately. Repeated deliveries are rate limited.
 - For administrators, Dashboard **Instances** and **Active** totals include both
   registered database instances and registered PolarRAG instances. Pool
   availability remains database-only. Members instead see only the counts of
@@ -107,6 +116,47 @@ The legacy `/polarrag` URL redirects to
 The page shows `POLARRAG_CATALOG_CAPABILITY_MISSING` when the upstream plugin
 cannot provide the trusted Space and knowledge-base catalog. Administrators
 cannot type an identity domain or bypass this capability check.
+
+## Configure enterprise access for an Agent
+
+Use this sequence for a normal enterprise PolarRAG rollout:
+
+1. Register the PolarRAG instance, then enable and synchronize the target
+   Space.
+2. Create the Feishu or SharePoint identity source, complete verification, and
+   synchronize its directory.
+3. On the Agent's **PolarRAG instances** tab, bind the target instance and
+   configure its shared PUBLIC resource scope.
+4. Select **Configure enterprise access**.
+5. Choose one Source, explicitly select **All synchronized users** or specific
+   synchronized groups or PAS users, and choose one or more eligible Spaces.
+   **All synchronized users** is displayed first but is never preselected.
+6. Select **Preview changes** and separately review Agent-local grants, new
+   global Source-Space bindings, and existing relations that will be reused.
+   A new Source-Space binding is shared by other Agents and remains when this
+   Agent grant is removed.
+7. Confirm the preview once. The user can then sign in and create or use their
+   own Agent connection under **My Instances > MCP connections**.
+8. Verify the user sees only the intersection of the Agent instance and PUBLIC
+   scope, Source-Space bindings, the user's current enterprise membership, and
+   PolarRAG ACL.
+
+The operation is additive and atomic. It does not remove existing grants.
+Removing a user, group, or all-users Agent grant leaves global Source-Space
+bindings, Agent-instance bindings, and the shared PUBLIC scope unchanged.
+Fine-grained controls remain available for advanced administration.
+
+Automation first calls
+`POST /api/agents/{agent_id}/enterprise-access/preview` with trusted internal
+IDs and an explicit `all_synced_users` value, then sends the returned selection
+and `preview_hash` to the corresponding `/enterprise-access/apply` endpoint. A
+`409` means the preview changed and must be reviewed again; it never authorizes
+an automatic retry.
+
+Successful SSO with an empty knowledge-resource list is not proof of an SSO
+failure. Check Source activity and freshness, the global Source-Space binding,
+the Agent subject grant, the Agent-instance binding, and PUBLIC scope as
+separate gates.
 
 ## Register an instance
 

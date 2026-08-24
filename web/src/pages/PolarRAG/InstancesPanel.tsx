@@ -52,6 +52,12 @@ import './PolarRAG.css'
 
 const { Text } = Typography
 
+function ownerOptionValue(candidate: PolarRAGOwnerCandidate) {
+  return candidate.principal_assignment_id
+    ? `assignment:${candidate.principal_assignment_id}`
+    : `native:${candidate.pas_user_id}`
+}
+
 function statusColor(status: PolarRAGInstance['status']) {
   if (status === 'active') return 'green'
   if (status === 'error' || status === 'disabled') return 'red'
@@ -325,15 +331,19 @@ export default function InstancesPanel({
   ) => {
     if (!spaceInstance) return
     const key = `${knowledgeBase.space_id}:${knowledgeBase.kb_id}`
-    const principalAssignmentId = selectedOwners[key]
-    if (!principalAssignmentId) return
+    const candidate = ownerCandidates.find(
+      (item) => ownerOptionValue(item) === selectedOwners[key],
+    )
+    if (!candidate) return
     setSpaceAction(`claim:${key}`)
     try {
       await claimPolarRAGKnowledgeBase(
         spaceInstance.id,
         knowledgeBase.space_id,
         knowledgeBase.kb_id,
-        principalAssignmentId,
+        candidate.principal_assignment_id
+          ? { principal_assignment_id: candidate.principal_assignment_id }
+          : { pas_user_id: candidate.pas_user_id },
       )
       message.success(`${knowledgeBase.name} activated and synchronized`)
       setSelectedOwners((current) => {
@@ -635,15 +645,15 @@ export default function InstancesPanel({
               dataSource={spaces}
               pagination={false}
               columns={[
-              {
-                title: 'Space',
-                render: (_: unknown, record) => (
-                  <Space direction="vertical" size={0}>
-                    <Text strong>{record.name}</Text>
-                    <Text type="secondary">{record.space_id}</Text>
-                  </Space>
-                ),
-              },
+                {
+                  title: 'Space',
+                  render: (_: unknown, record) => (
+                    <Space direction="vertical" size={0}>
+                      <Text strong>{record.name}</Text>
+                      <Text type="secondary">{record.space_id}</Text>
+                    </Space>
+                  ),
+                },
               {
                 title: 'Identity domain',
                 dataIndex: 'identity_domain',
@@ -769,13 +779,7 @@ export default function InstancesPanel({
                   render: (_: unknown, record) => {
                     const key = `${record.space_id}:${record.kb_id}`
                     const candidates = ownerCandidates.filter(
-                      (candidate, index, all) =>
-                        candidate.identity_domain === record.identity_domain
-                        && all.findIndex(
-                          (item) =>
-                            item.identity_domain === candidate.identity_domain
-                            && item.pas_user_id === candidate.pas_user_id,
-                        ) === index,
+                      (candidate) => candidate.identity_domain === record.identity_domain,
                     )
                     return (
                       <Select
@@ -791,8 +795,8 @@ export default function InstancesPanel({
                         showSearch
                         optionFilterProp="label"
                         options={candidates.map((candidate) => ({
-                          value: candidate.principal_assignment_id,
-                          label: `${candidate.user_name} · ${candidate.user_external_id}`,
+                          value: ownerOptionValue(candidate),
+                          label: `${candidate.user_name} · ${candidate.user_external_id} · ${candidate.provider}`,
                         }))}
                         style={{ minWidth: 260 }}
                         notFoundContent="No eligible user principal in this identity domain"

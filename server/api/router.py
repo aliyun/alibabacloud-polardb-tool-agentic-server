@@ -24,6 +24,7 @@ from server.api.my_resources import router as my_resources_router
 from server.api.agent_polarrag_access import router as agent_polarrag_access_router
 from server.api.my_agent_connections import router as my_agent_connections_router
 from server.api.polarrag_documents import router as polarrag_documents_router
+from server.api.identity_sources import router as identity_sources_router
 
 router = APIRouter(prefix="/api", tags=["admin"])
 router.include_router(configuration_router)
@@ -44,3 +45,4 @@ router.include_router(my_resources_router)
 router.include_router(agent_polarrag_access_router)
 router.include_router(my_agent_connections_router)
 router.include_router(polarrag_documents_router)
+router.include_router(identity_sources_router)

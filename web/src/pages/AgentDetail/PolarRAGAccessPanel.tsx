@@ -23,6 +23,7 @@ import {
   listPolarRAGInstances,
   type PolarRAGInstance,
 } from '../../api/polarrag'
+import EnterpriseAccessDrawer from './EnterpriseAccessDrawer'
 
 const { Text, Title } = Typography
 
@@ -50,16 +51,16 @@ async function listAllUsers(): Promise<UserOption[]> {
 }
 
 function groupKey(group: AgentGroupOption): string {
-  return group.group_kind === 'department'
-    ? `department:${group.department_id}`
-    : `enterprise:${group.identity_domain}:${group.provider}:${group.principal_id}`
-}
-
-function groupLabel(group: AgentGroupOption): string {
-  const members = `${group.member_count} member${group.member_count === 1 ? '' : 's'}`
-  return group.group_kind === 'department'
-    ? `Department · ${group.department_name} (${members})`
-    : `Enterprise · ${group.provider} · ${group.principal_id} · ${group.identity_domain} (${members})`
+  if (group.group_kind === 'department') {
+    return `department:${group.department_id}`
+  }
+  if (group.group_kind === 'identity_source') {
+    return `identity-source:${group.identity_source_id}:${group.principal_id}`
+  }
+  if (group.group_kind === 'identity_source_all') {
+    return `identity-source-all:${group.identity_source_id}`
+  }
+  return `enterprise:${group.identity_domain}:${group.provider}:${group.principal_id}`
 }
 
 export default function PolarRAGAccessPanel({
@@ -80,11 +81,12 @@ export default function PolarRAGAccessPanel({
     AgentGroupAssignment[]
   >([])
   const [selectedInstance, setSelectedInstance] = useState<string>()
-  const [selectedUser, setSelectedUser] = useState<string>()
-  const [selectedGroup, setSelectedGroup] = useState<string>()
+  const [selectedUsers, setSelectedUsers] = useState<string[]>([])
+  const [selectedGroups, setSelectedGroups] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [enterpriseAccessOpen, setEnterpriseAccessOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -130,10 +132,36 @@ export default function PolarRAGAccessPanel({
     const assigned = new Set(assignments.map((row) => row.user_id))
     return users.filter((user) => !assigned.has(user.id))
   }, [assignments, users])
+  const allAvailableUsersSelected =
+    availableUsers.length > 0 &&
+    availableUsers.every((user) => selectedUsers.includes(user.id))
   const availableGroups = useMemo(() => {
     const assigned = new Set(groupAssignments.map(groupKey))
     return groupOptions.filter((group) => !assigned.has(groupKey(group)))
   }, [groupAssignments, groupOptions])
+  const selectableGroups = useMemo(
+    () =>
+      availableGroups.filter(
+        (group) => group.group_kind !== 'identity_source_all',
+      ),
+    [availableGroups],
+  )
+
+  const groupLabel = (group: AgentGroupOption): string => {
+    const members = t('polarragAccess.memberCount', {
+      count: group.member_count,
+    })
+    if (group.group_kind === 'department') {
+      return `${t('polarragAccess.department')} · ${group.department_name} (${members})`
+    }
+    if (group.group_kind === 'identity_source_all') {
+      return `${t('polarragAccess.identitySource')} · ${group.identity_source_name} · ${t('polarragAccess.allSourceUsers')} (${members})`
+    }
+    if (group.group_kind === 'identity_source') {
+      return `${t('polarragAccess.identitySource')} · ${group.identity_source_name} · ${group.external_group_name} (${members})`
+    }
+    return `${t('polarragAccess.enterprise')} · ${group.provider} · ${group.principal_id} · ${group.identity_domain} (${members})`
+  }
 
   const mutate = async (operation: () => Promise<unknown>) => {
     setBusy(true)
@@ -161,6 +189,17 @@ export default function PolarRAGAccessPanel({
           {t('polarragAccess.tabDescription')}
         </Text>
       </div>
+      <Alert
+        type="info"
+        showIcon
+        message={t('enterpriseAccess.configure')}
+        description={t('enterpriseAccess.entryDescription')}
+        action={
+          <Button type="primary" onClick={() => setEnterpriseAccessOpen(true)}>
+            {t('enterpriseAccess.configure')}
+          </Button>
+        }
+      />
       <Space.Compact style={{ width: '100%' }}>
         <Select
           aria-label={t('polarragAccess.instance')}
@@ -207,8 +246,9 @@ export default function PolarRAGAccessPanel({
       <Space.Compact style={{ width: '100%' }}>
         <Select
           aria-label={t('polarragAccess.group')}
-          value={selectedGroup}
-          onChange={setSelectedGroup}
+          mode="multiple"
+          value={selectedGroups}
+          onChange={setSelectedGroups}
           placeholder={t('polarragAccess.selectGroup')}
           showSearch
           optionFilterProp="label"
@@ -219,20 +259,28 @@ export default function PolarRAGAccessPanel({
           style={{ flex: 1 }}
         />
         <Button
+          disabled={selectableGroups.length === 0 || busy}
+          onClick={() => setSelectedGroups(selectableGroups.map(groupKey))}
+        >
+          {t('polarragAccess.selectAllGroups')}
+        </Button>
+        <Button
           type="primary"
-          disabled={!selectedGroup}
+          disabled={selectedGroups.length === 0}
           loading={busy}
           onClick={() => {
-            const group = availableGroups.find(
-              (option) => groupKey(option) === selectedGroup,
+            const groups = availableGroups.filter((option) =>
+              selectedGroups.includes(groupKey(option)),
             )
-            if (!group) return
-            void mutate(() => createAgentGroupAssignment(agentId, group)).then(
-              () => setSelectedGroup(undefined),
-            )
+            if (groups.length === 0) return
+            void mutate(() =>
+              Promise.all(
+                groups.map((group) => createAgentGroupAssignment(agentId, group)),
+              ),
+            ).then(() => setSelectedGroups([]))
           }}
         >
-          {t('polarragAccess.assignGroup')}
+          {t('polarragAccess.assignGroups')}
         </Button>
       </Space.Compact>
       <Table
@@ -252,7 +300,10 @@ export default function PolarRAGAccessPanel({
               <Tag>
                 {row.group_kind === 'department'
                   ? t('polarragAccess.department')
-                  : t('polarragAccess.enterprise')}
+                  : row.group_kind === 'identity_source' ||
+                      row.group_kind === 'identity_source_all'
+                    ? t('polarragAccess.identitySource')
+                    : t('polarragAccess.enterprise')}
               </Tag>
             ),
           },
@@ -267,7 +318,14 @@ export default function PolarRAGAccessPanel({
                 onClick={() =>
                   Modal.confirm({
                     title: t('polarragAccess.removeGroupTitle'),
-                    content: t('polarragAccess.removeGroupWarning'),
+                    content: (
+                      <Space direction="vertical">
+                        <Text>{t('polarragAccess.removeGroupWarning')}</Text>
+                        <Text>
+                          {t('polarragAccess.removeAssignmentWarning')}
+                        </Text>
+                      </Space>
+                    ),
                     okButtonProps: { danger: true },
                     onOk: () =>
                       mutate(() =>
@@ -294,8 +352,9 @@ export default function PolarRAGAccessPanel({
       <Space.Compact style={{ width: '100%' }}>
         <Select
           aria-label={t('polarragAccess.user')}
-          value={selectedUser}
-          onChange={setSelectedUser}
+          mode="multiple"
+          value={selectedUsers}
+          onChange={setSelectedUsers}
           placeholder={t('polarragAccess.selectUser')}
           showSearch
           optionFilterProp="label"
@@ -306,17 +365,36 @@ export default function PolarRAGAccessPanel({
           style={{ flex: 1 }}
         />
         <Button
+          disabled={availableUsers.length === 0 || busy}
+          onClick={() =>
+            setSelectedUsers(
+              allAvailableUsersSelected
+                ? []
+                : availableUsers.map((user) => user.id),
+            )
+          }
+        >
+          {t(
+            allAvailableUsersSelected
+              ? 'polarragAccess.clearAllUsers'
+              : 'polarragAccess.selectAllUsers',
+          )}
+        </Button>
+        <Button
           type="primary"
-          disabled={!selectedUser}
+          disabled={selectedUsers.length === 0}
           loading={busy}
           onClick={() => {
-            if (!selectedUser) return
-            void mutate(() => createAgentUserAssignment(agentId, selectedUser)).then(
-              () => setSelectedUser(undefined),
-            )
+            void mutate(() =>
+              Promise.all(
+                selectedUsers.map((userId) =>
+                  createAgentUserAssignment(agentId, userId),
+                ),
+              ),
+            ).then(() => setSelectedUsers([]))
           }}
         >
-          {t('polarragAccess.assignUser')}
+          {t('polarragAccess.assignUsers')}
         </Button>
       </Space.Compact>
       <Table
@@ -381,6 +459,7 @@ export default function PolarRAGAccessPanel({
                       title: t('polarragAccess.removeUserTitle', {
                         name: row.user_name,
                       }),
+                      content: t('polarragAccess.removeAssignmentWarning'),
                       okButtonProps: { danger: true },
                       onOk: () =>
                         mutate(() =>
@@ -395,6 +474,13 @@ export default function PolarRAGAccessPanel({
             ),
           },
         ]}
+      />
+      <EnterpriseAccessDrawer
+        agentId={agentId}
+        bindings={bindings}
+        open={enterpriseAccessOpen}
+        onClose={() => setEnterpriseAccessOpen(false)}
+        onApplied={load}
       />
     </Space>
   )

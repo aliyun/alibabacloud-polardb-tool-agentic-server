@@ -95,6 +95,19 @@ POLARRAG_MCP_TOOLS = {
 @pytest.mark.parametrize(
     "path",
     (
+        "docs/en/knowledge/polarrag-mcp.md",
+        "docs/zh-cn/knowledge/polarrag-mcp.md",
+    ),
+)
+def test_polarrag_guides_cover_atomic_enterprise_access_workflow(path: str):
+    text = _read(path)
+    assert "/enterprise-access/preview" in text
+    assert "all_synced_users" in text
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
         "docs/en/database-instances/agent-rest-provisioning.md",
         "docs/zh-cn/database-instances/agent-rest-provisioning.md",
     ),

@@ -33,6 +33,11 @@ Space enablement and synchronization, and per-user enterprise principal
 assignments. Secret fields are write-only. See
 [PolarRAG MCP and enterprise identities](../knowledge/polarrag-mcp.md).
 
+The [Enterprise identity source administrator API](enterprise-identity-sources-api.md)
+separately lists the management operations, parameters, and effects for Feishu
+and SharePoint sources, Space bindings, user mappings, and Feishu ACL
+membership snapshots.
+
 Agent-scoped PolarRAG access is managed under
 `/api/agents/{agent_id}/polarrag-bindings` and
 `/api/agents/{agent_id}/user-assignments`. An authenticated user lists their

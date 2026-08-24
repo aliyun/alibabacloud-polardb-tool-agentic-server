@@ -60,10 +60,23 @@ in the PolarRAG tab.
 
 ## PolarRAG user connections
 
-On the Agent detail page's **PolarRAG instances** tab, bind the permitted
-PolarRAG instances and explicitly assign PAS users. Administrators can see
-assignment and Token status and can force-revoke a user Token, but never
-receive its plaintext.
+For normal setup, first bind the permitted PolarRAG instance and configure its
+PUBLIC scope, then select **Configure enterprise access** on the Agent detail
+page's **PolarRAG instances** tab. Choose one active identity source, specific
+groups or synchronized PAS users, and Spaces on the Agent's bound instances.
+**All synchronized users** appears first but is never preselected; it requires
+an explicit administrator choice.
+
+Preview separates Agent-local grants, new global Source-Space bindings, and
+relations already configured for reuse. Confirming a missing Source-Space
+binding changes global shared state. Removing a user, group, or all-users grant
+from this Agent removes only that Agent grant: global Source-Space bindings,
+Agent-instance bindings, and shared PUBLIC scope remain. Existing instance,
+PUBLIC-scope, user, group, and removal controls remain available for advanced
+administration.
+
+Administrators can see assignment and Token status and can force-revoke a user
+Token, but never receive its plaintext.
 
 After signing in, an assigned user opens **My Instances**, then issues, reveals,
 regenerates, or revokes their own Token in **MCP connections**. One assignment

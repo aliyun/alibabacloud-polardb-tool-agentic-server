@@ -3,16 +3,13 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from server.models import (
-    EnterprisePrincipalAssignment,
-    EnterprisePrincipalStatus,
     KnowledgeBindingMode,
     KnowledgeResource,
     KnowledgeResourceSyncStatus,
@@ -23,8 +20,8 @@ from server.models import (
 )
 from server.polarrag.identity import (
     IdentityContextUnavailable,
-    principal_assignment_is_valid_for_user,
     resolve_acl_context,
+    resolve_linked_pas_user_ids,
 )
 
 
@@ -66,36 +63,21 @@ class KnowledgeResourceScope:
         )
 
 
-async def _domains_with_principals(
+async def _spaces_with_principals(
     session: AsyncSession,
-    user: User,
-    domains: set[str],
+    user_id: str,
+    knowledge_space_ids: set[str],
 ) -> set[str]:
-    if not domains:
+    if not knowledge_space_ids:
         return set()
-    assignments = (
-        await session.execute(
-            select(EnterprisePrincipalAssignment).where(
-                EnterprisePrincipalAssignment.pas_user_id == user.id,
-                EnterprisePrincipalAssignment.identity_domain.in_(domains),
-                EnterprisePrincipalAssignment.status
-                == EnterprisePrincipalStatus.ACTIVE,
-                or_(
-                    EnterprisePrincipalAssignment.valid_until.is_(None),
-                    EnterprisePrincipalAssignment.valid_until
-                    > datetime.now(UTC),
-                ),
-            )
-        )
-    ).scalars().all()
-    invalid_native_domains = {
-        assignment.identity_domain
-        for assignment in assignments
-        if not principal_assignment_is_valid_for_user(assignment, user)
-    }
-    return {
-        assignment.identity_domain for assignment in assignments
-    } - invalid_native_domains
+    available: set[str] = set()
+    for knowledge_space_id in knowledge_space_ids:
+        try:
+            await resolve_acl_context(session, user_id, knowledge_space_id)
+        except IdentityContextUnavailable:
+            continue
+        available.add(knowledge_space_id)
+    return available
 
 
 async def plan_knowledge_access(
@@ -128,12 +110,19 @@ async def plan_knowledge_access(
         )
     ).scalars()
     by_id = {resource.id: resource for resource in rows}
-    domains = {resource.identity_domain for resource in by_id.values()}
-    available_domains = await _domains_with_principals(
+    available_spaces = await _spaces_with_principals(
         session,
-        user,
-        domains,
+        user.id,
+        {resource.knowledge_space_id for resource in by_id.values()},
     )
+    linked_owner_ids = {
+        knowledge_space_id: await resolve_linked_pas_user_ids(
+            session,
+            user.id,
+            knowledge_space_id,
+        )
+        for knowledge_space_id in available_spaces
+    }
     accessible: list[KnowledgeResource] = []
     partial_failures: list[dict[str, str]] = []
     for resource_id in knowledge_resource_ids:
@@ -149,12 +138,13 @@ async def plan_knowledge_access(
             and resource.space.enabled
             and resource.space.instance.status
             == PolarRAGInstanceStatus.ACTIVE
-            and resource.identity_domain in available_domains
+            and resource.knowledge_space_id in available_spaces
             and (
                 resource.binding_mode == KnowledgeBindingMode.DOMAIN
                 or (
                     resource.binding_mode == KnowledgeBindingMode.OWNER
-                    and resource.owner_pas_user_id == user.id
+                    and resource.owner_pas_user_id
+                    in linked_owner_ids[resource.knowledge_space_id]
                 )
             )
         )
@@ -184,7 +174,7 @@ async def plan_knowledge_access(
         acl_context = await resolve_acl_context(
             session,
             user.id,
-            space.identity_domain,
+            space.knowledge_space_id,
         )
     except IdentityContextUnavailable as exc:
         raise KnowledgeAccessError(
@@ -222,12 +212,19 @@ async def list_visible_knowledge_resources(
         )
     ).scalars()
     rows = list(resources)
-    domains = {resource.identity_domain for resource in rows}
-    available_domains = await _domains_with_principals(
+    available_spaces = await _spaces_with_principals(
         session,
-        user,
-        domains,
+        user.id,
+        {resource.knowledge_space_id for resource in rows},
     )
+    linked_owner_ids = {
+        knowledge_space_id: await resolve_linked_pas_user_ids(
+            session,
+            user.id,
+            knowledge_space_id,
+        )
+        for knowledge_space_id in available_spaces
+    }
     return [
         resource
         for resource in rows
@@ -237,12 +234,13 @@ async def list_visible_knowledge_resources(
         )
         and resource.space.enabled
         and resource.space.instance.status == PolarRAGInstanceStatus.ACTIVE
-        and resource.identity_domain in available_domains
+        and resource.knowledge_space_id in available_spaces
         and (
             resource.binding_mode == KnowledgeBindingMode.DOMAIN
             or (
                 resource.binding_mode == KnowledgeBindingMode.OWNER
-                and resource.owner_pas_user_id == user.id
+                and resource.owner_pas_user_id
+                in linked_owner_ids[resource.knowledge_space_id]
             )
         )
     ]

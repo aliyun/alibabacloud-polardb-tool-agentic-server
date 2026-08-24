@@ -10,6 +10,9 @@ from server.models import (
     AuditLog,
     AuthProvider,
     Department,
+    EnterpriseDirectoryMembershipType,
+    EnterpriseIdentitySource,
+    EnterpriseIdentitySourceStatus,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalType,
@@ -19,8 +22,14 @@ from server.models import (
     PolarRAGInstance,
     PolarRAGInstanceStatus,
     PolarRAGSpace,
+    IdentitySourceProvider,
     User,
     UserDepartment,
+)
+from server.enterprise_identity.service import (
+    upsert_directory_group,
+    upsert_directory_membership,
+    upsert_external_user,
 )
 
 pytest_plugins = ("tests._admin_api_fixtures",)
@@ -326,18 +335,26 @@ async def test_admin_assigns_department_and_registered_enterprise_group(
             "group_kind": "department",
             "department_id": department_id,
             "department_name": "Engineering",
-            "identity_domain": None,
-            "provider": None,
-            "principal_id": None,
+                "identity_domain": None,
+                "provider": None,
+                "identity_source_id": None,
+                "identity_source_name": None,
+                "external_group_id": None,
+                "external_group_name": None,
+                "principal_id": None,
             "member_count": 1,
         },
         {
             "group_kind": "enterprise",
             "department_id": None,
             "department_name": None,
-            "identity_domain": "mcp-e2e-domain",
-            "provider": "feishu",
-            "principal_id": "finance-e2e",
+                "identity_domain": "mcp-e2e-domain",
+                "provider": "feishu",
+                "identity_source_id": None,
+                "identity_source_name": None,
+                "external_group_id": None,
+                "external_group_name": None,
+                "principal_id": "finance-e2e",
             "member_count": 1,
         },
     ]
@@ -383,6 +400,134 @@ async def test_admin_assigns_department_and_registered_enterprise_group(
         headers=admin_headers,
     )
     assert unknown.status_code == 404
+
+
+async def test_admin_assigns_synced_identity_source_group(client, setup) -> None:
+    http, admin_headers, _member_headers = client
+    factory, admin, _member = setup
+    async with factory() as session:
+        agent = Agent(name="synced-group-agent", created_by=admin.id)
+        source = EnterpriseIdentitySource.create(
+            name="Feishu directory",
+            provider=IdentitySourceProvider.FEISHU,
+            tenant_id="tenant-001",
+        )
+        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        session.add_all([agent, source])
+        await session.flush()
+        user = await upsert_external_user(
+            session,
+            source,
+            external_user_id="ou-001",
+            display_name="Alice",
+            email=None,
+        )
+        group = await upsert_directory_group(
+            session,
+            source,
+            external_group_id="oc-engineering",
+            display_name="Engineering",
+        )
+        await upsert_directory_membership(
+            session,
+            source,
+            external_group_id=group.external_group_id,
+            member_type=EnterpriseDirectoryMembershipType.USER,
+            external_member_id="ou-001",
+        )
+        await session.commit()
+        agent_id = agent.id
+        source_id = source.id
+        assert user.id
+
+    options = await http.get(
+        f"/api/agents/{agent_id}/group-options",
+        headers=admin_headers,
+    )
+    option = next(
+        item
+        for item in options.json()
+        if item["group_kind"] == "identity_source"
+    )
+    assert option["identity_source_id"] == source_id
+    assert option["identity_source_name"] == "Feishu directory"
+    assert option["external_group_id"] == "oc-engineering"
+    assert option["external_group_name"] == "Engineering"
+    assert option["member_count"] == 1
+
+    created = await http.post(
+        f"/api/agents/{agent_id}/group-assignments",
+        json={
+            "group_kind": "identity_source",
+            "identity_source_id": source_id,
+            "principal_id": "oc-engineering",
+        },
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["identity_source_id"] == source_id
+
+
+async def test_admin_assigns_all_synchronized_identity_source_users(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, admin, _member = setup
+    async with factory() as session:
+        agent = Agent(name="synced-source-agent", created_by=admin.id)
+        source = EnterpriseIdentitySource.create(
+            name="Feishu directory",
+            provider=IdentitySourceProvider.FEISHU,
+            tenant_id="tenant-001",
+        )
+        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        session.add_all([agent, source])
+        await session.flush()
+        await upsert_external_user(
+            session,
+            source,
+            external_user_id="ou-001",
+            display_name="Alice",
+            email=None,
+        )
+        await session.commit()
+        agent_id = agent.id
+        source_id = source.id
+
+    options = await http.get(
+        f"/api/agents/{agent_id}/group-options",
+        headers=admin_headers,
+    )
+    option = next(
+        item
+        for item in options.json()
+        if item["group_kind"] == "identity_source_all"
+    )
+    assert option == {
+        "group_kind": "identity_source_all",
+        "department_id": None,
+        "department_name": None,
+        "identity_domain": None,
+        "provider": None,
+        "identity_source_id": source_id,
+        "identity_source_name": "Feishu directory",
+        "external_group_id": None,
+        "external_group_name": None,
+        "principal_id": None,
+        "member_count": 1,
+    }
+
+    created = await http.post(
+        f"/api/agents/{agent_id}/group-assignments",
+        json={
+            "group_kind": "identity_source_all",
+            "identity_source_id": source_id,
+        },
+        headers=admin_headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["principal_id"] is None
+    assert created.json()["member_count"] == 1
 
 
 async def test_direct_assignment_upgrades_group_shadow_and_can_be_removed(

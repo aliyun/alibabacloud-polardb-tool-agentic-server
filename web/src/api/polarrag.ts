@@ -105,7 +105,7 @@ export interface UnclaimedPolarRAGKnowledgeBase {
 }
 
 export interface PolarRAGOwnerCandidate {
-  principal_assignment_id: string
+  principal_assignment_id: string | null
   pas_user_id: string
   user_name: string
   user_external_id: string
@@ -239,7 +239,7 @@ export const claimPolarRAGKnowledgeBase = (
   instanceId: string,
   spaceId: string,
   kbId: string,
-  principalAssignmentId: string,
+  owner: { principal_assignment_id: string } | { pas_user_id: string },
 ) =>
   api.post<{
     kb_id: string
@@ -247,7 +247,7 @@ export const claimPolarRAGKnowledgeBase = (
     sync: PolarRAGSyncResult
   }>(
     `/api/polarrag/instances/${encoded(instanceId)}/spaces/${encoded(spaceId)}/knowledge-bases/${encoded(kbId)}/claim`,
-    { principal_assignment_id: principalAssignmentId },
+    owner,
   )
 
 export const listEnterprisePrincipals = (userId: string) =>

@@ -3,4 +3,11 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 20px;
+  width: 100%;
+}
+
+.polarrag-identity-heading {
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 12px;
 }

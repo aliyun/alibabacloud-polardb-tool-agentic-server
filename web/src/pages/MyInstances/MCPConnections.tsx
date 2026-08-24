@@ -24,7 +24,7 @@ import { buildMCPClientConfiguration } from '../AgentDetail/mcpConnection'
 
 const { Text, Title } = Typography
 
-type ConfirmedAction = 'regenerate' | 'revoke'
+type ConfirmedAction = 'revoke'
 type TokenAction = 'issue' | 'regenerate'
 type CopyKind = 'token' | 'configuration'
 
@@ -81,6 +81,10 @@ export default function MCPConnections({
     action: TokenAction
     connection: MyAgentConnection
   } | null>(null)
+  const [oneTimeToken, setOneTimeToken] = useState<{
+    connection: MyAgentConnection
+    token: string
+  } | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -102,7 +106,7 @@ export default function MCPConnections({
 
   const operate = async (
     connection: MyAgentConnection,
-    action: 'issue' | ConfirmedAction,
+    action: TokenAction | ConfirmedAction,
     expiration?: string,
   ) => {
     setBusyId(connection.agent_id)
@@ -121,12 +125,7 @@ export default function MCPConnections({
         await revokeMyAgentToken(connection.agent_id)
       }
       if (oneTimeToken) {
-        try {
-          await copyText(oneTimeToken)
-          setNotice(t('mcpConnections.oneTimeTokenCopied'))
-        } catch {
-          setError(t('mcpConnections.oneTimeClipboardBlocked'))
-        }
+        setOneTimeToken({ connection, token: oneTimeToken })
       }
       await load()
     } catch (requestError) {
@@ -185,6 +184,28 @@ export default function MCPConnections({
     } finally {
       setBusyId(null)
       closeCopy()
+    }
+  }
+
+  const copyOneTimeToken = async (kind: CopyKind) => {
+    if (!oneTimeToken) return
+    try {
+      await copyText(
+        kind === 'token'
+          ? oneTimeToken.token
+          : buildMCPClientConfiguration(
+              oneTimeToken.connection.agent_name,
+              `${window.location.origin.replace(/\/+$/, '')}/mcp`,
+              oneTimeToken.token,
+            ),
+      )
+      setNotice(
+        kind === 'token'
+          ? t('mcpConnections.tokenCopied')
+          : t('mcpConnections.configurationCopied'),
+      )
+    } catch {
+      setError(t('mcpConnections.clipboardBlocked'))
     }
   }
 
@@ -378,7 +399,7 @@ export default function MCPConnections({
         open={tokenAction !== null}
         okText={
           tokenAction?.action === 'regenerate'
-            ? t('mcpConnections.regenerate')
+            ? t('mcpConnections.confirmRegenerate')
             : t('mcpConnections.issue')
         }
         confirmLoading={
@@ -402,7 +423,11 @@ export default function MCPConnections({
         destroyOnHidden
       >
         <Space direction="vertical" style={{ width: '100%' }}>
-          <Text type="secondary">
+          <Text
+            type={
+              tokenAction?.action === 'regenerate' ? 'danger' : 'secondary'
+            }
+          >
             {tokenAction?.action === 'regenerate'
               ? t('mcpConnections.regenerateWarning')
               : t('mcpConnections.expirationHint')}
@@ -417,10 +442,35 @@ export default function MCPConnections({
       </Modal>
 
       <Modal
+        title={t('mcpConnections.oneTimeCopyTitle')}
+        open={oneTimeToken !== null}
+        footer={(
+          <Space>
+            <Button onClick={() => void copyOneTimeToken('token')}>
+              {t('mcpConnections.copyToken')}
+            </Button>
+            <Button
+              type="primary"
+              onClick={() => void copyOneTimeToken('configuration')}
+            >
+              {t('mcpConnections.copyConfiguration')}
+            </Button>
+            <Button onClick={() => setOneTimeToken(null)}>
+              {t('mcpConnections.close')}
+            </Button>
+          </Space>
+        )}
+        onCancel={() => setOneTimeToken(null)}
+        destroyOnHidden
+      >
+        <Text type="secondary">
+          {t('mcpConnections.oneTimeCopyPrompt')}
+        </Text>
+      </Modal>
+
+      <Modal
         title={
-          confirmation?.action === 'regenerate'
-            ? t('mcpConnections.regenerateTitle')
-            : t('mcpConnections.revokeTitle')
+          t('mcpConnections.revokeTitle')
         }
         open={confirmation !== null}
         okButtonProps={{ danger: true }}
@@ -437,9 +487,7 @@ export default function MCPConnections({
         }}
         destroyOnHidden
       >
-        {confirmation?.action === 'regenerate'
-          ? t('mcpConnections.regenerateWarning')
-          : t('mcpConnections.revokeWarning')}
+        {t('mcpConnections.revokeWarning')}
       </Modal>
     </section>
   )

@@ -61,7 +61,11 @@ export interface AgentTokenRevealRequest {
   password: string
 }
 
-export type AgentGroupKind = 'department' | 'enterprise'
+export type AgentGroupKind =
+  | 'department'
+  | 'enterprise'
+  | 'identity_source'
+  | 'identity_source_all'
 
 export interface AgentGroupOption {
   group_kind: AgentGroupKind
@@ -69,6 +73,10 @@ export interface AgentGroupOption {
   department_name: string | null
   identity_domain: string | null
   provider: string | null
+  identity_source_id: string | null
+  identity_source_name: string | null
+  external_group_id: string | null
+  external_group_name: string | null
   principal_id: string | null
   member_count: number
 }
@@ -234,6 +242,7 @@ export const createAgentGroupAssignment = (
       department_id: group.department_id,
       identity_domain: group.identity_domain,
       provider: group.provider,
+      identity_source_id: group.identity_source_id,
       principal_id: group.principal_id,
     },
   )

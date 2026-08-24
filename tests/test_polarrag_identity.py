@@ -12,6 +12,9 @@ from server.models import (
     EnterprisePrincipalSource,
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
+    PolarRAGInstance,
+    PolarRAGInstanceStatus,
+    PolarRAGSpace,
     User,
 )
 from server.polarrag.identity import (
@@ -83,7 +86,7 @@ async def test_resolve_acl_context_filters_and_deduplicates_assignments(
     }
 
 
-async def test_resolve_acl_context_fails_closed_without_principals(
+async def test_resolve_acl_context_allows_native_user_principal_without_assignment(
     session,
 ) -> None:
     user = User(
@@ -92,10 +95,39 @@ async def test_resolve_acl_context_fails_closed_without_principals(
         auth_provider=AuthProvider.BUILTIN,
     )
     session.add(user)
+    await session.flush()
+    instance = PolarRAGInstance(
+        name="native-owner-rag",
+        scheme="https",
+        host="rag.example.test",
+        port=443,
+        username_ciphertext="encrypted",
+        password_ciphertext="encrypted",
+        status=PolarRAGInstanceStatus.ACTIVE,
+        created_by=user.id,
+    )
+    session.add(instance)
+    await session.flush()
+    space = PolarRAGSpace(
+        polarrag_instance_id=instance.id,
+        space_id="space-a",
+        name="A",
+        identity_domain="tenant-a",
+        enabled=True,
+    )
+    session.add(space)
     await session.commit()
 
-    with pytest.raises(IdentityContextUnavailable):
-        await resolve_acl_context(session, user.id, "tenant-a")
+    assert await resolve_acl_context(session, user.id, space.knowledge_space_id) == {
+        "identity_domain": "tenant-a",
+        "principals": [
+            {
+                "provider": "polarrag",
+                "type": "user",
+                "id": user.external_id,
+            }
+        ],
+    }
 
 
 async def test_resolve_acl_context_accepts_native_user_assignment_only(
