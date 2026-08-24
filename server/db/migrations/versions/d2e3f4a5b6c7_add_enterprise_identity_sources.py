@@ -70,7 +70,7 @@ def upgrade() -> None:
         unique=False,
     )
     with op.batch_alter_table(
-        "agent_group_assignments", recreate="always"
+        "agent_group_assignments", recreate="auto"
     ) as batch_op:
         batch_op.add_column(
             sa.Column("identity_source_id", sa.String(length=36), nullable=True)
@@ -204,7 +204,7 @@ def downgrade() -> None:
         table_name="agent_group_assignments",
     )
     with op.batch_alter_table(
-        "agent_group_assignments", recreate="always"
+        "agent_group_assignments", recreate="auto"
     ) as batch_op:
         batch_op.drop_constraint(
             "ck_agent_group_assignment_shape", type_="check"

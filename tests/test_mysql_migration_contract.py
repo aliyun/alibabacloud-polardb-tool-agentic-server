@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import inspect
+from io import StringIO
 from importlib import import_module
+
+import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 
 
 class _Dialect:
@@ -133,3 +138,46 @@ def test_provisioning_backend_uses_one_instance_unique_index() -> None:
 
     assert 'sa.UniqueConstraint("instance_id")' not in backend_schema
     assert '"ix_provisioning_backends_instance_id"' in backend_schema
+
+
+@pytest.mark.parametrize(
+    ("module_name", "operation_name"),
+    [
+        (
+            "d2e3f4a5b6c7_add_enterprise_identity_sources",
+            "upgrade",
+        ),
+        (
+            "d2e3f4a5b6c7_add_enterprise_identity_sources",
+            "downgrade",
+        ),
+        (
+            "f5a6b7c8d9e0_add_identity_source_all_agent_access",
+            "upgrade",
+        ),
+        (
+            "f5a6b7c8d9e0_add_identity_source_all_agent_access",
+            "downgrade",
+        ),
+    ],
+)
+def test_agent_group_migrations_use_native_mysql_alter(
+    module_name: str,
+    operation_name: str,
+    monkeypatch,
+) -> None:
+    migration = import_module(
+        f"server.db.migrations.versions.{module_name}"
+    )
+    output = StringIO()
+    context = MigrationContext.configure(
+        url="mysql://",
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    getattr(migration, operation_name)()
+
+    sql = output.getvalue()
+    assert "_alembic_tmp_agent_group_assignments" not in sql
+    assert "ALTER TABLE agent_group_assignments" in sql

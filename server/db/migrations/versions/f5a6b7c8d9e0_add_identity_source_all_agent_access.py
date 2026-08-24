@@ -40,7 +40,7 @@ def _shape_constraint(include_all_users: bool) -> str:
 
 def upgrade() -> None:
     with op.batch_alter_table(
-        "agent_group_assignments", recreate="always"
+        "agent_group_assignments", recreate="auto"
     ) as batch_op:
         batch_op.drop_constraint(
             "ck_agent_group_assignment_shape", type_="check"
@@ -58,7 +58,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     with op.batch_alter_table(
-        "agent_group_assignments", recreate="always"
+        "agent_group_assignments", recreate="auto"
     ) as batch_op:
         batch_op.drop_constraint(
             "ck_agent_group_assignment_shape", type_="check"
