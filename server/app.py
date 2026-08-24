@@ -5,8 +5,10 @@ import logging
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -76,17 +78,24 @@ def _render_enterprise_identity_source_help(
     alternate_locale = "en" if language == "zh-cn" else "zh-cn"
     alternate_label = "English" if language == "zh-cn" else "简体中文"
     zoom_label = "阅读字号" if language == "zh-cn" else "Reading size"
-    provider_query = f"&provider={provider}" if provider is not None else ""
-    language_link = (
-        f'/help/enterprise-identity-sources?locale={alternate_locale}'
-        f"{provider_query}"
+    language_query = {"locale": alternate_locale}
+    if provider is not None:
+        language_query["provider"] = provider
+    language_link = escape(
+        "/help/enterprise-identity-sources?"
+        + urlencode(language_query),
+        quote=True,
     )
+    safe_language = escape(language, quote=True)
+    safe_title = escape(title)
+    safe_zoom_label = escape(zoom_label, quote=True)
+    safe_alternate_label = escape(alternate_label)
     return f"""<!doctype html>
-<html lang="{language}">
+<html lang="{safe_language}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title} · PAS</title>
+  <title>{safe_title} · PAS</title>
   <style>
     :root {{ color: #1f2937; background: #f6f8fb; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
     body {{ margin: 0; }}
@@ -120,11 +129,11 @@ def _render_enterprise_identity_source_help(
   </style>
 </head>
 <body>
-  <header><div><strong>PAS</strong><div class="help-actions"><div class="zoom" aria-label="{zoom_label}">
+  <header><div><strong>PAS</strong><div class="help-actions"><div class="zoom" aria-label="{safe_zoom_label}">
     <input id="help-zoom-small" name="help-zoom" type="radio"><label for="help-zoom-small">A−</label>
     <input id="help-zoom-normal" name="help-zoom" type="radio" checked><label for="help-zoom-normal">A</label>
     <input id="help-zoom-large" name="help-zoom" type="radio"><label for="help-zoom-large">A+</label>
-  </div><a href="{language_link}">{alternate_label}</a></div></div></header>
+  </div><a href="{language_link}">{safe_alternate_label}</a></div></div></header>
   <main>{content}</main>
 </body>
 </html>"""

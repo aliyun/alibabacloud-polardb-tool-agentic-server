@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from server.app import create_app, provisioning_runtime_lifespan
+from server.app import (
+    _render_enterprise_identity_source_help,
+    create_app,
+    provisioning_runtime_lifespan,
+)
 from server.config import TenantProvisioningConfig, reset_config
 from server.mcp.transport import reset_mcp
 
@@ -103,6 +107,20 @@ class TestHealthEndpoints:
         assert reference.status_code == 200
         assert "<h1>企业身份源管理员 API</h1>" in reference.text
         assert "POST /api/identity-sources" in reference.text
+
+    def test_enterprise_identity_source_help_escapes_template_values(self):
+        rendered = _render_enterprise_identity_source_help(
+            "<p>trusted documentation</p>",
+            language='en"><script>alert(1)</script>',
+            title="<script>alert(2)</script>",
+            provider='feishu" onmouseover="alert(3)',
+        )
+
+        assert '<script>alert(1)</script>' not in rendered
+        assert '<script>alert(2)</script>' not in rendered
+        assert 'onmouseover="alert(3)' not in rendered
+        assert "&lt;script&gt;alert(2)&lt;/script&gt;" in rendered
+        assert "provider=feishu%22+onmouseover%3D%22alert%283%29" in rendered
 
     async def test_readyz_rejects_traffic_while_local_config_is_stale(
         self, app, client
