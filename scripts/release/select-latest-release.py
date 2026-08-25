@@ -43,9 +43,13 @@ def validate_candidate(
     _version_tuple(candidate)
     published_tags: list[str] = []
     for release in releases:
-        if release.get("draft") is False and isinstance(
-            release.get("published_at"),
-            str,
+        if (
+            release.get("draft") is False
+            and release.get("prerelease") is False
+            and isinstance(
+                release.get("published_at"),
+                str,
+            )
         ):
             tag = release.get("tag_name")
             if not isinstance(tag, str):
@@ -53,7 +57,9 @@ def validate_candidate(
             published_tags.append(tag)
     highest = highest_version(published_tags) if published_tags else None
     if candidate not in published_tags:
-        raise ValueError(f"candidate is not a published Release: {candidate}")
+        raise ValueError(
+            f"candidate is not a stable published Release: {candidate}"
+        )
     if highest != candidate:
         raise ValueError(
             f"latest promotion would move backward: {candidate} < {highest}"

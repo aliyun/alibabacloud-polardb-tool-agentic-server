@@ -36,11 +36,13 @@ def test_candidate_must_be_highest_published_release() -> None:
         {
             "tag_name": "v0.0.2",
             "draft": False,
+            "prerelease": False,
             "published_at": "2026-07-28T01:00:00Z",
         },
         {
             "tag_name": "v0.0.10",
             "draft": False,
+            "prerelease": False,
             "published_at": "2026-07-28T02:00:00Z",
         },
     ]
@@ -51,6 +53,28 @@ def test_candidate_must_be_highest_published_release() -> None:
     ):
         selector.validate_candidate("v0.0.2", releases)
     assert selector.validate_candidate("v0.0.10", releases) == "v0.0.10"
+
+
+def test_prerelease_is_not_eligible_for_latest_promotion() -> None:
+    selector = _load_selector()
+    releases = [
+        {
+            "tag_name": "v0.0.9",
+            "draft": False,
+            "prerelease": False,
+            "published_at": "2026-08-24T15:37:58Z",
+        },
+        {
+            "tag_name": "v0.0.10",
+            "draft": False,
+            "prerelease": True,
+            "published_at": "2026-08-25T13:29:13Z",
+        },
+    ]
+
+    assert selector.validate_candidate("v0.0.9", releases) == "v0.0.9"
+    with pytest.raises(ValueError, match="not a stable published Release"):
+        selector.validate_candidate("v0.0.10", releases)
 
 
 @pytest.mark.parametrize(
@@ -65,7 +89,7 @@ def test_candidate_must_be_highest_published_release() -> None:
                     "published_at": None,
                 }
             ],
-            "not a published Release",
+            "not a stable published Release",
         ),
         (
             "v0.0.2",
@@ -73,6 +97,7 @@ def test_candidate_must_be_highest_published_release() -> None:
                 {
                     "tag_name": "release-2",
                     "draft": False,
+                    "prerelease": False,
                     "published_at": "2026-07-28T01:00:00Z",
                 }
             ],
@@ -84,11 +109,13 @@ def test_candidate_must_be_highest_published_release() -> None:
                 {
                     "tag_name": "v0.0.2",
                     "draft": False,
+                    "prerelease": False,
                     "published_at": "2026-07-28T01:00:00Z",
                 },
                 {
                     "tag_name": "v0.0.2",
                     "draft": False,
+                    "prerelease": False,
                     "published_at": "2026-07-28T02:00:00Z",
                 },
             ],

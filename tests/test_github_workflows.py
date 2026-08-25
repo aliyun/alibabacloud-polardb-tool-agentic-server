@@ -268,6 +268,7 @@ def test_latest_promotion_runs_only_for_published_releases() -> None:
         "contents": "read",
         "packages": "write",
     }
+    assert job["if"] == "${{ github.event.release.prerelease == false }}"
     assert job["environment"] == "release"
     assert "scripts/release/select-latest-release.py" in content
     assert "org.opencontainers.image.version" in content

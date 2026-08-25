@@ -179,8 +179,14 @@ def _service_error(error: Exception) -> JSONResponse:
             "The Agent operation budget is exhausted.",
             retry_after_seconds=RETRY_AFTER_SECONDS,
         )
-    if isinstance(error, (InvalidClientToken, UnsupportedDBType, ValueError)):
+    if isinstance(error, (InvalidClientToken, UnsupportedDBType)):
         return _error(422, "INVALID_ARGUMENT", str(error))
+    if isinstance(error, ValueError):
+        return _error(
+            422,
+            "INVALID_ARGUMENT",
+            "The database request is invalid.",
+        )
     return _error(500, "PROVISIONING_FAILED", "Database provisioning failed.")
 
 
