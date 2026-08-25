@@ -70,7 +70,7 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
 - [Agent-assisted single-host deployment](deployment/agent-assisted-deployment.md):
   explicitly invoked Codex, Claude Code, Cursor, and compatible Agent Skills
-  workflows pinned to PAS 0.0.9.
+  workflows pinned to the release bundled with the skill.
 - [Production prerequisites](deployment/prerequisites.md): supported
   platforms, metadata database, root-key handling, writable paths, and
   registry access.

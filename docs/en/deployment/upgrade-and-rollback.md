@@ -45,7 +45,7 @@ override.
 The Chart's `pre-upgrade` migration Job blocks the Deployment update:
 
 ```bash
-PAS_VERSION=0.0.9
+PAS_VERSION=X.Y.Z
 helm upgrade pas "./polardb-agentic-server-${PAS_VERSION}-chart.tgz" \
   --namespace pas-system \
   --set existingSecret=pas-bootstrap \

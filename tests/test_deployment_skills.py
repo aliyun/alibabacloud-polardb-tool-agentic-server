@@ -192,8 +192,8 @@ def test_legacy_release_upload_contract_is_routed_away_from_current_onboarding()
     assert legacy_guide
     assert LEGACY_RELEASE_UPLOAD_CONTRACT["revision"] in skill
     assert "Legacy v0.0.7 upload contract" in skill
-    assert f"Current v{CURRENT_VERSION} onboarding upload contract" in skill
-    assert f"released `v{CURRENT_VERSION}`" in skill
+    assert "Current onboarding upload contract" in skill
+    assert "bundled release" in skill
     assert f"`v{CURRENT_ONBOARDING_MIN_VERSION}` or later `PAS_REF`" in skill
     for tool in LEGACY_RELEASE_UPLOAD_CONTRACT["tools"]:
         assert tool in skill

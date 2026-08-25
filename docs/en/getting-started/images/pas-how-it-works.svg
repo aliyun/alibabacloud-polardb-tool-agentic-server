@@ -1,0 +1,227 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700"
+     viewBox="0 0 1200 700" role="img"
+     aria-labelledby="title description">
+  <title id="title">How PolarDB Tool Agentic Server works</title>
+  <desc id="description">
+    Users and Agents send authenticated requests through the PAS control plane.
+    PAS applies identity policy, routes tools, guards SQL, records lifecycle
+    and audit metadata, and connects to registered, multitenant, or dedicated
+    PolarDB resources.
+  </desc>
+
+  <defs>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f9f6e"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#d97706"/>
+    </marker>
+    <style>
+      .canvas { fill: #ffffff; }
+      .frame { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.5; }
+      .pas-frame { fill: #f8fafc; stroke: #475569; stroke-width: 2; }
+      .card { fill: #ffffff; stroke-width: 1.5; }
+      .blue-card { stroke: #60a5fa; }
+      .green-card { stroke: #34d399; }
+      .orange-card { stroke: #f59e0b; }
+      .red-card { stroke: #f87171; }
+      .slate-card { stroke: #94a3b8; }
+      .title { fill: #0f172a; font: 700 27px Arial, sans-serif; }
+      .subtitle { fill: #475569; font: 400 14px Arial, sans-serif; }
+      .group-title { fill: #0f172a; font: 700 18px Arial, sans-serif; }
+      .label { fill: #0f172a; font: 700 15px Arial, sans-serif; }
+      .label-small { fill: #0f172a; font: 700 13px Arial, sans-serif; }
+      .secondary { fill: #64748b; font: 400 12px Arial, sans-serif; }
+      .step { fill: #ffffff; font: 700 12px Arial, sans-serif; }
+      .icon { fill: none; stroke: #334155; stroke-width: 2;
+              stroke-linecap: round; stroke-linejoin: round; }
+      .icon-blue { stroke: #2563eb; }
+      .icon-green { stroke: #0f9f6e; }
+      .icon-orange { stroke: #d97706; }
+      .icon-red { stroke: #dc2626; }
+      .flow-blue { fill: none; stroke: #2563eb; stroke-width: 2.5;
+                   marker-end: url(#arrow-blue); }
+      .flow-green { fill: none; stroke: #0f9f6e; stroke-width: 2.5;
+                    marker-end: url(#arrow-green); }
+      .flow-orange { fill: none; stroke: #d97706; stroke-width: 2.5;
+                     marker-end: url(#arrow-orange); }
+    </style>
+  </defs>
+
+  <rect class="canvas" width="1200" height="700"/>
+  <rect x="18" y="18" width="1164" height="664" rx="8"
+        fill="#ffffff" stroke="#e2e8f0" stroke-width="1.5"/>
+
+  <text class="title" x="48" y="62">How PAS Works</text>
+  <text class="subtitle" x="48" y="88">
+    One authenticated control plane for governed database access and provisioning
+  </text>
+
+  <!-- Draw the PAS surface before connectors so internal flows remain visible. -->
+  <rect class="pas-frame" x="292" y="118" width="626" height="476" rx="8"/>
+  <rect x="292" y="118" width="626" height="52" rx="8" fill="#e2e8f0"/>
+  <path d="M292 170h626" stroke="#94a3b8" stroke-width="1.5"/>
+
+  <!-- Connectors are drawn before nodes so arrows never cover labels. -->
+  <path class="flow-blue" d="M 216 218 H 292"/>
+  <path class="flow-blue" d="M 216 362 H 252 V 250 H 292"/>
+  <path class="flow-blue" d="M 450 222 H 478"/>
+  <path class="flow-blue" d="M 622 222 H 650"/>
+  <path class="flow-blue" d="M 794 222 H 820"/>
+  <path class="flow-orange" d="M 918 222 H 944 V 196 H 966"/>
+  <path class="flow-orange" d="M 918 222 H 944 V 336 H 966"/>
+  <path class="flow-orange" d="M 918 222 H 944 V 476 H 966"/>
+  <path class="flow-green" d="M 550 420 V 486"/>
+  <path class="flow-green" d="M 722 420 V 458 H 652 V 486"/>
+
+  <!-- Requesters -->
+  <rect class="frame" x="48" y="132" width="168" height="144" rx="8"/>
+  <circle cx="82" cy="164" r="18" fill="#dbeafe"/>
+  <g class="icon icon-blue" transform="translate(70 152)">
+    <path d="M12 12a5 5 0 1 0 0-10 5 5 0 0 0 0 10z"/>
+    <path d="M3 24a9 9 0 0 1 18 0"/>
+  </g>
+  <text class="label" x="110" y="171">Users</text>
+  <line x1="68" y1="200" x2="196" y2="200" stroke="#cbd5e1"/>
+  <text class="label-small" x="68" y="226">Web Console</text>
+  <text class="secondary" x="68" y="247">OAuth + session</text>
+
+  <rect class="frame" x="48" y="306" width="168" height="144" rx="8"/>
+  <circle cx="82" cy="338" r="18" fill="#dcfce7"/>
+  <g class="icon icon-green" transform="translate(69 325)">
+    <rect x="2" y="5" width="22" height="17" rx="3"/>
+    <path d="M13 1v4M8 12h.01M18 12h.01M8 18h10"/>
+  </g>
+  <text class="label" x="110" y="345">Agents</text>
+  <line x1="68" y1="374" x2="196" y2="374" stroke="#cbd5e1"/>
+  <text class="label-small" x="68" y="400">MCP + REST API</text>
+  <text class="secondary" x="68" y="421">Bearer API Token</text>
+
+  <!-- PAS control plane -->
+  <g class="icon" transform="translate(316 132)">
+    <path d="M12 2 3 6v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V6l-9-4z"/>
+    <path d="m8 12 3 3 5-6"/>
+  </g>
+  <text class="group-title" x="354" y="146">
+    PolarDB Tool Agentic Server
+  </text>
+  <text class="secondary" x="354" y="162">
+    Authentication, policy, routing, safety, lifecycle
+  </text>
+
+  <rect class="card blue-card" x="330" y="200" width="120" height="76" rx="7"/>
+  <circle cx="390" cy="200" r="13" fill="#2563eb"/>
+  <text class="step" x="386.5" y="204">1</text>
+  <g class="icon icon-blue" transform="translate(346 217)">
+    <rect x="3" y="11" width="20" height="13" rx="2"/>
+    <path d="M7 11V7a6 6 0 0 1 12 0v4"/>
+  </g>
+  <text class="label-small" x="378" y="227">Authenticate</text>
+  <text class="secondary" x="346" y="256">OAuth / Token</text>
+
+  <rect class="card green-card" x="478" y="200" width="144" height="76" rx="7"/>
+  <circle cx="550" cy="200" r="13" fill="#2563eb"/>
+  <text class="step" x="546.5" y="204">2</text>
+  <g class="icon icon-green" transform="translate(494 217)">
+    <path d="M12 2 3 6v6c0 5 3.8 9.7 9 11 5.2-1.3 9-6 9-11V6l-9-4z"/>
+    <path d="m8 12 3 3 5-6"/>
+  </g>
+  <text class="label-small" x="526" y="227">Identity &amp; Policy</text>
+  <text class="secondary" x="494" y="256">Least privilege</text>
+
+  <rect class="card orange-card" x="650" y="200" width="144" height="76" rx="7"/>
+  <circle cx="722" cy="200" r="13" fill="#2563eb"/>
+  <text class="step" x="718.5" y="204">3</text>
+  <g class="icon icon-orange" transform="translate(666 217)">
+    <circle cx="6" cy="6" r="3"/>
+    <circle cx="18" cy="18" r="3"/>
+    <path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v9h9"/>
+  </g>
+  <text class="label-small" x="698" y="227">Tool Router</text>
+  <text class="secondary" x="666" y="256">Capability-aware</text>
+
+  <rect class="card red-card" x="820" y="200" width="98" height="76" rx="7"/>
+  <circle cx="869" cy="200" r="13" fill="#2563eb"/>
+  <text class="step" x="865.5" y="204">4</text>
+  <g class="icon icon-red" transform="translate(834 217)">
+    <path d="M4 5h16v14H4z"/>
+    <path d="m8 10 3 2-3 2M14 15h3"/>
+  </g>
+  <text class="label-small" x="866" y="227">Guard</text>
+  <text class="secondary" x="834" y="256">Limits + audit</text>
+
+  <rect class="card slate-card" x="330" y="306" width="264" height="114" rx="7"/>
+  <g class="icon" transform="translate(350 326)">
+    <path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8"/>
+    <path d="M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/>
+    <circle cx="12" cy="12" r="4"/>
+  </g>
+  <text class="label" x="390" y="348">Lifecycle &amp; Provisioning</text>
+  <text class="secondary" x="350" y="386">
+    Idempotency · capacity · cleanup · recovery
+  </text>
+
+  <rect class="card slate-card" x="626" y="306" width="264" height="114" rx="7"/>
+  <g class="icon" transform="translate(646 326)">
+    <circle cx="12" cy="12" r="9"/>
+    <path d="M12 7v5l3 2"/>
+  </g>
+  <text class="label" x="686" y="348">Audit &amp; Observability</text>
+  <text class="secondary" x="646" y="386">
+    Principal · action · result · trace
+  </text>
+
+  <!-- Metadata database -->
+  <ellipse cx="601" cy="500" rx="78" ry="16" fill="#d1fae5"
+           stroke="#0f9f6e" stroke-width="1.5"/>
+  <path d="M523 500v54c0 9 35 16 78 16s78-7 78-16v-54"
+        fill="#ecfdf5" stroke="#0f9f6e" stroke-width="1.5"/>
+  <path d="M523 527c0 9 35 16 78 16s78-7 78-16"
+        fill="none" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text class="label-small" x="601" y="532" text-anchor="middle">PAS Metadata</text>
+  <text class="secondary" x="601" y="553" text-anchor="middle">Encrypted state</text>
+
+  <!-- PolarDB targets -->
+  <text class="group-title" x="966" y="151">PolarDB resources</text>
+
+  <rect class="card blue-card" x="966" y="172" width="186" height="96" rx="7"/>
+  <g class="icon icon-blue" transform="translate(984 190)">
+    <ellipse cx="12" cy="5" rx="9" ry="4"/>
+    <path d="M3 5v14c0 2 4 4 9 4s9-2 9-4V5"/>
+    <path d="M3 12c0 2 4 4 9 4s9-2 9-4"/>
+  </g>
+  <text class="label-small" x="1022" y="211">Registered PolarDB</text>
+  <text class="secondary" x="984" y="244">Direct governed access</text>
+
+  <rect class="card green-card" x="966" y="312" width="186" height="96" rx="7"/>
+  <g class="icon icon-green" transform="translate(984 330)">
+    <ellipse cx="12" cy="5" rx="9" ry="4"/>
+    <path d="M3 5v14c0 2 4 4 9 4s9-2 9-4V5"/>
+    <path d="M3 12c0 2 4 4 9 4s9-2 9-4M8 9h8"/>
+  </g>
+  <text class="label-small" x="1022" y="351">Multitenant</text>
+  <text class="secondary" x="984" y="384">Logical databases</text>
+
+  <rect class="card orange-card" x="966" y="452" width="186" height="96" rx="7"/>
+  <g class="icon icon-orange" transform="translate(984 470)">
+    <rect x="3" y="3" width="18" height="7" rx="2"/>
+    <rect x="3" y="14" width="18" height="7" rx="2"/>
+    <path d="M7 6h.01M7 17h.01M11 6h6M11 17h6"/>
+  </g>
+  <text class="label-small" x="1022" y="491">Dedicated Pool</text>
+  <text class="secondary" x="984" y="524">Prewarm + cold create</text>
+
+  <!-- Legend -->
+  <line x1="48" y1="630" x2="92" y2="630" class="flow-blue"/>
+  <text class="secondary" x="104" y="634">authenticated request</text>
+  <line x1="360" y1="630" x2="404" y2="630" class="flow-orange"/>
+  <text class="secondary" x="416" y="634">operation or provisioning</text>
+  <line x1="750" y1="630" x2="794" y2="630" class="flow-green"/>
+  <text class="secondary" x="806" y="634">metadata and audit</text>
+</svg>

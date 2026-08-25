@@ -29,26 +29,35 @@ def test_installed_python_dependencies_meet_the_security_baseline() -> None:
     minimum_versions = {
         "aiohttp": Version("3.14.3"),
         "alibabacloud-credentials": Version("1.0.8"),
+        "asyncmy": Version("0.2.12"),
         "cryptography": Version("48.0.1"),
         "mcp": Version("1.28.1"),
         "pydantic-settings": Version("2.14.2"),
+        "sqlparse": Version("0.6.0"),
         "starlette": Version("1.3.1"),
     }
     for dependency, minimum in minimum_versions.items():
         assert versions[dependency] >= minimum
 
 
-def test_locked_react_router_dependencies_meet_the_security_baseline() -> None:
+def test_locked_web_dependencies_meet_the_security_baseline() -> None:
     lock = json.loads(
         (ROOT / "web" / "package-lock.json").read_text(encoding="utf-8")
     )
     packages = lock["packages"]
 
-    for package_path in (
-        "node_modules/react-router",
-        "node_modules/react-router-dom",
-    ):
-        assert Version(packages[package_path]["version"]) >= Version("7.18.0")
+    minimum_versions = {
+        "node_modules/@typescript-eslint/typescript-estree/node_modules/brace-expansion": Version(
+            "5.0.9"
+        ),
+        "node_modules/brace-expansion": Version("1.1.18"),
+        "node_modules/js-yaml": Version("4.3.1"),
+        "node_modules/nanoid": Version("3.3.18"),
+        "node_modules/react-router": Version("7.18.2"),
+        "node_modules/react-router-dom": Version("7.18.2"),
+    }
+    for package_path, minimum in minimum_versions.items():
+        assert Version(packages[package_path]["version"]) >= minimum
 
 
 def test_dependency_vulnerability_exceptions_are_complete_and_current() -> None:
@@ -58,7 +67,6 @@ def test_dependency_vulnerability_exceptions_are_complete_and_current() -> None:
     exceptions = policy["exceptions"]
     assert {item["advisory"] for item in exceptions} == {
         "GHSA-g6cj-pr64-35w5",
-        "GHSA-qhqw-rrw9-25rm",
         "GHSA-qwww-vcr4-c8h2",
     }
 
@@ -104,12 +112,6 @@ def test_dependency_vulnerability_exceptions_are_complete_and_current() -> None:
             "high",
             ">=44.0.0,<50.0.0",
         ),
-        "GHSA-qhqw-rrw9-25rm": (
-            "asyncmy",
-            "pip",
-            "critical",
-            "<=0.2.11",
-        ),
         "GHSA-qwww-vcr4-c8h2": (
             "react-router",
             "npm",
@@ -123,6 +125,5 @@ def test_dependency_vulnerability_exceptions_are_complete_and_current() -> None:
     }
     assert accepted_on == {
         "GHSA-g6cj-pr64-35w5": date(2026, 8, 6),
-        "GHSA-qhqw-rrw9-25rm": date(2026, 7, 31),
         "GHSA-qwww-vcr4-c8h2": date(2026, 7, 31),
     }

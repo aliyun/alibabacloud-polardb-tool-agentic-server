@@ -713,8 +713,8 @@ class PASAuthProvider:
                 )
         else:
             logger.warning(
-                "authorize() called without resource parameter, defaulting to %s",
-                resource_url,
+                "authorize() called without resource parameter; "
+                "using the configured MCP resource"
             )
 
         # Store the effective resource (always non-null)
