@@ -255,3 +255,32 @@ async def test_deleted_resource_returns_204(rest_context):
     )
     assert deleted.status_code == 204
     assert deleted.content == b""
+
+
+async def test_internal_value_error_message_is_redacted(
+    rest_context,
+    monkeypatch,
+):
+    client, _, _, token, _ = rest_context
+
+    async def fail_create(self, command):
+        raise ValueError("PAS_ENCRYPTION_KEY is required")
+
+    monkeypatch.setattr(
+        "server.mcp.db_instance_rest.DBInstanceApplicationService.create",
+        fail_create,
+    )
+    response = await client.post(
+        "/mcp/rest/db-instances",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "client_token": "redacted-error",
+            "db_type": "polardb_mysql",
+            "provisioning_mode": "multitenant",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["code"] == "INVALID_ARGUMENT"
+    assert response.json()["message"] == "The database request is invalid."
+    assert "PAS_ENCRYPTION_KEY" not in response.text

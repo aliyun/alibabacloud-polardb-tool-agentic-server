@@ -22,5 +22,5 @@ it('allows interaction-heavy jsdom tests enough time on shared runners', () => {
     throw new Error('Expected a static Vite configuration')
   }
 
-  expect(config.test?.testTimeout).toBe(10_000)
+  expect(config.test?.testTimeout).toBe(20_000)
 })
