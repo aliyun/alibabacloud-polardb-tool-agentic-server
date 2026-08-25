@@ -18,6 +18,7 @@ env:
 
 jobs:
   promote:
+    if: ${{ github.event.release.prerelease == false }}
     runs-on: ubuntu-latest
     environment: release
     steps:
