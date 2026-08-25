@@ -262,8 +262,21 @@ class TestAuthorize:
             )
 
     async def test_authorize_defaults_resource_when_absent(
-        self, provider: PASAuthProvider, registered_client: OAuthClientInformationFull
+        self,
+        provider: PASAuthProvider,
+        registered_client: OAuthClientInformationFull,
+        monkeypatch: pytest.MonkeyPatch,
     ):
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "server.auth.oauth_provider.logger.warning",
+            lambda message, *args: warnings.append(
+                message % args if args else message
+            ),
+        )
+        provider._config.server.public_base_url = (
+            "https://sensitive-origin.example.test"
+        )
         url = await provider.authorize(
             registered_client,
             AuthorizationParams(
@@ -276,6 +289,11 @@ class TestAuthorize:
             ),
         )
         assert "/mcp-auth/login?session_id=" in url
+        assert warnings == [
+            "authorize() called without resource parameter; "
+            "using the configured MCP resource"
+        ]
+        assert "sensitive-origin.example.test" not in "\n".join(warnings)
 
     async def test_authorize_rejects_unregistered_redirect_uri(
         self,

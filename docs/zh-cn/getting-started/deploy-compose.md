@@ -30,7 +30,7 @@ sudo docker compose version
 下载并解压要部署的版本：
 
 ```bash
-PAS_VERSION=0.0.9
+PAS_VERSION=X.Y.Z
 wget "https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/archive/refs/tags/v${PAS_VERSION}.tar.gz"
 tar -xzf "v${PAS_VERSION}.tar.gz"
 cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
@@ -67,7 +67,7 @@ cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
 docker pull "ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}"
 ```
 
-也可以使用 [v0.0.9 Release](https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/releases/tag/v0.0.9)
+也可以使用 [最新 Release](https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server/releases/latest)
 中的离线镜像包。
 
 ## 第四步：迁移并启动

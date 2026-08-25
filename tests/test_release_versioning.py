@@ -13,31 +13,11 @@ CURRENT_VERSION = tomllib.loads(
 )["project"]["version"]
 major, minor, patch = (int(part) for part in CURRENT_VERSION.split("."))
 NEXT_VERSION = f"{major}.{minor}.{patch + 1}"
-CURRENT_RELEASE_REFERENCE_PATHS = (
-    ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
-    ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
-    "README.md",
-    "README_zh-CN.md",
-    "docs/en/README.md",
-    "docs/zh-cn/README.md",
-    "docs/en/deployment/agent-assisted-deployment.md",
-    "docs/zh-cn/deployment/agent-assisted-deployment.md",
-    "docs/en/knowledge/polarrag-onboarding.md",
-    "docs/zh-cn/knowledge/polarrag-onboarding.md",
-    "docs/en/getting-started/deploy-compose.md",
-    "docs/zh-cn/getting-started/deploy-compose.md",
-)
 VERSION_PATHS = (
     ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
     ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-source.sh",
     ".claude/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
     ".claude/skills/deploy-polardb-agentic-server/scripts/deploy-source.sh",
-    ".agents/skills/deploy-polardb-agentic-server/SKILL.md",
-    ".claude/skills/deploy-polardb-agentic-server/SKILL.md",
-    "README.md",
-    "README_zh-CN.md",
-    "docs/en/README.md",
-    "docs/zh-cn/README.md",
     ".env.compose.example",
     "Dockerfile",
     "pyproject.toml",
@@ -50,23 +30,7 @@ VERSION_PATHS = (
     "deploy/compose/compose.external-postgres.yaml",
     "deploy/helm/polardb-agentic-server/Chart.yaml",
     "deploy/helm/polardb-agentic-server/values.yaml",
-    "docs/en/deployment/agent-assisted-deployment.md",
     "scripts/deploy/create-external-mysql-env.sh",
-    "scripts/public-release/rehearse.sh",
-    "docs/en/deployment/kubernetes-helm.md",
-    "docs/zh-cn/deployment/kubernetes-helm.md",
-    "docs/zh-cn/deployment/agent-assisted-deployment.md",
-    "docs/en/knowledge/polarrag-onboarding.md",
-    "docs/zh-cn/knowledge/polarrag-onboarding.md",
-    "docs/en/deployment/offline-installation.md",
-    "docs/zh-cn/deployment/offline-installation.md",
-    "docs/en/deployment/upgrade-and-rollback.md",
-    "docs/zh-cn/deployment/upgrade-and-rollback.md",
-    "docs/en/getting-started/deploy-compose.md",
-    "docs/zh-cn/getting-started/deploy-compose.md",
-    "docs/en/deployment/prerequisites.md",
-    "docs/zh-cn/deployment/prerequisites.md",
-    "tests/test_release_assets.py",
 )
 
 
@@ -210,38 +174,14 @@ def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
         ).read_text(encoding="utf-8").count(
             f'PAS_VERSION="${{PAS_VERSION:-{NEXT_VERSION}}}"'
         ) == 1
+    changed_paths = {
+        line for line in result.stdout.splitlines() if line
+    }
+    assert changed_paths == set(VERSION_PATHS)
+    assert len(changed_paths) == 17
     assert (source / "release-notes.md").read_text(encoding="utf-8") == (
         "Historical releases v0.0.1 and v0.0.2 remain immutable.\n"
     )
-    expected_occurrences = {
-        "docs/en/deployment/agent-assisted-deployment.md": 1,
-        "docs/en/deployment/kubernetes-helm.md": 2,
-        "docs/zh-cn/deployment/kubernetes-helm.md": 2,
-        "docs/en/deployment/offline-installation.md": 1,
-        "docs/zh-cn/deployment/offline-installation.md": 1,
-        "docs/en/deployment/upgrade-and-rollback.md": 1,
-        "docs/zh-cn/deployment/upgrade-and-rollback.md": 1,
-        "docs/zh-cn/deployment/agent-assisted-deployment.md": 1,
-    }
-    for relative, count in expected_occurrences.items():
-        content = (source / relative).read_text(encoding="utf-8")
-        assert content.count(f"PAS_VERSION={NEXT_VERSION}") == count
-
-
-def test_bump_version_updates_current_release_prose(tmp_path: Path) -> None:
-    source = _copy_version_tree(tmp_path)
-
-    result = _run(
-        source,
-        "scripts/release/bump-version.py",
-        NEXT_VERSION,
-    )
-
-    assert result.returncode == 0, result.stderr
-    for relative in CURRENT_RELEASE_REFERENCE_PATHS:
-        content = (source / relative).read_text(encoding="utf-8")
-        assert NEXT_VERSION in content
-        assert CURRENT_VERSION not in content
 
 
 def test_bump_version_rejects_dirty_tracked_worktree(

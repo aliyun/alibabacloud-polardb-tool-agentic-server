@@ -1022,13 +1022,13 @@
     {
       "ecosystem": "npm",
       "name": "brace-expansion",
-      "version": "1.1.16",
+      "version": "1.1.18",
       "license": "MIT"
     },
     {
       "ecosystem": "npm",
       "name": "brace-expansion",
-      "version": "5.0.8",
+      "version": "5.0.9",
       "license": "MIT"
     },
     {
@@ -1592,7 +1592,7 @@
     {
       "ecosystem": "npm",
       "name": "js-yaml",
-      "version": "4.3.0",
+      "version": "4.3.1",
       "license": "MIT"
     },
     {
@@ -1736,7 +1736,7 @@
     {
       "ecosystem": "npm",
       "name": "nanoid",
-      "version": "3.3.16",
+      "version": "3.3.18",
       "license": "MIT"
     },
     {
@@ -2102,13 +2102,13 @@
     {
       "ecosystem": "npm",
       "name": "react-router",
-      "version": "7.18.1",
+      "version": "7.18.2",
       "license": "MIT"
     },
     {
       "ecosystem": "npm",
       "name": "react-router-dom",
-      "version": "7.18.1",
+      "version": "7.18.2",
       "license": "MIT"
     },
     {
@@ -2576,7 +2576,7 @@
     {
       "ecosystem": "python",
       "name": "asyncmy",
-      "version": "0.2.11",
+      "version": "0.2.14",
       "license": "Apache-2.0"
     },
     {
@@ -2924,7 +2924,7 @@
     {
       "ecosystem": "python",
       "name": "sqlparse",
-      "version": "0.5.5",
+      "version": "0.6.0",
       "license": "BSD-3-Clause"
     },
     {

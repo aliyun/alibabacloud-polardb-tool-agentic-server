@@ -45,14 +45,14 @@ Supply non-secret inputs as environment variables:
 | `POLARDB_PORT` | no | `3306` |
 | `PAS_DB_NAME` | no | `pas_meta` |
 | `PAS_HOME` | no | `/data/polar-mcp` |
-| `PAS_VERSION` | no | `0.0.9` |
+| `PAS_VERSION` | no | bundled release |
 | `PAS_REF` | no | `v${PAS_VERSION}` |
 | `PAS_REPO` | no | official GitHub repository |
 | `PAS_UPDATE_REPO` | no | `1` |
 
 For the secret, prefer `POLARDB_PASSWORD_FILE=/path/to/mode-0600-file`. An interactive terminal prompt is the fallback. `POLARDB_PASSWORD` is supported for non-interactive automation but must not be placed in a command line or agent conversation.
 
-The default path fetches and checks out the immutable `v0.0.9` release in detached-HEAD mode. An existing checkout must be clean and its `origin` must match `PAS_REPO`. Set `PAS_UPDATE_REPO=0` only for a deliberately pre-positioned PAS checkout; this expert override keeps the current commit but still verifies PAS project markers.
+The default path fetches and checks out the immutable release selected by `PAS_REF` in detached-HEAD mode. An existing checkout must be clean and its `origin` must match `PAS_REPO`. Set `PAS_UPDATE_REPO=0` only for a deliberately pre-positioned PAS checkout; this expert override keeps the current commit but still verifies PAS project markers.
 
 ## Required workflow
 
@@ -94,8 +94,7 @@ Resolve this skill's directory first; script paths below are relative to that di
 Use that checkout's `docs/en/knowledge/polarrag-mcp.md`; do not apply the
 current onboarding upload steps to that legacy release.
 
-**Current v0.0.9 onboarding upload contract.** The default deployment is
-released `v0.0.9`. This flow exposes only
+**Current onboarding upload contract.** The bundled release exposes only
 `prepare_document_upload` and `complete_document_upload`. Only `upload_session_id` is accepted by `complete_document_upload`; PAS validates multipart parts itself. Run the current onboarding only on an immutable
 `v0.0.8` or later `PAS_REF` whose checkout contains
 `$PAS_HOME/docs/en/knowledge/polarrag-onboarding.md` and whose user Agent
@@ -147,7 +146,7 @@ Report PAS deployment and PolarRAG MCP delivery as separate statuses. If this op
 ## Mode-specific result
 
 - Docker packages the web console, API, and MCP endpoint on `${PAS_PORT:-18760}`. From `$PAS_HOME`, inspect the generated Compose project with `docker compose --env-file .secrets/pas-compose.env -f deploy/compose/compose.external-mysql.yaml ps`.
-- Docker pulls the `0.0.9` image by default and fails closed if it is unavailable. Use an approved fully qualified `PAS_IMAGE`, or explicitly set `PAS_ALLOW_LOCAL_BUILD=1` to force a local build of the checked-out `PAS_REF` without pulling the default image.
+- Docker pulls the image matching the bundled release by default and fails closed if it is unavailable. Use an approved fully qualified `PAS_IMAGE`, or explicitly set `PAS_ALLOW_LOCAL_BUILD=1` to force a local build of the checked-out `PAS_REF` without pulling the default image.
 - Source serves backend/MCP on `18760` and the optional web console on `18761`. Inspect `$PAS_HOME/run/backend.out` and `$PAS_HOME/run/web.out`.
 - The bootstrap-token file is mode `0600` and is created only while PAS is in `SETUP` mode.
 - Restrict any inbound console or MCP ports to required sources rather than opening them globally.

@@ -10,7 +10,7 @@ API 与授权契约参见 [PolarRAG MCP 集成](polarrag-mcp.md)。完整 PAS �
 
 完成后，用户可以使用 `pas_user_agent_` Token 连接 MCP 客户端，发现有权限的知识资源，检索或读取文档，并通过受支持的上传客户端上传本地文档。
 
-本文使用 PAS `v0.0.9` 默认发布的当前上传契约：MCP 目录只暴露
+本文使用 PAS `v0.0.8` 及后续版本提供的上传契约：MCP 目录只暴露
 `prepare_document_upload` 和
 `complete_document_upload`，完成操作只接受 `upload_session_id`。不要在 PAS
 `v0.0.7` 上使用本文：该版本暴露旧版的 `prepare_document_upload`、

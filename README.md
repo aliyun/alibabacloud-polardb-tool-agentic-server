@@ -7,6 +7,16 @@ gives people and independently managed Agents authenticated, auditable access
 to database discovery, controlled SQL operations, branch operations, and
 persistent logical database resources.
 
+## How it works
+
+![PAS request, policy, and provisioning architecture](docs/en/getting-started/images/pas-how-it-works.svg)
+
+PAS sits between Users or Agents and PolarDB. It authenticates every request,
+applies identity and capability policy, routes the permitted Tool operation,
+and records lifecycle and audit state in its metadata database. The same
+control plane can route to registered instances, multitenant logical
+databases, or dedicated pool capacity.
+
 ## Features
 
 - Streamable HTTP MCP endpoint with OAuth and built-in authentication.
@@ -101,7 +111,8 @@ operators should begin with the
 
 Codex, Claude Code, Cursor, and compatible Agent Skills clients can use the
 explicitly invoked [agent-assisted deployment skill](docs/en/deployment/agent-assisted-deployment.md).
-It validates a Linux target before mutation and pins PAS to release `0.0.9`.
+It validates a Linux target before mutation and pins PAS to the release bundled
+with the skill.
 
 ## Administration workflow
 

@@ -6,6 +6,14 @@
 管理的 Agent 提供经过身份认证、可审计的数据库发现、受控 SQL 操作、分支
 操作和持久逻辑数据库资源。
 
+## 工作原理
+
+![PAS 请求、策略与供应架构](docs/zh-cn/getting-started/images/pas-how-it-works.svg)
+
+PAS 位于 User、Agent 与 PolarDB 之间，对每个请求完成身份认证和能力策略
+校验，再路由获准的 Tool 操作，并把生命周期与审计状态记录到元数据库。同一
+控制平面可以连接已注册实例、多租户逻辑数据库或独占资源池。
+
 ## 功能
 
 - 提供支持 OAuth 和内置认证的 Streamable HTTP MCP 服务。
@@ -93,7 +101,7 @@ bootstrap token 交付、Docker 与 Kubernetes 命令和恢复方式详见
 
 Codex、Claude Code、Cursor 和兼容 Agent Skills 的客户端可以使用显式调用的
 [Agent 辅助部署 SKILL](docs/zh-cn/deployment/agent-assisted-deployment.md)。
-它会先验证 Linux 目标机再执行变更，并把 PAS 固定到 Release `0.0.9`。
+它会先验证 Linux 目标机再执行变更，并把 PAS 固定到该 SKILL 内置的 Release。
 
 ## 管理流程
 
