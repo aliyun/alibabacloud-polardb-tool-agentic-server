@@ -13,3 +13,22 @@ spec:
       protocol: TCP
   selector:
     {{- include "polardb-agentic-server.selectorLabels" . | nindent 4 }}
+{{- if and .Values.management.enabled .Values.management.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "polardb-agentic-server.fullname" . }}-management
+  labels:
+    {{- include "polardb-agentic-server.labels" . | nindent 4 }}
+    app.kubernetes.io/component: management
+spec:
+  type: {{ .Values.management.service.type }}
+  ports:
+    - name: management
+      port: {{ default .Values.management.port .Values.management.service.port }}
+      targetPort: management
+      protocol: TCP
+  selector:
+    {{- include "polardb-agentic-server.selectorLabels" . | nindent 4 }}
+{{- end }}

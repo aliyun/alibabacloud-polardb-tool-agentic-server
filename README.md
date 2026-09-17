@@ -7,6 +7,8 @@ gives people and independently managed Agents authenticated, auditable access
 to database discovery, controlled SQL operations, branch operations, and
 persistent logical database resources.
 
+Personal and service accounts are managed under **Access management**; databases and knowledge bases appear as **Resources**. People can use **Connect MCP** without creating an Agent. See [Accounts and resources](docs/en/administration/accounts-and-resources.md) for the unified console and compatibility behavior.
+
 ## How it works
 
 ![PAS request, policy, and provisioning architecture](docs/en/getting-started/images/pas-how-it-works.svg)
@@ -199,8 +201,10 @@ for the complete UI workflow, security model, Tool examples, and lifecycle.
 - [Database instance access and provisioning](docs/en/database-instances/access-and-provisioning.md)
 - [Dedicated database hot pools](docs/en/database-instances/dedicated-hot-pools.md)
 - [Agent REST database provisioning](docs/en/database-instances/agent-rest-provisioning.md)
+- [Enable and disable knowledge](docs/en/knowledge/activation.md)
 - [PolarRAG administrator onboarding](docs/en/knowledge/polarrag-onboarding.md)
 - [PolarRAG MCP and enterprise identities](docs/en/knowledge/polarrag-mcp.md)
+- [PolarRAG platform HTTP API](docs/en/knowledge/polarrag-platform-http-api.md)
 - [Enterprise identity sources](docs/en/administration/enterprise-identity-sources.md)
 - [Enterprise identity source administrator API](docs/en/reference/enterprise-identity-sources-api.md)
 - [Docker Compose deployment](docs/en/deployment/docker-compose.md)

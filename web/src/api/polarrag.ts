@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 
 export type PolarRAGInstanceStatus =
   | 'pending'
@@ -65,7 +66,7 @@ export interface PolarRAGSpace {
   enabled: boolean
   knowledge_space_id: string | null
   last_synced_at: string | null
-  knowledge_resources: PolarRAGKnowledgeResource[]
+  knowledge_resource_count?: number
 }
 
 export interface ConfigurePolarRAGOssInput {
@@ -77,6 +78,8 @@ export interface ConfigurePolarRAGOssInput {
 export interface PolarRAGKnowledgeResource {
   knowledge_resource_id: string
   name: string
+  space_id: string
+  space_name: string
   kb_type: string
   binding_mode: 'domain' | 'owner' | null
   sync_status:
@@ -92,6 +95,12 @@ export interface PolarRAGSyncResult {
   active: number
   disabled: number
   owner_unresolved: number
+}
+
+export interface PolarRAGSpaceSyncStatus {
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  result: PolarRAGSyncResult | null
+  error: string | null
 }
 
 export interface UnclaimedPolarRAGKnowledgeBase {
@@ -116,7 +125,15 @@ export interface PolarRAGOwnerCandidate {
 
 export interface UnclaimedPolarRAGCatalog {
   items: UnclaimedPolarRAGKnowledgeBase[]
+  next_cursor: string | null
   owner_candidates: PolarRAGOwnerCandidate[]
+}
+
+export interface PolarRAGOwnerCandidatePage {
+  items: PolarRAGOwnerCandidate[]
+  total: number
+  offset: number
+  limit: number
 }
 
 export interface EnabledPolarRAGSpace {
@@ -160,8 +177,8 @@ export interface UpdateEnterprisePrincipalInput {
 
 const encoded = (value: string) => encodeURIComponent(value)
 
-export const listPolarRAGInstances = () =>
-  api.get<{ items: PolarRAGInstance[] }>('/api/polarrag/instances')
+export const listPolarRAGInstances = (params: PageParams = {}) =>
+  api.get<Page<PolarRAGInstance>>('/api/polarrag/instances', { params })
 
 export const createPolarRAGInstance = (
   input: CreatePolarRAGInstanceInput,
@@ -184,9 +201,28 @@ export const checkPolarRAGInstance = (instanceId: string) =>
 export const disablePolarRAGInstance = (instanceId: string) =>
   api.delete(`/api/polarrag/instances/${encoded(instanceId)}`)
 
-export const listPolarRAGSpaces = (instanceId: string) =>
-  api.get<{ items: PolarRAGSpace[] }>(
+export const listPolarRAGSpaces = (
+  instanceId: string,
+  params: { cursor?: string | null; limit?: number } = {},
+) =>
+  api.get<{ items: PolarRAGSpace[]; next_cursor: string | null; limit: number }>(
     `/api/polarrag/instances/${encoded(instanceId)}/spaces`,
+    { params },
+  )
+
+export const listPolarRAGKnowledgeResources = (
+  instanceId: string,
+  offset = 0,
+  limit = 20,
+) =>
+  api.get<{
+    items: PolarRAGKnowledgeResource[]
+    total: number
+    offset: number
+    limit: number
+  }>(
+    `/api/polarrag/instances/${encoded(instanceId)}/knowledge-resources`,
+    { params: { offset, limit } },
   )
 
 export const enablePolarRAGSpace = (
@@ -210,7 +246,15 @@ export const syncPolarRAGSpace = (
   instanceId: string,
   spaceId: string,
 ) =>
-  api.post<PolarRAGSyncResult>(
+  api.post<PolarRAGSpaceSyncStatus>(
+    `/api/polarrag/instances/${encoded(instanceId)}/spaces/${encoded(spaceId)}/sync`,
+  )
+
+export const getPolarRAGSpaceSyncStatus = (
+  instanceId: string,
+  spaceId: string,
+) =>
+  api.get<PolarRAGSpaceSyncStatus>(
     `/api/polarrag/instances/${encoded(instanceId)}/spaces/${encoded(spaceId)}/sync`,
   )
 
@@ -230,9 +274,33 @@ export const configurePolarRAGSpaceOss = (
     input,
   )
 
-export const listUnclaimedPolarRAGKnowledgeBases = (instanceId: string) =>
+export const listUnclaimedPolarRAGKnowledgeBases = (
+  instanceId: string,
+  cursor?: string | null,
+  limit = 20,
+) =>
   api.get<UnclaimedPolarRAGCatalog>(
     `/api/polarrag/instances/${encoded(instanceId)}/unclaimed-knowledge-bases`,
+    { params: { cursor: cursor ?? undefined, limit } },
+  )
+
+export const listPolarRAGOwnerCandidates = (
+  instanceId: string,
+  identityDomain: string,
+  search?: string,
+  offset = 0,
+  limit = 20,
+) =>
+  api.get<PolarRAGOwnerCandidatePage>(
+    `/api/polarrag/instances/${encoded(instanceId)}/owner-candidates`,
+    {
+      params: {
+        identity_domain: identityDomain,
+        search: search || undefined,
+        offset,
+        limit,
+      },
+    },
   )
 
 export const claimPolarRAGKnowledgeBase = (
@@ -250,9 +318,13 @@ export const claimPolarRAGKnowledgeBase = (
     owner,
   )
 
-export const listEnterprisePrincipals = (userId: string) =>
-  api.get<{ items: EnterprisePrincipal[] }>(
+export const listEnterprisePrincipals = (
+  userId: string,
+  params: PageParams = {},
+) =>
+  api.get<Page<EnterprisePrincipal>>(
     `/api/polarrag/users/${encoded(userId)}/principals`,
+    { params },
   )
 
 export const createEnterprisePrincipal = (

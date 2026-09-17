@@ -228,7 +228,7 @@ async def test_registration_and_update_validate_endpoint_fields(client):
         f"/api/instances/{created.json()['id']}/credentials",
         headers=admin_headers,
     )
-    credential_id = listed.json()[0]["id"]
+    credential_id = listed.json()["items"][0]["id"]
     endpoint_update = await http.put(
         f"/api/instances/{created.json()['id']}",
         json={

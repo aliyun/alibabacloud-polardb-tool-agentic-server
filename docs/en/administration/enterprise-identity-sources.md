@@ -4,14 +4,15 @@
 
 An enterprise identity source imports a Feishu or SharePoint tenant's directory
 facts for enabled PolarRAG Spaces. PAS encrypts every supplied secret with
-`PAS_ENCRYPTION_KEY`, refreshes the source every five minutes, and constructs
+`PAS_ENCRYPTION_KEY`, refreshes the source every 30 minutes by default, and constructs
 `acl_context` on the server. PolarRAG remains the final authority for document
 access.
 
 The console **Integration guide** first offers separate **Feishu integration**
 and **SharePoint integration** links. Selecting one shows only that provider's
 configuration steps; use `A−`, `A`, or `A+` at the top of the page to adjust
-the reading size.
+the reading size. The identity-source list shows the PAS identity-source UUID
+below each source name and provides a copy action for use in API integrations.
 
 ## Before you begin
 
@@ -226,9 +227,10 @@ In the PAS console, open **Users** > **Enterprise identity sources**:
 2. Sign in and authorize the app. PAS consumes a one-time state value, obtains
    the verified `tenant_key`, and returns to the console. It never stores the
    administrator's user access token.
-3. PAS synchronizes users, departments, and contact groups directly from
-   Feishu. The console does not expose optional ACL membership snapshot
-   configuration.
+3. PAS synchronizes users, departments, department hierarchy, and contact
+   groups directly from Feishu. Assigning an Agent to a department includes
+   users in its descendant departments. The console does not expose optional
+   ACL membership snapshot configuration.
 4. Select **Bind Space**, choose one or more enabled PolarRAG Spaces that
    should use this source, and confirm the selection. The same dialog lists
    existing bindings; select **Unbind** beside a Space to remove it. The next
@@ -238,7 +240,10 @@ In the PAS console, open **Users** > **Enterprise identity sources**:
 Until tenant verification completes and the first directory refresh succeeds,
 the source remains pending and contributes no ACL principals. A source binding
 makes synchronized principals eligible in that Space; it never grants access
-to a document by itself.
+to a document by itself. After tenant verification, a Feishu user who has not
+yet appeared in the completed directory snapshot can still sign in: PAS
+creates that user's enterprise identity during the first successful Feishu
+login.
 
 If tenant verification did not complete, first confirm that the active
 **External base URL** and the Feishu **Redirect URLs** entry exactly match the
@@ -252,15 +257,39 @@ URL or repository.
 
 ## Verify synchronization
 
-PAS makes the first background attempt within five minutes and repeats every
-five minutes. To refresh one ready source immediately, select **Sync now** in
-the source table. The administrator API's refresh, status, and failure
-semantics are documented in the
+PAS starts a verified source immediately. After one complete refresh finishes,
+it waits 30 minutes before that source is due again. An incomplete or failed
+refresh resumes from its provider cursor in the background without waiting 30
+minutes. Selecting **Sync now** while a source already runs does not create a
+second run. The administrator API's refresh, status, and failure semantics are documented in the
 [Enterprise identity source administrator API](../reference/enterprise-identity-sources-api.md).
 
+The first Feishu refresh uses two concurrent requests by default; incremental
+refreshes use one, while SharePoint uses eight. Administrators can change the
+interval and Feishu limits in **Enterprise identity synchronization** on the
+configuration page. In a Docker deployment, set
+`PAS_FEISHU_INITIAL_SYNC_CONCURRENCY`, `PAS_FEISHU_SYNC_CONCURRENCY`, or
+`PAS_SHAREPOINT_SYNC_CONCURRENCY` to an integer from `1` to `32` when capacity
+requires a different limit. Different identity sources can run in parallel,
+while each source has one database-leased in-flight run across PAS replicas.
+Consecutive Feishu or SharePoint HTTP 500/503 responses back off from one
+minute up to 30 minutes; HTTP 429 honors a bounded numeric `Retry-After`.
+Other failures wait for the configured synchronization interval. A manual refresh returns
+after its request budget and continues in the background when a full directory
+cannot finish in time. Each completed provider page is committed to the
+configured PAS metadata database immediately. The persistent `/var/run/pas`
+checkpoint stores only provider cursors and pending work, never the full
+directory; it is removed only after a complete refresh commits.
+
 `active` means the latest snapshot completed. `stale` means the latest refresh
-failed; PAS excludes that source from new ACL contexts until a later refresh
-succeeds. `last_error` contains only a sanitized error type. Check protected
+failed; PAS keeps the last complete snapshot usable during the configured
+per-source grace period, seven days by default. The administrator can change
+that grace period while editing the source. After it expires, PAS excludes the
+source until a refresh succeeds. `last_error` contains only a sanitized error
+type. A successful partial Feishu membership refresh instead records a separate
+`sync_warning` with a stable code, skipped-user count, and provider-code counts.
+The dashboard shows the warning and PAS preserves those users' previous
+memberships; the next complete warning-free refresh clears it. Check protected
 PAS logs by time; never log or share app secrets or snapshot credentials.
 
 For a test user, compare the tenant-level `user_id` and intended principal IDs
@@ -317,14 +346,19 @@ to add, disable, or delete manual Feishu, SharePoint, or native PolarRAG
 principals for that PAS user. Do not map by email or display name; select the
 synchronized identity so PAS uses its stable external user ID.
 
+After binding, the synchronized account remains visible in the **Users** table.
+Its **Enterprise identity** panel continues to show the identity as
+PAS-managed together with the target PAS user's native alias. Removing the
+mapping returns the identity to synchronized mode.
+
 ## Agent group access
 
-For normal setup, use **Configure enterprise access** on the Agent detail page
-after its PolarRAG instance is bound. The reviewed operation selects one active
-Source, synchronized groups or PAS users, and eligible Spaces together. Its
-preview distinguishes Agent-local grants, missing global Source-Space bindings,
-and existing relations that will be reused. Creating a missing Source-Space
-binding changes shared global state.
+For normal setup, use **Configure enterprise access** on the Agent detail page.
+The reviewed operation selects one active Source, synchronized groups or PAS
+users, active PolarRAG instances, and at least one enabled Space from each
+selected instance. Applying the preview atomically creates missing
+Agent-instance bindings and Source-Space bindings. The preview distinguishes
+Agent-local grants, global changes, and existing relations that will be reused.
 
 PAS evaluates current membership for every Agent access check. Removing a user
 from a group, disabling the group, or a stale source removes group-derived Agent

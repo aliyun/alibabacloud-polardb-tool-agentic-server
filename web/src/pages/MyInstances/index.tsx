@@ -1,3 +1,4 @@
+import { useFeatures } from '../../hooks/useFeatures'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Alert, Button, Drawer, Modal, Space, Table, Tag, Tooltip, Typography } from 'antd'
 import { FileSearchOutlined, UploadOutlined } from '@ant-design/icons'
@@ -7,6 +8,8 @@ import type { MyAgentConnection } from '../../api/agentConnections'
 import PageContainer from '../../components/PageContainer'
 import MCPConnections from './MCPConnections'
 import DocumentManager from './DocumentManager'
+
+const KNOWLEDGE_RESOURCE_PAGE_SIZE = 20
 
 interface AccessibleDatabaseInstance {
   db_instance_id: string
@@ -61,15 +64,21 @@ interface MyInstancesProps {
 
 export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   const { t } = useTranslation()
+  const { knowledge } = useFeatures()
   const [databaseInstances, setDatabaseInstances] = useState<
     AccessibleDatabaseInstance[]
   >([])
+  const [databasePage, setDatabasePage] = useState(1)
+  const [databaseNextCursor, setDatabaseNextCursor] = useState<string | null>(null)
+  const [databaseCursors, setDatabaseCursors] = useState<Record<number, string | null>>({ 1: null })
   const [knowledgeSpaces, setKnowledgeSpaces] = useState<
     AccessibleKnowledgeSpace[]
   >([])
   const [knowledgeResources, setKnowledgeResources] = useState<
     AccessibleKnowledgeResource[]
   >([])
+  const [knowledgeResourceTotal, setKnowledgeResourceTotal] = useState(0)
+  const [knowledgeResourceOffset, setKnowledgeResourceOffset] = useState(0)
   const [overviewLoading, setOverviewLoading] = useState(true)
   const [knowledgeLoading, setKnowledgeLoading] = useState(false)
   const [overviewError, setOverviewError] = useState<string | null>(null)
@@ -85,14 +94,24 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   const [selectedAgent, setSelectedAgent] = useState<MyAgentConnection | null>(null)
   const resourceRequest = useRef(0)
 
-  const loadOverview = useCallback(() => {
+  const loadOverview = useCallback((page = 1, cursor: string | null = null) => {
     setOverviewLoading(true)
     setOverviewError(null)
     return api
-      .get('/api/me/resources')
+      .get('/api/me/resources', {
+        params: { database_cursor: cursor, database_limit: 20 },
+      })
       .then((response) => {
         const resources = response.data.knowledge_resources || []
         setDatabaseInstances(response.data.database_instances || [])
+        setDatabasePage(page)
+        setDatabaseNextCursor(response.data.database_next_cursor ?? null)
+        if (response.data.database_next_cursor) {
+          setDatabaseCursors((current) => ({
+            ...current,
+            [page + 1]: response.data.database_next_cursor,
+          }))
+        }
         setKnowledgeSpaces(uniqueKnowledgeSpaces(resources))
       })
       .catch((requestError) => {
@@ -106,15 +125,23 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
       .finally(() => setOverviewLoading(false))
   }, [])
 
-  const loadKnowledgeBases = useCallback((agentId: string) => {
+  const loadKnowledgeBases = useCallback((agentId: string, offset = 0) => {
     const requestId = ++resourceRequest.current
     setKnowledgeLoading(true)
     setKnowledgeError(null)
     return api
-      .get('/api/me/resources', { params: { agent_id: agentId } })
+      .get('/api/me/resources', {
+        params: {
+          agent_id: agentId,
+          knowledge_offset: offset,
+          knowledge_limit: KNOWLEDGE_RESOURCE_PAGE_SIZE,
+        },
+      })
       .then((response) => {
         if (requestId !== resourceRequest.current) return
         setKnowledgeResources(response.data.knowledge_resources || [])
+        setKnowledgeResourceTotal(response.data.knowledge_resource_total || 0)
+        setKnowledgeResourceOffset(response.data.knowledge_resource_offset || offset)
       })
       .catch((requestError) => {
         if (requestId !== resourceRequest.current) return
@@ -137,6 +164,8 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   const selectKnowledgeBases = (agent: MyAgentConnection) => {
     setSelectedAgent(agent)
     setKnowledgeResources([])
+    setKnowledgeResourceTotal(0)
+    setKnowledgeResourceOffset(0)
     setKnowledgeError(null)
     setUploadResource(null)
     setManageResource(null)
@@ -148,6 +177,8 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
     setKnowledgeLoading(false)
     setKnowledgeError(null)
     setKnowledgeResources([])
+    setKnowledgeResourceTotal(0)
+    setKnowledgeResourceOffset(0)
     setSelectedAgent(null)
     setUploadResource(null)
     setManageResource(null)
@@ -296,10 +327,24 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
           columns={databaseColumns}
           rowKey="db_instance_id"
           loading={overviewLoading}
-          pagination={false}
+          pagination={{
+            current: databasePage,
+            pageSize: 20,
+            total:
+              (databasePage - 1) * 20
+              + databaseInstances.length
+              + (databaseNextCursor ? 1 : 0),
+            showSizeChanger: false,
+            onChange: (page) => {
+              const cursor = databaseCursors[page]
+              if (page < databasePage || cursor !== undefined) {
+                void loadOverview(page, cursor ?? null)
+              }
+            },
+          }}
           locale={{ emptyText: 'No accessible database instances' }}
         />
-        <Typography.Text strong>{t('myInstances.knowledgeSpaces')}</Typography.Text>
+        {knowledge && <><Typography.Text strong>{t('myInstances.knowledgeSpaces')}</Typography.Text>
         <Table
           dataSource={knowledgeSpaces}
           columns={knowledgeSpaceColumns}
@@ -307,7 +352,7 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
           loading={overviewLoading}
           pagination={{ pageSize: 10, showSizeChanger: true }}
           locale={{ emptyText: t('myInstances.noAccessibleKnowledgeSpaces') }}
-        />
+        /></>}
         <Drawer
           title={
             selectedAgent
@@ -316,7 +361,7 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
                 })
               : undefined
           }
-          open={selectedAgent !== null}
+          open={knowledge && selectedAgent !== null}
           width={960}
           onClose={closeKnowledgeBases}
         >
@@ -327,14 +372,27 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
               columns={knowledgeColumns}
               rowKey="knowledge_resource_id"
               loading={knowledgeLoading}
-              pagination={{ pageSize: 10, showSizeChanger: true }}
+              pagination={{
+                current: Math.floor(knowledgeResourceOffset / KNOWLEDGE_RESOURCE_PAGE_SIZE) + 1,
+                pageSize: KNOWLEDGE_RESOURCE_PAGE_SIZE,
+                total: knowledgeResourceTotal,
+                showSizeChanger: false,
+                onChange: (page) => {
+                  if (selectedAgent) {
+                    void loadKnowledgeBases(
+                      selectedAgent.agent_id,
+                      (page - 1) * KNOWLEDGE_RESOURCE_PAGE_SIZE,
+                    )
+                  }
+                },
+              }}
               locale={{ emptyText: t('myInstances.noAccessibleKnowledgeResources') }}
             />
           </Space>
         </Drawer>
         <Modal
           title={t('myInstances.uploadDocument')}
-          open={uploadResource !== null}
+          open={knowledge && uploadResource !== null}
           okText={t('myInstances.upload')}
           okButtonProps={{ disabled: !uploadFile }}
           confirmLoading={uploading}

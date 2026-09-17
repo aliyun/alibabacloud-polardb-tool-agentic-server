@@ -43,6 +43,7 @@ export interface EnterpriseAccessSelection {
   all_synced_users: boolean
   directory_group_ids: string[]
   pas_user_ids: string[]
+  polarrag_instance_ids: string[]
   knowledge_space_ids: string[]
 }
 

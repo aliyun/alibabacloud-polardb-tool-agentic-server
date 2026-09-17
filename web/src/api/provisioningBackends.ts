@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 
 export type ProvisioningBackendStatus = 'active' | 'draining' | 'disabled'
 export type ProvisioningBackendType = 'multitenant' | 'dedicated_pool'
@@ -61,8 +62,8 @@ export interface UpdateProvisioningBackendInput {
   status?: 'active'
 }
 
-export const listProvisioningBackends = () =>
-  api.get<ProvisioningBackend[]>('/api/provisioning-backends')
+export const listProvisioningBackends = (params: PageParams = {}) =>
+  api.get<Page<ProvisioningBackend>>('/api/provisioning-backends', { params })
 
 export const createProvisioningBackend = (
   input: CreateProvisioningBackendInput,

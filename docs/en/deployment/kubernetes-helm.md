@@ -53,6 +53,49 @@ Run the printed NOTES bootstrap procedure to copy the token from one selected
 Pod without printing it. The token claim is shared in the metadata database,
 while `/var/run/pas` is Pod-local.
 
+## Optional managed lifecycle listener
+
+The Chart keeps the management listener disabled by default. A control plane
+must allocate both ports and render them as environment variables; the PAS
+command remains `serve` and does not receive port arguments. For an isolated
+control-plane network, enable a separate management Service with values such
+as:
+
+```bash
+helm upgrade --install pas deploy/helm/polardb-agentic-server \
+  --namespace pas-system \
+  --set existingSecret=pas-bootstrap \
+  --set service.port=28080 \
+  --set management.enabled=true \
+  --set management.port=28081 \
+  --set management.authMode=trusted-network \
+  --set management.managedIdentity.instanceId=pmcp-example \
+  --set management.managedIdentity.generation=1 \
+  --set management.service.enabled=true
+```
+
+The Chart rejects equal business and management ports. The management Service
+is separate from the business Service, but the Chart does not create a
+NetworkPolicy: add a deny-by-default policy that admits only the control-plane
+namespace and workload identity. Never attach this Service to the business
+Ingress or load balancer.
+
+If that network isolation cannot be guaranteed, use `bearer-token`. Create a
+Secret from a restricted file without placing the token on the command line,
+then set `management.authMode=bearer-token` and
+`management.tokenSecret.name=pas-management-token`:
+
+```bash
+kubectl create secret generic pas-management-token \
+  --namespace pas-system \
+  --from-file=token=./management-token
+```
+
+Managed initialization never prints or returns a Bootstrap Token. It creates
+the administrator in `RESET_REQUIRED` state; after instance activation, the
+customer sets the first password through the PolarDB customer OpenAPI. The
+internal PAS endpoints are only for the lifecycle control plane.
+
 ## Rendered manifests and `kubectl apply`
 
 Helm hook ordering does not run when its rendered YAML is passed to

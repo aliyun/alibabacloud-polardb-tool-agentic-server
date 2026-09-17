@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     BigInteger,
@@ -19,6 +20,11 @@ from server.models.base import Base, TimestampMixin, generate_uuid
 
 MAX_CONFIG_DOCUMENT_BYTES = 1_048_576
 _large_text = Text().with_variant(mysql.LONGTEXT(), "mysql")
+
+
+class ConfigReceiptStatus(StrEnum):
+    IN_PROGRESS = "IN_PROGRESS"
+    SUCCEEDED = "SUCCEEDED"
 
 
 class SystemConfig(TimestampMixin, Base):
@@ -79,4 +85,27 @@ class ConfigOperationReceipt(TimestampMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    lease_owner: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    instance_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    instance_generation: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
 
+
+class ManagedInstanceBinding(TimestampMixin, Base):
+    __tablename__ = "managed_instance_bindings"
+
+    instance_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    instance_generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False
+    )
+    bound_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )

@@ -248,7 +248,7 @@ async def ro_client(setup_readonly):
 @pytest.fixture
 def rw_headers(setup_readwrite):
     token = create_access_token(
-        {"sub": setup_readwrite["user"].id, "role": "member"}
+        {"sub": setup_readwrite["user"].id, "role": "member", "credential_epoch": setup_readwrite["user"].credential_epoch}
     )
     return {"Authorization": f"Bearer {token}"}
 
@@ -256,7 +256,7 @@ def rw_headers(setup_readwrite):
 @pytest.fixture
 def ro_headers(setup_readonly):
     token = create_access_token(
-        {"sub": setup_readonly["user"].id, "role": "member"}
+        {"sub": setup_readonly["user"].id, "role": "member", "credential_epoch": setup_readonly["user"].credential_epoch}
     )
     return {"Authorization": f"Bearer {token}"}
 

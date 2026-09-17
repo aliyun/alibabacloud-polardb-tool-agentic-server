@@ -16,8 +16,12 @@ from pydantic import AnyHttpUrl, Field
 from starlette.applications import Starlette
 
 from server.auth.auth_routes import handle_login_page, handle_login_callback, handle_sso_redirect, handle_oidc_callback
+from server.auth.token_claims import access_token_agent_id
+from server.auth.personal_access import is_personal_access
 from server.auth.oauth_provider import (
+    OAuthMetadataCompatibilityMiddleware,
     OAuthRedirectURIExactMatchMiddleware,
+    OAuthTokenExchangeMiddleware,
     PASAuthProvider,
 )
 from server.auth.rate_limit import (
@@ -25,7 +29,6 @@ from server.auth.rate_limit import (
     reset_auth_rate_limiters,
 )
 from server.auth.principal import (
-    get_current_principal,
     PrincipalAuthenticationError,
     PrincipalDisabled,
     PrincipalKind,
@@ -36,6 +39,10 @@ from server.core.connection_cache import ConnectionCache
 from server.core.db_instance_metrics import (
     DBInstanceMetricsMiddleware,
     emit_mcp_omitted_provisioning_mode,
+)
+from server.core.polarrag_governance import reset_polarrag_tool_governor
+from server.core.polarrag_governance_http import (
+    PolarRAGGovernanceHTTPMiddleware,
 )
 from server.core.sql_gateway import SQLGateway
 from server.db.engine import get_session_factory
@@ -57,14 +64,15 @@ from server.mcp.tools.db_instance_handler import (
     handle_delete_db_instance,
     handle_describe_db_instance,
     handle_list_db_instances,
-    resolve_request_principal,
     reset_describe_rate_limiters,
 )
-from server.mcp.tools.polarrag import (
-    POLARRAG_TOOL_NAMES,
-    register_polarrag_tools,
+from server.mcp.knowledge_tools import POLARRAG_TOOL_NAMES
+from server.mcp.workspace_context import (
+    MCPWorkspaceContext,
+    MCPWorkspaceUnavailable,
+    resolve_mcp_workspace_context,
 )
-from server.models import Agent, ProvisioningMode, User
+from server.models import ProvisioningMode, User
 
 logger = logging.getLogger(__name__)
 
@@ -108,24 +116,8 @@ async def _get_current_user(
     return actor if isinstance(actor, User) else None
 
 
-async def _get_current_sql_actor(
-    session,
-    subject: str,
-) -> User | Agent | None:  # type: ignore[type-arg]
-    try:
-        principal = await get_current_principal(session, subject)
-    except PrincipalAuthenticationError:
-        return None
-    model = User if principal.kind == PrincipalKind.USER else Agent
-    return await session.get(model, principal.id)
-
-
-def _actor_kind(actor: User | Agent) -> PrincipalKind:
-    return (
-        PrincipalKind.AGENT
-        if type(actor) is Agent
-        else PrincipalKind.USER
-    )
+def _workspace_error_result(exc: MCPWorkspaceUnavailable) -> CallToolResult:
+    return _json_error_result(exc.code, exc.message)
 
 
 _AUTH_ERROR = json.dumps({"error": "AUTH_REQUIRED", "message": "Authentication required."})
@@ -286,10 +278,12 @@ def _build_mcp_server() -> AuthorizedFastMCP:
     # URL is configured.
     base_url = _mcp_oauth_base_url(config.server.public_base_url)
 
+    global _auth_provider
     provider = PASAuthProvider(
         session_factory=get_session_factory(),
         config=config,
     )
+    _auth_provider = provider
 
     mcp = AuthorizedFastMCP(
         "alibabacloud polardb tool agentic server",
@@ -353,17 +347,23 @@ def _build_mcp_server() -> AuthorizedFastMCP:
 
         factory = get_session_factory()
         async with factory() as session:
-            actor = await _get_current_sql_actor(
-                session,
-                access_token.subject,
-            )
-            if actor is None:
+            try:
+                workspace = await resolve_mcp_workspace_context(
+                    session,
+                    access_token.subject,
+                    access_token_agent_id(access_token),
+                    personal=is_personal_access(access_token),
+                )
+            except MCPWorkspaceUnavailable as exc:
+                return _workspace_error_result(exc)
+            except PrincipalAuthenticationError:
                 if branch is not None:
                     return _json_error_result(
                         "AUTH_REQUIRED",
                         "Principal not found or disabled.",
                     )
                 return _USER_ERROR
+            actor = workspace.sql_actor
 
             started_at = time.perf_counter()
             result = await handle_run_sql(
@@ -377,8 +377,11 @@ def _build_mcp_server() -> AuthorizedFastMCP:
             logger.info(
                 "tool.run_sql.completed",
                 extra={
-                    "actor_kind": _actor_kind(actor).value,
-                    "actor_id": actor.id,
+                    "actor_kind": (
+                        workspace.authenticated_principal.kind.value
+                    ),
+                    "actor_id": workspace.authenticated_principal.id,
+                    "resource_agent_id": workspace.agent.id if workspace.agent else None,
                     "instance_id": instance_id,
                     "statement_count": 1,
                     "confirm": confirm,
@@ -467,8 +470,7 @@ def _build_mcp_server() -> AuthorizedFastMCP:
 
     @mcp.tool(
         description=(
-            "Delete a PolarDB branch. This is destructive; never call it "
-            "autonomously and ask the user first."
+            "Delete a PolarDB branch. This is destructive; never call it autonomously and ask the user first."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=False,
@@ -564,12 +566,18 @@ def _build_mcp_server() -> AuthorizedFastMCP:
 
         factory = get_session_factory()
         async with factory() as session:
-            actor = await _get_current_sql_actor(
-                session,
-                access_token.subject,
-            )
-            if actor is None:
+            try:
+                workspace = await resolve_mcp_workspace_context(
+                    session,
+                    access_token.subject,
+                    access_token_agent_id(access_token),
+                    personal=is_personal_access(access_token),
+                )
+            except MCPWorkspaceUnavailable as exc:
+                return _workspace_error_result(exc)
+            except PrincipalAuthenticationError:
                 return _USER_ERROR
+            actor = workspace.sql_actor
 
             started_at = time.perf_counter()
             result = await handle_run_sql_transaction(
@@ -583,8 +591,11 @@ def _build_mcp_server() -> AuthorizedFastMCP:
             logger.info(
                 "tool.run_sql_transaction.completed",
                 extra={
-                    "actor_kind": _actor_kind(actor).value,
-                    "actor_id": actor.id,
+                    "actor_kind": (
+                        workspace.authenticated_principal.kind.value
+                    ),
+                    "actor_id": workspace.authenticated_principal.id,
+                    "resource_agent_id": workspace.agent.id if workspace.agent else None,
                     "instance_id": instance_id,
                     "statement_count": len(sql_statements),
                     "confirm": confirm,
@@ -622,12 +633,18 @@ def _build_mcp_server() -> AuthorizedFastMCP:
 
         factory = get_session_factory()
         async with factory() as session:
-            actor = await _get_current_sql_actor(
-                session,
-                access_token.subject,
-            )
-            if actor is None:
+            try:
+                workspace = await resolve_mcp_workspace_context(
+                    session,
+                    access_token.subject,
+                    access_token_agent_id(access_token),
+                    personal=is_personal_access(access_token),
+                )
+            except MCPWorkspaceUnavailable as exc:
+                return _workspace_error_result(exc)
+            except PrincipalAuthenticationError:
                 return _USER_ERROR
+            actor = workspace.sql_actor
 
             started_at = time.perf_counter()
             result = await handle_describe_schema(
@@ -644,8 +661,11 @@ def _build_mcp_server() -> AuthorizedFastMCP:
             logger.info(
                 "tool.describe_schema.completed",
                 extra={
-                    "actor_kind": _actor_kind(actor).value,
-                    "actor_id": actor.id,
+                    "actor_kind": (
+                        workspace.authenticated_principal.kind.value
+                    ),
+                    "actor_id": workspace.authenticated_principal.id,
+                    "resource_agent_id": workspace.agent.id if workspace.agent else None,
                     "instance_id": instance_id,
                     "duration_ms": int(
                         (time.perf_counter() - started_at) * 1000
@@ -657,11 +677,23 @@ def _build_mcp_server() -> AuthorizedFastMCP:
             )
             return response
 
-    async def _resolve_db_instance_principal(
+    async def _resolve_db_instance_context(
         session,
-    ) -> Any | CallToolResult:
+    ) -> MCPWorkspaceContext | CallToolResult:
         try:
-            return await resolve_request_principal(session)
+            access_token = get_access_token()
+            if access_token is None or not access_token.subject:
+                raise PrincipalAuthenticationError(
+                    "Authentication required."
+                )
+            return await resolve_mcp_workspace_context(
+                session,
+                access_token.subject,
+                access_token_agent_id(access_token),
+                personal=is_personal_access(access_token),
+            )
+        except MCPWorkspaceUnavailable as exc:
+            return _workspace_error_result(exc)
         except PrincipalDisabled:
             return db_instance_result(
                 {
@@ -697,23 +729,24 @@ def _build_mcp_server() -> AuthorizedFastMCP:
     ) -> CallToolResult:
         factory = get_session_factory()
         async with factory() as session:
-            principal = await _resolve_db_instance_principal(session)
-            if isinstance(principal, CallToolResult):
-                return principal
+            context = await _resolve_db_instance_context(session)
+            if isinstance(context, CallToolResult):
+                return context
             result = await handle_list_db_instances(
                 session,
-                principal,
+                context.resource_principal,
+                audit_principal=context.authenticated_principal,
                 cursor=cursor,
                 limit=limit,
                 db_type=db_type,
                 source=source,
                 status=status,
+                personal=context.agent is None,
             )
             logger.info(
-                "tool.list_db_instances | principal_kind=%s "
-                "principal_id=%s is_error=%s",
-                principal.kind.value,
-                principal.id,
+                "tool.list_db_instances | principal_kind=%s principal_id=%s is_error=%s",
+                context.authenticated_principal.kind.value,
+                context.authenticated_principal.id,
                 result.isError,
             )
             return result
@@ -738,22 +771,22 @@ def _build_mcp_server() -> AuthorizedFastMCP:
             provisioning_mode = ProvisioningMode.MULTITENANT
         factory = get_session_factory()
         async with factory() as session:
-            principal = await _resolve_db_instance_principal(session)
-            if isinstance(principal, CallToolResult):
-                return principal
+            context = await _resolve_db_instance_context(session)
+            if isinstance(context, CallToolResult):
+                return context
             result = await handle_create_db_instance(
                 session,
-                principal,
+                context.resource_principal,
+                audit_principal=context.authenticated_principal,
                 client_token=client_token,
                 db_type=db_type,
                 name=name,
                 provisioning_mode=provisioning_mode,
             )
             logger.info(
-                "tool.create_db_instance | principal_kind=%s "
-                "principal_id=%s is_error=%s",
-                principal.kind.value,
-                principal.id,
+                "tool.create_db_instance | principal_kind=%s principal_id=%s is_error=%s",
+                context.authenticated_principal.kind.value,
+                context.authenticated_principal.id,
                 result.isError,
             )
             return result
@@ -772,19 +805,20 @@ def _build_mcp_server() -> AuthorizedFastMCP:
     ) -> CallToolResult:
         factory = get_session_factory()
         async with factory() as session:
-            principal = await _resolve_db_instance_principal(session)
-            if isinstance(principal, CallToolResult):
-                return principal
+            context = await _resolve_db_instance_context(session)
+            if isinstance(context, CallToolResult):
+                return context
             result = await handle_describe_db_instance(
                 session,
-                principal,
+                context.resource_principal,
                 db_instance_id,
+                audit_principal=context.authenticated_principal,
+                personal=context.agent is None,
             )
             logger.info(
-                "tool.describe_db_instance | principal_kind=%s "
-                "principal_id=%s db_instance_id=%s is_error=%s",
-                principal.kind.value,
-                principal.id,
+                "tool.describe_db_instance | principal_kind=%s principal_id=%s db_instance_id=%s is_error=%s",
+                context.authenticated_principal.kind.value,
+                context.authenticated_principal.id,
                 db_instance_id,
                 result.isError,
             )
@@ -804,39 +838,49 @@ def _build_mcp_server() -> AuthorizedFastMCP:
     ) -> CallToolResult:
         factory = get_session_factory()
         async with factory() as session:
-            principal = await _resolve_db_instance_principal(session)
-            if isinstance(principal, CallToolResult):
-                return principal
+            context = await _resolve_db_instance_context(session)
+            if isinstance(context, CallToolResult):
+                return context
             result = await handle_delete_db_instance(
-                session, principal, db_instance_id
+                session,
+                context.resource_principal,
+                db_instance_id,
+                audit_principal=context.authenticated_principal,
             )
             logger.info(
-                "tool.delete_db_instance | principal_kind=%s "
-                "principal_id=%s db_instance_id=%s is_error=%s",
-                principal.kind.value,
-                principal.id,
+                "tool.delete_db_instance | principal_kind=%s principal_id=%s db_instance_id=%s is_error=%s",
+                context.authenticated_principal.kind.value,
+                context.authenticated_principal.id,
                 db_instance_id,
                 result.isError,
             )
             return result
 
-    register_polarrag_tools(mcp)
-    _forbid_extra_tool_arguments(mcp, {
-        "list_branches",
-        "create_branch",
-        "delete_branch",
-        "list_db_instances",
-        "create_db_instance",
-        "describe_db_instance",
-        "delete_db_instance",
-    } | set(POLARRAG_TOOL_NAMES))
+    from server.features.knowledge import loaded
+    if loaded():
+        from server.mcp.tools.polarrag import register_polarrag_tools
+        register_polarrag_tools(mcp)
+    _forbid_extra_tool_arguments(
+        mcp,
+        {
+            "list_branches",
+            "create_branch",
+            "delete_branch",
+            "list_db_instances",
+            "create_db_instance",
+            "describe_db_instance",
+            "delete_db_instance",
+        }
+        | set(POLARRAG_TOOL_NAMES),
+    )
     _configure_db_instance_tool_schemas(mcp)
 
     return mcp
 
 
 _mcp_server: AuthorizedFastMCP | None = None
-_mcp_app: Starlette | None = None
+_mcp_app: Starlette | PolarRAGGovernanceHTTPMiddleware | None = None
+_auth_provider: PASAuthProvider | None = None
 
 
 class LazyMCPApplication:
@@ -853,22 +897,34 @@ def _get_mcp_server() -> AuthorizedFastMCP:
     return _mcp_server
 
 
-def create_mcp_app() -> Starlette | DBInstanceMetricsMiddleware:
+def create_mcp_app() -> Starlette | PolarRAGGovernanceHTTPMiddleware:
     global _mcp_app
     if _mcp_app is None:
         mcp = _get_mcp_server()
+        if _auth_provider is None:
+            raise RuntimeError("MCP OAuth provider is not initialized")
         _mcp_app = cast(
             Any,
             AuthEndpointRateLimitMiddleware(
-                OAuthRedirectURIExactMatchMiddleware(
-                    DBInstanceMetricsMiddleware(
-                        mcp.streamable_http_app()
-                    ),
-                    get_session_factory(),
+                OAuthMetadataCompatibilityMiddleware(
+                    OAuthRedirectURIExactMatchMiddleware(
+                        OAuthTokenExchangeMiddleware(
+                            PolarRAGGovernanceHTTPMiddleware(
+                                DBInstanceMetricsMiddleware(
+                                    mcp.streamable_http_app()
+                                )
+                            ),
+                            _auth_provider,
+                        ),
+                        get_session_factory(),
+                        _auth_provider,
+                    )
                 )
             ),
         )
-    return _mcp_app
+    from server.auth.personal_access import PersonalMCPMiddleware
+    from server.configuration.runtime import RuntimeSectionProxy
+    return PersonalMCPMiddleware(_mcp_app, RuntimeSectionProxy(get_config))
 
 
 def get_session_manager() -> StreamableHTTPSessionManager:
@@ -877,20 +933,20 @@ def get_session_manager() -> StreamableHTTPSessionManager:
 
 
 def reset_mcp() -> None:
-    global _mcp_server, _mcp_app
+    global _mcp_server, _mcp_app, _auth_provider
     _mcp_server = None
     _mcp_app = None
+    _auth_provider = None
     reset_describe_rate_limiters()
     reset_auth_rate_limiters()
+    reset_polarrag_tool_governor()
 
 
 @asynccontextmanager
 async def mcp_lifespan():
     from server.configuration.runtime import RuntimeSectionProxy
 
-    cache = ConnectionCache(
-        RuntimeSectionProxy(
-            lambda: get_config().polardb.connection_pool
+    cache = ConnectionCache(RuntimeSectionProxy(lambda: get_config().polardb.connection_pool
         )
     )
     gateway = SQLGateway(cache)

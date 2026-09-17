@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -17,6 +18,17 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.models.base import Base, TimestampMixin, generate_uuid
+
+
+DEFAULT_IDENTITY_SOURCE_STALE_AFTER_SECONDS = 7 * 24 * 60 * 60
+_PRINCIPAL_SNAPSHOT_ID_NAMESPACE = uuid.UUID(
+    "1c3cd655-5acc-4b3b-9af2-25cbfdef2324"
+)
+
+
+def _principal_snapshot_id(*parts: str) -> str:
+    encoded = "".join(f"{len(part)}:{part}" for part in parts)
+    return str(uuid.uuid5(_PRINCIPAL_SNAPSHOT_ID_NAMESPACE, encoded))
 
 
 class IdentitySourceProvider(str, enum.Enum):
@@ -37,7 +49,7 @@ class EnterpriseDirectoryEntryStatus(str, enum.Enum):
     DISABLED = "disabled"
 
 
-class EnterpriseDirectoryMembershipType(str, enum.Enum):
+class IdentitySourceGroupMembershipType(str, enum.Enum):
     USER = "user"
     GROUP = "group"
 
@@ -80,8 +92,16 @@ class EnterpriseIdentitySource(TimestampMixin, Base):
     )
     config_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    stale_after_seconds: Mapped[int] = mapped_column(Integer, default=1800)
+    stale_after_seconds: Mapped[int] = mapped_column(
+        Integer,
+        default=DEFAULT_IDENTITY_SOURCE_STALE_AFTER_SECONDS,
+    )
     last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    sync_warning_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sync_worker_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sync_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sync_retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    sync_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @classmethod
     def create(
@@ -218,7 +238,10 @@ class EnterpriseDirectoryGroup(TimestampMixin, Base):
     )
 
 
-class EnterpriseDirectoryMembership(TimestampMixin, Base):
+class IdentitySourceGroupMembership(TimestampMixin, Base):
+    """Connector-owned mirror used to expand provider group membership."""
+
+    # Keep the published physical table name for rolling-upgrade compatibility.
     __tablename__ = "enterprise_directory_memberships"
     __table_args__ = (
         UniqueConstraint(
@@ -228,20 +251,102 @@ class EnterpriseDirectoryMembership(TimestampMixin, Base):
             "external_member_id",
             name="uq_directory_membership",
         ),
-        Index("ix_directory_membership_member", "identity_source_id", "member_type", "external_member_id"),
+        Index(
+            "ix_directory_membership_member",
+            "identity_source_id",
+            "member_type",
+            "external_member_id",
+        ),
+        Index(
+            "ix_enterprise_directory_memberships_identity_source_id",
+            "identity_source_id",
+        ),
+        Index(
+            "ix_identity_source_group_memberships_prune",
+            "identity_source_id",
+            "updated_at",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     identity_source_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("enterprise_identity_sources.id", ondelete="CASCADE"), index=True
+        String(36), ForeignKey("enterprise_identity_sources.id", ondelete="CASCADE")
     )
     external_group_id: Mapped[str] = mapped_column(String(255))
-    member_type: Mapped[EnterpriseDirectoryMembershipType] = mapped_column(
+    member_type: Mapped[IdentitySourceGroupMembershipType] = mapped_column(
         Enum(
-            EnterpriseDirectoryMembershipType,
+            IdentitySourceGroupMembershipType,
             native_enum=False,
             length=16,
             values_callable=lambda values: [item.value for item in values],
         )
     )
     external_member_id: Mapped[str] = mapped_column(String(255))
+
+
+class IdentitySourceUserPrincipalSnapshotEntry(TimestampMixin, Base):
+    """Externally pushed per-user full principal snapshot entry."""
+
+    __tablename__ = "identity_source_user_principal_snapshot_entries"
+    __table_args__ = (
+        Index(
+            "ix_identity_source_user_principal_snapshot_key",
+            "identity_source_id",
+            "external_user_id",
+            "principal_type",
+            "principal_id",
+        ),
+        Index(
+            "ix_identity_source_user_principal_snapshot_principal",
+            "identity_source_id",
+            "principal_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    identity_source_id: Mapped[str] = mapped_column(
+        String(36),
+    )
+    external_user_id: Mapped[str] = mapped_column(String(255))
+    principal_type: Mapped[EnterpriseDirectoryPrincipalType] = mapped_column(
+        Enum(
+            EnterpriseDirectoryPrincipalType,
+            native_enum=False,
+            length=16,
+            values_callable=lambda values: [item.value for item in values],
+        )
+    )
+    principal_id: Mapped[str] = mapped_column(String(255))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        identity_source_id: str,
+        external_user_id: str,
+        principal_type: EnterpriseDirectoryPrincipalType,
+        principal_id: str,
+        expires_at: datetime | None,
+    ) -> IdentitySourceUserPrincipalSnapshotEntry:
+        return cls(
+            id=_principal_snapshot_id(
+                "principal-snapshot",
+                identity_source_id,
+                external_user_id,
+                principal_type.value,
+                principal_id,
+            ),
+            identity_source_id=identity_source_id,
+            external_user_id=external_user_id,
+            principal_type=principal_type,
+            principal_id=principal_id,
+            expires_at=expires_at,
+        )
+
+
+# Compatibility aliases keep existing call sites stable while the persisted
+# names clearly distinguish connector mirrors from externally pushed snapshots.
+EnterpriseDirectoryMembershipType = IdentitySourceGroupMembershipType
+EnterpriseDirectoryMembership = IdentitySourceGroupMembership
+ExternalUserPrincipalMembership = IdentitySourceUserPrincipalSnapshotEntry

@@ -490,10 +490,19 @@ async def upload_cleanup_loop(
     session_factory,
     *,
     interval_seconds: float = CLEANUP_INTERVAL_SECONDS,
+    feature=None,
 ) -> None:
     while True:
         try:
-            await sweep_expired_uploads(session_factory)
+            if feature is None:
+                await sweep_expired_uploads(session_factory)
+            else:
+                from server.features.knowledge import KnowledgeUnavailable
+                try:
+                    async with feature.operation("upload_cleanup", cleanup=True):
+                        await sweep_expired_uploads(session_factory)
+                except KnowledgeUnavailable:
+                    pass
         except Exception:
             logger.exception("PolarRAG upload cleanup sweep failed")
         await asyncio.sleep(interval_seconds)

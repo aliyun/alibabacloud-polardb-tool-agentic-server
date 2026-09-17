@@ -73,6 +73,19 @@ def test_secret_bearing_digest_is_keyed_and_canonical() -> None:
     )
 
 
+def test_managed_digest_preserves_receipt_compatibility() -> None:
+    crypto = ConfigCrypto(b"r" * 32)
+    expected = (
+        "7f58de363333373404a7494c705ecea5"
+        "8590a9c31860fe9a3eeee34661628c08"
+    )
+
+    assert crypto.managed_digest(
+        "request-v1",
+        {"setting": "managed-secret", "count": 2},
+    ) == expected
+
+
 def test_nested_secret_tree_keeps_plaintext_outside_runtime_projection() -> None:
     crypto = ConfigCrypto(b"r" * 32)
     spec = SecretFieldSpec("direct_ak.access_key_id", display_mask=True)

@@ -173,7 +173,7 @@ async def client(setup_data):
 
 @pytest.fixture
 def auth_headers(setup_data):
-    token = create_access_token({"sub": setup_data["admin"].id, "role": "admin"})
+    token = create_access_token({"sub": setup_data["admin"].id, "role": "admin", "credential_epoch": setup_data["admin"].credential_epoch})
     return {"Authorization": f"Bearer {token}"}
 
 

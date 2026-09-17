@@ -63,6 +63,26 @@ class TestPasswordHashing:
 
 
 class TestBuiltinAuth:
+    async def test_reset_required_user_is_rejected(self, session: AsyncSession):
+        from server.models import PasswordState
+
+        user = User(
+            external_id="reset-user",
+            display_name="Reset User",
+            auth_provider=AuthProvider.BUILTIN,
+            password_hash=hash_password("correct-password"),
+            password_state=PasswordState.RESET_REQUIRED,
+        )
+        session.add(user)
+        await session.commit()
+
+        assert (
+            await authenticate_builtin(
+                session, "reset-user", "correct-password"
+            )
+            is None
+        )
+
     async def test_authenticate_valid(self, session: AsyncSession):
         user = User(
             external_id="testuser",
@@ -125,7 +145,7 @@ class TestChangePassword:
 
             resp = await client.post("/auth/change-password", json={
                 "current_password": "oldpass123",
-                "new_password": "newpass456",
+                "new_password": "newpass456789",
             }, headers=headers)
             assert resp.status_code == 200
             assert "session_token" not in client.cookies
@@ -138,8 +158,17 @@ class TestChangePassword:
             assert len(refresh_tokens) == 2
             assert all(record.revoked_at is not None for record in refresh_tokens)
 
-            login2 = await client.post("/auth/login", json={"username": "admin", "password": "newpass456"})
+            assert (await client.get("/auth/me", headers=headers)).status_code == 401
+            assert (await client.post("/auth/refresh")).status_code == 401
+
+            login2 = await client.post("/auth/login", json={"username": "admin", "password": "newpass456789"})
             assert login2.status_code == 200
+
+        async with engine_mod._session_factory() as s:
+            user = await s.scalar(select(User).where(User.external_id == "admin"))
+            assert user is not None
+            assert user.credential_epoch == 2
+            assert verify_password("newpass456789", user.password_hash or "")
 
     async def test_change_password_wrong_current(self, engine):
         from httpx import ASGITransport, AsyncClient
@@ -168,9 +197,18 @@ class TestChangePassword:
 
             resp = await client.post("/auth/change-password", json={
                 "current_password": "wrongpass",
-                "new_password": "newpass456",
+                "new_password": "newpass456789",
             }, headers=headers)
             assert resp.status_code == 401
+
+            assert (await client.get("/auth/me", headers=headers)).status_code == 200
+            assert (await client.post("/auth/refresh")).status_code == 200
+
+        async with engine_mod._session_factory() as s:
+            user = await s.scalar(select(User).where(User.external_id == "admin"))
+            assert user is not None
+            assert user.credential_epoch == 1
+            assert verify_password("thepass12", user.password_hash or "")
 
 
 class TestResetPassword:
@@ -208,11 +246,11 @@ class TestResetPassword:
             headers = {"Authorization": f"Bearer {token}"}
 
             resp = await client.put(f"/api/users/{member_id}/reset-password", json={
-                "new_password": "resetpass1",
+                "new_password": "resetpass1234",
             }, headers=headers)
             assert resp.status_code == 200
 
-            login2 = await client.post("/auth/login", json={"username": "member1", "password": "resetpass1"})
+            login2 = await client.post("/auth/login", json={"username": "member1", "password": "resetpass1234"})
             assert login2.status_code == 200
 
 
@@ -245,7 +283,7 @@ class TestAuthDependencies:
         session.add(user)
         await session.commit()
 
-        create_access_token({"sub": user.id, "role": "member"})
+        create_access_token({"sub": user.id, "role": "member", "credential_epoch": user.credential_epoch})
 
         # We need to test via the HTTP layer to properly test the dependency
         # This is covered in the integration test below

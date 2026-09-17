@@ -52,6 +52,12 @@ async def test_repeated_activate_returns_stored_result(context) -> None:
     first = await context.service.execute(command, ADMIN)
     second = await context.service.execute(command, ADMIN)
     assert second == first
+    receipt = await context.repository.get_receipt(
+        actor_scope=ADMIN.scope,
+        idempotency_key_hash=context.service._token_hash("same"),
+    )
+    assert receipt is not None
+    assert receipt.status == "SUCCEEDED"
 
 
 async def test_idempotency_key_reuse_with_other_body_conflicts(

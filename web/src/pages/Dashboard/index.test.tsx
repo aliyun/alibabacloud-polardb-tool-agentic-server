@@ -64,7 +64,7 @@ it('shows only current-user resource statistics to a member', async () => {
 
   expect(await screen.findByText('Database Instances')).toBeInTheDocument()
   expect(screen.getByText('Knowledge Resources')).toBeInTheDocument()
-  expect(screen.getByText('View My Instances')).toBeInTheDocument()
+  expect(screen.getByText('My resources')).toBeInTheDocument()
   expect(screen.queryByText('Total Users')).not.toBeInTheDocument()
   expect(screen.queryByText('Register Instance')).not.toBeInTheDocument()
 })

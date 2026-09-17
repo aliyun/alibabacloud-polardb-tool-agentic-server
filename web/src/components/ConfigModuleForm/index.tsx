@@ -71,6 +71,15 @@ export default function ConfigModuleForm({
         module: moduleLabel ?? module.name,
       })}
     >
+      {module.name === 'polarrag_tool_limits' && (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('components.configuration.localLimitsTitle')}
+          description={t('components.configuration.localLimitsDescription')}
+        />
+      )}
       {docs.length > 0 && (
         <Alert
           type="info"

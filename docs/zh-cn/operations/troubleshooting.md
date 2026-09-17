@@ -37,6 +37,36 @@ DNS、路由、TLS、凭证和权限失败使用不同脱敏代码。VPC 模式�
 测试地域 `polardb-vpc` 和 `sts-vpc` 端点解析。实例 Test Connection 也从该
 Pod 发起；检查 MySQL 白名单、安全组、host、port、用户名和密码。
 
+## SSO 验证或浏览器登录失败
+
+先确认 `runtime_policy.external_base_url` 是准确的外部 HTTPS Origin，并在
+身份提供方注册
+`EXTERNAL_BASE_URL/auth/oidc/callback` 作为回调地址。
+
+同机 Mock 测试时，以 `pas serve --local-sso-dev` 启动 PAS，把外部基础 URL
+配置为 `localhost` 或 `127.0.0.1` HTTP Origin，并保证所有 Provider 端点
+使用 `localhost`、`127.0.0.1` 或 `::1`。必须显式携带该开关；它还会把
+所有 Listener 绑定到 `127.0.0.1`，阻止远程访问。
+
+配置验证应按最小失败边界处理：
+
+| Code | 处理措施 |
+| --- | --- |
+| `OIDC_ENDPOINT_UNSAFE` | 浏览器 SSO 的 Discovery、Issuer、授权、Token、UserInfo 和 JWKS 地址通常必须使用公网 HTTPS；显式 localhost 开发模式只允许精确回环 HTTP URL。外部 Token 信任的 Introspection 与外部 UserInfo 是例外：私网 HTTP 会在提示明文传输风险后被接受；公网 HTTP、链路本地或云元数据目标、公私网混合解析、通配、相似域名、其他 `127/8` 及未经允许的回环目标仍会被拒绝。 |
+| `OIDC_DNS_FAILURE`、`OIDC_CONNECT_TIMEOUT`、`OIDC_CONNECT_FAILURE` | 从 PAS 后端 Pod 检查 DNS、路由、防火墙和 TLS 连通性。 |
+| `OIDC_REDIRECT_REJECTED` | 直接配置最终端点；PAS 验证不会跟随重定向。 |
+| `OIDC_RESPONSE_TOO_LARGE`、`OIDC_INVALID_RESPONSE`、`OIDC_INVALID_JWKS` | 修正 Provider 响应；Discovery 和 JWKS 必须是 JSON Object，JWKS 必须包含非空 `keys` 数组。 |
+| `OIDC_ISSUER_REQUIRED`、`OIDC_ISSUER_MISMATCH`、`OIDC_ENDPOINT_REQUIRED`、`OIDC_JWKS_REQUIRED` | 修正 Discovery Metadata 或手工高级字段，不要放宽 Issuer 匹配。 |
+
+验证后必须先完成**测试浏览器登录**才能激活。`SSO_TEST_REQUIRED` 表示没有当前
+已通过的证明；`SSO_TEST_STALE` 表示草稿已变化；`SSO_IDENTITY_IN_USE`
+表示测试身份已经映射到另一个 PAS User。修正对应条件后重新测试，不要复用其他
+管理员的测试 ID。
+
+激活后普通浏览器登录失败时，依次核对 Issuer、Client 回调、ID Token Audience
+与算法、Nonce 和 UserInfo `sub`。只有活动的内置管理员可以通过
+`/login/recovery` 修复 SSO；它不是普通用户登录入口。
+
 ## 阿里云凭证错误
 
 记录结果中显示的安全阿里云 Request ID，然后只修复命名的失败边界，不要把凭证或
@@ -62,9 +92,15 @@ Pod 发起；检查 MySQL 白名单、安全组、host、port、用户名和密�
 
 ## MCP 或 SQL 失败
 
-绑定变化后重新连接。调用 `list_db_instances`，把返回的 `db_instance_id`
-作为 `instance_id`，并确认绑定开放了所需 SQL 能力。然后验证已存 MySQL
-账号具有请求数据库和语句权限。确定拒绝层之前不要扩大权限。
+OAuth 用户应先检查 `GET /api/me/workspace`。`selection_required` 表示用户
+需要选择默认 Agent；`no_agent_access` 表示管理员需要授予活动 Agent；
+`default_agent_unavailable` 表示必须显式选择替代 Agent。PAS 不会回退到
+User 直接实例绑定。
+
+Agent 或绑定变化后重新连接。调用 `list_db_instances`，把返回的
+`db_instance_id` 作为 `instance_id`，并确认所选 Agent 绑定开放了所需 SQL
+能力。然后验证已存 MySQL 账号具有请求数据库和语句权限。确定拒绝层之前不要
+扩大权限。
 
 ## 供应卡住
 

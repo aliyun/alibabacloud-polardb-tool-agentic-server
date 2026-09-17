@@ -13,6 +13,8 @@ import App from '../../App'
 import {
   discoverSystemState,
   executeConfig,
+  getUserSSOTest,
+  startUserSSOTest,
   type ConfigModule,
   type ConfigResponse,
 } from '../../api/configuration'
@@ -34,6 +36,12 @@ vi.mock('../../hooks/useAuth', () => ({
     login: vi.fn(),
     logout: vi.fn(),
     authMode: 'builtin',
+    authModeInfo: {
+      mode: 'builtin',
+      provider_name: null,
+      sso_login_url: null,
+      recovery_login_path: null,
+    },
   }),
 }))
 
@@ -45,6 +53,8 @@ vi.mock('../../api/configuration', async () => {
     ...actual,
     discoverSystemState: vi.fn(),
     executeConfig: vi.fn(),
+    getUserSSOTest: vi.fn(),
+    startUserSSOTest: vi.fn(),
   }
 })
 
@@ -141,6 +151,76 @@ function runtimePolicy(): ConfigModule {
   }
 }
 
+function polarRAGRuntimePolicy(): ConfigModule {
+  return {
+    name: 'polarrag_tool_limits',
+    revision: 1,
+    workflow_state: 'ACTIVE',
+    draft: null,
+    effective: {
+      revision: 1,
+      state: 'ACTIVE',
+      config: {
+        enabled: true,
+        user_requests_per_minute: 60,
+        user_burst: 10,
+        agent_requests_per_minute: 120,
+        agent_burst: 20,
+        instance_max_inflight: 16,
+        max_fanout: 8,
+        retry_after_seconds: 1,
+        upstream_request_timeout_ms: 20000,
+      },
+    },
+    dependencies: [],
+    dependents: [],
+    schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', default: true },
+        upstream_request_timeout_ms: {
+          type: 'integer',
+          default: 20000,
+          minimum: 100,
+          maximum: 300000,
+        },
+      },
+    },
+  }
+}
+
+function observability(): ConfigModule {
+  return {
+    name: 'observability',
+    revision: 1,
+    workflow_state: 'ACTIVE',
+    draft: null,
+    effective: {
+      revision: 1,
+      state: 'ACTIVE',
+      config: {
+        log_level: 'info',
+        audit_enabled: true,
+        audit_retention_days: 180,
+      },
+    },
+    dependencies: [],
+    dependents: [],
+    schema: {
+      type: 'object',
+      properties: {
+        log_level: { type: 'string', default: 'info' },
+        audit_enabled: { type: 'boolean', default: true },
+        audit_retention_days: {
+          type: 'integer',
+          default: 180,
+          minimum: 1,
+        },
+      },
+    },
+  }
+}
+
 function aliyunAccess(revision = 0): ConfigModule {
   return {
     name: 'aliyun_access',
@@ -157,6 +237,41 @@ function aliyunAccess(revision = 0): ConfigModule {
       type: 'object',
       properties: {},
     },
+  }
+}
+
+function userSSO(revision = 0): ConfigModule {
+  return {
+    name: 'user_sso',
+    revision,
+    workflow_state: 'SKIPPED',
+    draft: null,
+    effective: null,
+    dependencies: ['token_security'],
+    dependents: [],
+    ui_hints: {
+      secret_fields: ['client_secret'],
+    },
+    schema: {
+      type: 'object',
+      properties: {},
+    },
+  }
+}
+
+function runtimePolicyWithExternalUrl(): ConfigModule {
+  const module = runtimePolicy()
+  return {
+    ...module,
+    effective: module.effective
+      ? {
+          ...module.effective,
+          config: {
+            ...module.effective.config,
+            external_base_url: 'https://pas.example.com',
+          },
+        }
+      : null,
   }
 }
 
@@ -327,6 +442,70 @@ it('localizes the service runtime policy and worker controls in Chinese', async 
     .toBeInTheDocument()
 })
 
+it('presents PolarRAG runtime governance as a runtime policy in English', async () => {
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin(), polarRAGRuntimePolicy()],
+    }),
+  )
+
+  renderConfiguration(
+    '/settings/configuration?module=polarrag_tool_limits',
+  )
+
+  expect(await screen.findByRole('heading', {
+    name: 'PolarRAG runtime policy',
+  })).toBeInTheDocument()
+  expect(screen.getByText(
+    'PolarRAG request timeout plus MCP Tool rate, burst, instance concurrency, and fan-out governance.',
+  )).toBeInTheDocument()
+  expect(screen.getByLabelText(/Upstream request timeout \(milliseconds\)/))
+    .toHaveValue('20000')
+})
+
+it('presents PolarRAG runtime governance as a runtime policy in Chinese', async () => {
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin(), polarRAGRuntimePolicy()],
+    }),
+  )
+
+  renderConfiguration(
+    '/settings/configuration?module=polarrag_tool_limits',
+    'zh-CN',
+  )
+
+  expect(await screen.findByRole('heading', {
+    name: 'PolarRAG 运行策略',
+  })).toBeInTheDocument()
+  expect(screen.getByText(
+    'PolarRAG 请求超时及 MCP Tool 的速率、突发、实例并发和扇出治理。',
+  )).toBeInTheDocument()
+  expect(screen.getByLabelText(/上游请求超时时间（毫秒）/))
+    .toHaveValue('20000')
+})
+
+it('places global audit controls under observability in Chinese', async () => {
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [activeCoreAdmin(), observability()],
+    }),
+  )
+
+  renderConfiguration(
+    '/settings/configuration?module=observability',
+    'zh-CN',
+  )
+
+  expect(await screen.findByRole('heading', { name: '可观测性' }))
+    .toBeInTheDocument()
+  expect(screen.getByLabelText(/启用可选审计记录/)).toBeChecked()
+  expect(screen.getByLabelText(/审计保留天数/)).toHaveValue('180')
+})
+
 it('shows Agent Token authentication as an active built-in capability', async () => {
   vi.mocked(executeConfig).mockResolvedValueOnce(
     response({
@@ -348,6 +527,55 @@ it('shows Agent Token authentication as an active built-in capability', async ()
     .not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: /skip for now/i }))
     .not.toBeInTheDocument()
+})
+
+it('presents a dedicated SSO setup flow and callback URL', async () => {
+  const user = userEvent.setup()
+  vi.mocked(executeConfig).mockResolvedValueOnce(
+    response({
+      system_state: 'READY',
+      modules: [
+        activeCoreAdmin(),
+        runtimePolicyWithExternalUrl(),
+        userSSO(),
+      ],
+    }),
+  )
+
+  renderConfiguration('/settings/configuration?module=user_sso')
+
+  expect(await screen.findByRole('heading', {
+    name: 'User single sign-on',
+  })).toBeInTheDocument()
+  expect(screen.getByDisplayValue(
+    'https://pas.example.com/auth/oidc/callback',
+  )).toBeInTheDocument()
+  expect(screen.getByText('Save and validate')).toBeInTheDocument()
+  expect(screen.getByText('Test browser login')).toBeInTheDocument()
+  expect(screen.getByText('Activate')).toBeInTheDocument()
+  expect(screen.getByText('Provider protocol')).toBeInTheDocument()
+  expect(
+    screen.getByPlaceholderText(
+      'https://idp.example.com/.well-known/openid-configuration',
+    ),
+  ).toBeInTheDocument()
+
+  await user.click(screen.getByText('External access token trust'))
+  expect(screen.getByText('Standard OAuth Token Exchange')).toBeInTheDocument()
+  expect(screen.getByLabelText(
+    'Accept trusted external access tokens',
+  )).not.toBeChecked()
+  expect(screen.queryByLabelText(
+    'Allow external Bearer Token directly at /mcp',
+  )).not.toBeInTheDocument()
+
+  await user.click(screen.getByText('Manual endpoints'))
+
+  expect(screen.getByLabelText('Issuer')).toBeInTheDocument()
+  expect(screen.getByLabelText('Authorization endpoint')).toBeInTheDocument()
+  expect(screen.getByLabelText('Token endpoint')).toBeInTheDocument()
+  expect(startUserSSOTest).not.toHaveBeenCalled()
+  expect(getUserSSOTest).not.toHaveBeenCalled()
 })
 
 it('routes setup mode to a standalone ownership screen', async () => {

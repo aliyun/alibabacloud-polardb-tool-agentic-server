@@ -22,7 +22,7 @@ from server.config import OIDCConfig, reset_config
 from server.auth.jwt_manager import reset_keys
 from tests._helpers import init_test_jwt_keys
 from server.db import engine as engine_mod
-from server.models import Base, User
+from server.models import Base, User, UserWorkspace
 from server.models.oauth import OAuthPendingAuth, OAuthAuthorizationCode
 
 
@@ -736,6 +736,10 @@ class TestUserMapping:
         assert user.id is not None
         assert user.display_name == "Test User"
         assert user.external_id == "test-idp:emp-123"
+        workspace = await session.scalar(
+            select(UserWorkspace).where(UserWorkspace.user_id == user.id)
+        )
+        assert workspace is not None
 
     async def test_returns_existing_user(self, session, encryption_key):
         config = OIDCConfig(client_id="test")
@@ -866,6 +870,7 @@ class TestOIDCCallback:
         assert "http://localhost:18761/callback?" in body
         assert "code=" in body
         assert "state=mcp-client-state" in body
+        assert "iss=http%3A%2F%2Flocalhost%3A18760" in body
         mock_federation.extract_user_identity.assert_awaited_once_with(
             {"access_token": "idp-at-123", "id_token": "fake-jwt"},
             expected_nonce="mcp-idp-nonce",

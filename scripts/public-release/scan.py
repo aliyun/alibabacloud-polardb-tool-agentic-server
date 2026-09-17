@@ -49,7 +49,11 @@ class Finding:
 
 CONTENT_RULES = {
     "INTERNAL_PRIVATE_DOMAIN": re.compile(
-        r"(?:gitlab|registry)\." + re.escape("alibaba" + "-inc") + r"\.com",
+        r"(?:[a-z0-9-]+\.)*(?:"
+        + re.escape("alibaba" + "-inc")
+        + r"\.com|"
+        + re.escape("tb" + "site")
+        + r"\.net)",
         re.IGNORECASE,
     ),
     "SECRET_PRIVATE_KEY": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),

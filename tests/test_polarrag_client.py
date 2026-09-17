@@ -7,6 +7,7 @@ import os
 import httpx
 import pytest
 
+from server.config import AppConfig
 from server.core.crypto import encrypt
 from server.models import PolarRAGInstance, PolarRAGInstanceStatus
 from server.polarrag.client import HttpPolarRAGClient, client_from_instance
@@ -87,6 +88,52 @@ async def test_client_from_instance_decrypts_credentials_and_uses_fixed_route(
     }
 
 
+async def test_multi_kb_search_reads_the_runtime_limit_and_sends_kb_ids(
+    encryption_key,
+) -> None:
+    requests: list[tuple[str, dict[str, object] | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.url.path, body))
+        if request.url.path.endswith("/_search_capabilities"):
+            return httpx.Response(
+                200,
+                json={
+                    "schema_version": 1,
+                    "multi_kb_search": True,
+                    "max_kb_ids": 2,
+                },
+            )
+        return httpx.Response(200, json={"hits": {"hits": []}})
+
+    client = client_from_instance(
+        _instance(encryption_key),
+        transport=httpx.MockTransport(handler),
+    )
+    capabilities = await client.get_search_capabilities()
+    await client.search_many(
+        "space-a",
+        ["kb-a", "kb-b"],
+        query="acl",
+        search_mode="balanced",
+        top_k=10,
+        min_score=None,
+        reranker=False,
+        acl_context={"identity_domain": "tenant-a", "principals": []},
+    )
+
+    assert capabilities.max_kb_ids == 2
+    assert requests[1][1] == {
+        "query_text": "acl",
+        "kb_ids": ["kb-a", "kb-b"],
+        "search_mode": "balanced",
+        "size": 10,
+        "reranker": False,
+        "acl_context": {"identity_domain": "tenant-a", "principals": []},
+    }
+
+
 def test_client_from_instance_sanitizes_credential_decryption_failure(
     encryption_key,
     monkeypatch,
@@ -101,6 +148,25 @@ def test_client_from_instance_sanitizes_credential_decryption_failure(
 
     assert caught.value.code.value == "POLARRAG_CREDENTIAL_UNAVAILABLE"
     assert "sentinel" not in str(caught.value)
+
+
+def test_client_from_instance_uses_current_upstream_timeout(
+    encryption_key,
+    monkeypatch,
+) -> None:
+    config = AppConfig()
+    config.polarrag_tool_limits.upstream_request_timeout_ms = 12_000
+    monkeypatch.setattr(
+        "server.polarrag.client.get_config",
+        lambda: config,
+    )
+
+    first = client_from_instance(_instance(encryption_key))
+    config.polarrag_tool_limits.upstream_request_timeout_ms = 45_000
+    second = client_from_instance(_instance(encryption_key))
+
+    assert first._timeout == 12.0
+    assert second._timeout == 45.0
 
 
 async def test_catalog_clients_follow_opaque_pagination_and_parse_owner() -> None:
@@ -484,6 +550,34 @@ async def test_upstream_errors_are_classified_without_response_body() -> None:
         password="password",
         tls_verify=True,
         transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(PolarRAGUpstreamError) as captured:
+        await client.document_info(
+            "space-a",
+            "doc-a",
+            acl_context={"identity_domain": "tenant-a", "principals": []},
+        )
+
+    assert captured.value.code == PolarRAGErrorCode.UNAVAILABLE
+    assert captured.value.retryable is True
+    assert "do-not-leak" not in str(captured.value)
+
+
+async def test_upstream_timeout_is_sanitized_and_retryable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout(
+            "secret timeout diagnostics password=do-not-leak",
+            request=request,
+        )
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+        timeout=0.1,
     )
 
     with pytest.raises(PolarRAGUpstreamError) as captured:

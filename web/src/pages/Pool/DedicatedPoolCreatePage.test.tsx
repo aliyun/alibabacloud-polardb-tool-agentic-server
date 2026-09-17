@@ -74,23 +74,28 @@ describe('DedicatedPoolCreatePage', () => {
     vi.mocked(getDedicatedPurchaseProfile).mockResolvedValue({ data: profile } as never)
     vi.mocked(getDedicatedReadiness).mockResolvedValue({ data: blockedReadiness } as never)
     vi.mocked(listPermissionTemplates).mockResolvedValue({
-      data: [
-        {
-          id: 'builtin-mysql-default',
-          name: 'Default MySQL sandbox permissions',
-          description: null,
-          created_at: '2026-08-10T00:00:00Z',
-          revisions: [
-            {
-              id: 'builtin-mysql-default-v1',
-              revision: 1,
-              privileges: ['SELECT', 'INSERT'],
-              grant_option: false,
-              created_at: '2026-08-10T00:00:00Z',
-            },
-          ],
-        },
-      ],
+      data: {
+        items: [
+          {
+            id: 'builtin-mysql-default',
+            name: 'Default MySQL sandbox permissions',
+            description: null,
+            created_at: '2026-08-10T00:00:00Z',
+            revisions: [
+              {
+                id: 'builtin-mysql-default-v1',
+                revision: 1,
+                privileges: ['SELECT', 'INSERT'],
+                grant_option: false,
+                created_at: '2026-08-10T00:00:00Z',
+              },
+            ],
+          },
+        ],
+        total: 1,
+        offset: 0,
+        limit: 20,
+      },
     } as never)
     vi.mocked(createDedicatedPool).mockResolvedValue({
       data: { id: 'pool-created' },

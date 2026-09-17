@@ -34,6 +34,8 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 
 ## 管理
 
+- [账号与资源](administration/accounts-and-resources.md)：个人与服务账号、统一数据库授权及个人 MCP 连接。
+
 - [用户与部门](administration/users-and-departments.md)：人类身份、组织、
   实例访问和安全生命周期操作。
 - [认证](administration/authentication.md)：首次接管、内置登录、可选 SSO、
@@ -56,10 +58,14 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 
 ## 知识
 
+- [启用与停用知识库](knowledge/activation.md)
 - [PolarRAG 管理员接入](knowledge/polarrag-onboarding.md)：从用户、原生身份、
   公共与个人知识库、Agent Token、OSS 上传到 MCP 验收的端到端流程。
 - [PolarRAG MCP 与企业身份](knowledge/polarrag-mcp.md)：实例注册、身份主体、
   知识发现、仅用户可用的 Tool、ACL 边界和所需上游能力。
+- [PolarRAG 知识库平台 HTTP API](knowledge/polarrag-platform-http-api.md)：可信
+  BFF 登录、Authorization Code + PKCE、知识库与文档 API、检索结果、HTTP Tool
+  调用和企业访问绑定。
 
 ## 部署
 

@@ -9,7 +9,7 @@ export type SafeDryRunGuidance =
   | 'external'
 
 export interface SafeDryRunCheck {
-  service: 'sts' | 'polardb' | 'ecs_metadata'
+  service: 'sts' | 'polardb' | 'ecs_metadata' | 'oidc_discovery' | 'oidc_jwks'
   endpoint: string
   status: 'REACHABLE' | 'WARNING' | 'PASSED' | 'SKIPPED'
   identityHint?: string
@@ -62,6 +62,18 @@ const externalErrorCodes = new Set([
   'OPENAPI_STS_SOURCE_CREDENTIAL_INVALID',
   'OPENAPI_TEMPORARY_CREDENTIAL_EXPIRED',
   'OPENAPI_TLS_FAILURE',
+  'OIDC_CONNECT_FAILURE',
+  'OIDC_CONNECT_TIMEOUT',
+  'OIDC_DNS_FAILURE',
+  'OIDC_ENDPOINT_REQUIRED',
+  'OIDC_ENDPOINT_UNSAFE',
+  'OIDC_INVALID_JWKS',
+  'OIDC_INVALID_RESPONSE',
+  'OIDC_ISSUER_MISMATCH',
+  'OIDC_ISSUER_REQUIRED',
+  'OIDC_JWKS_REQUIRED',
+  'OIDC_REDIRECT_REJECTED',
+  'OIDC_RESPONSE_TOO_LARGE',
 ])
 
 const localErrorGuidance: Record<string, SafeDryRunGuidance> = {
@@ -142,6 +154,21 @@ function isValidRegionalEndpoint(
 
 function safeEndpoint(service: SafeDryRunCheck['service'], value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
+  if (service === 'oidc_discovery' || service === 'oidc_jwks') {
+    if (value.length > 2048) return undefined
+    try {
+      const endpoint = new URL(value)
+      return endpoint.protocol === 'https:'
+        && endpoint.hostname.length > 0
+        && endpoint.username.length === 0
+        && endpoint.password.length === 0
+        && endpoint.hash.length === 0
+        ? endpoint.toString()
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
   if (
     service === 'sts'
     && isValidRegionalEndpoint(value, ['sts', 'sts-vpc'])
@@ -162,6 +189,9 @@ function safeIdentityHint(
   value: unknown,
 ): string | undefined {
   if (typeof value !== 'string') return undefined
+  if (service === 'oidc_discovery' || service === 'oidc_jwks') {
+    return undefined
+  }
   const pattern = service === 'polardb'
     ? accessKeyIdentityHintPattern
     : roleIdentityHintPattern
@@ -171,7 +201,13 @@ function safeIdentityHint(
 function normalizeCheck(value: unknown): SafeDryRunCheck | undefined {
   const source = record(value)
   if (!source || typeof source.service !== 'string') return undefined
-  if (source.service !== 'sts' && source.service !== 'polardb' && source.service !== 'ecs_metadata') {
+  if (
+    source.service !== 'sts'
+    && source.service !== 'polardb'
+    && source.service !== 'ecs_metadata'
+    && source.service !== 'oidc_discovery'
+    && source.service !== 'oidc_jwks'
+  ) {
     return undefined
   }
   if (typeof source.status !== 'string' || !checkStatuses.has(source.status as SafeDryRunCheck['status'])) {

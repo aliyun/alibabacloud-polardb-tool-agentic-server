@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { expect, it, vi } from 'vitest'
 
@@ -13,7 +13,7 @@ const admin = {
   status: 'active' as const,
 }
 
-it('keeps service configuration and removes retired quota navigation', () => {
+it('groups advanced configuration under the unified resource and account navigation', () => {
   render(
     <MemoryRouter initialEntries={['/dashboard']}>
       <AppLayout
@@ -24,6 +24,10 @@ it('keeps service configuration and removes retired quota navigation', () => {
     </MemoryRouter>,
   )
 
+  expect(screen.getByText('Resources')).toBeInTheDocument()
+  expect(screen.getByText('Access management')).toBeInTheDocument()
+  expect(screen.getByText('Connect MCP')).toBeInTheDocument()
+  fireEvent.click(screen.getByText('Advanced settings'))
   expect(screen.getByText('Service Configuration')).toBeInTheDocument()
   expect(screen.queryByText('Quota Management')).not.toBeInTheDocument()
   expect(screen.queryByText(/^Settings$/)).not.toBeInTheDocument()

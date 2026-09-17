@@ -177,7 +177,7 @@ async def test_admin_dependency_rejects_namespaced_agent_subject(client):
 
 
 async def test_admin_dependency_accepts_namespaced_user_subject(client):
-    token = create_access_token({"sub": "same-id", "role": "admin"})
+    token = create_access_token({"sub": "same-id", "role": "admin", "credential_epoch": 1})
     response = await client.get(
         "/api/users",
         headers={"Authorization": f"Bearer {token}"},

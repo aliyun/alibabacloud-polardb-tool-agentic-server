@@ -16,11 +16,15 @@ from server.db.engine import enable_sqlite_foreign_keys
 from server.models import (
     Agent,
     AgentGroupAssignment,
+    AgentKnowledgeScope,
+    AgentKnowledgeScopeBinding,
     AgentPolarRAGInstanceBinding,
     AgentUserAssignment,
     AgentUserToken,
     AuthProvider,
     Base,
+    EnterpriseDirectoryPrincipalType,
+    ExternalUserPrincipalMembership,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
     User,
@@ -82,6 +86,59 @@ def test_agent_polarrag_binding_defaults_to_all_public_resources() -> None:
     column = AgentPolarRAGInstanceBinding.__table__.c.public_knowledge_resource_ids_json
 
     assert column.nullable is True
+
+
+def test_knowledge_scope_records_use_stable_primary_keys() -> None:
+    scope_id = AgentKnowledgeScope.external_id(
+        "agent-a",
+        "source-a",
+        "external-scope-a",
+    )
+    assert scope_id == AgentKnowledgeScope.external_id(
+        "agent-a",
+        "source-a",
+        "external-scope-a",
+    )
+    assert scope_id != AgentKnowledgeScope.external_id(
+        "agent-a",
+        "source-a",
+        "external-scope-b",
+    )
+
+    user_binding = AgentKnowledgeScopeBinding.for_user(
+        scope_id=scope_id,
+        user_id="user-a",
+    )
+    duplicate_user_binding = AgentKnowledgeScopeBinding.for_user(
+        scope_id=scope_id,
+        user_id="user-a",
+    )
+    group_binding = AgentKnowledgeScopeBinding.for_group(
+        scope_id=scope_id,
+        group_assignment_id="group-a",
+    )
+    assert user_binding.id == duplicate_user_binding.id
+    assert user_binding.id != group_binding.id
+    assert user_binding.user_id == "user-a"
+    assert user_binding.group_assignment_id is None
+    assert group_binding.user_id is None
+    assert group_binding.group_assignment_id == "group-a"
+
+    snapshot = ExternalUserPrincipalMembership.create(
+        identity_source_id="source-a",
+        external_user_id="external-user-a",
+        principal_type=EnterpriseDirectoryPrincipalType.ACL_GROUP,
+        principal_id="principal-a",
+        expires_at=None,
+    )
+    duplicate_snapshot = ExternalUserPrincipalMembership.create(
+        identity_source_id="source-a",
+        external_user_id="external-user-a",
+        principal_type=EnterpriseDirectoryPrincipalType.ACL_GROUP,
+        principal_id="principal-a",
+        expires_at=None,
+    )
+    assert snapshot.id == duplicate_snapshot.id
 
 
 async def test_unique_agent_user_assignment(session) -> None:
@@ -352,3 +409,50 @@ def test_polarrag_upload_cleanup_fencing_migration_renders(
     assert "polarrag_instance_id" in rendered
     assert "submission_payload_ciphertext" in rendered
     assert "reconcile_required" in rendered
+
+
+@pytest.mark.parametrize(
+    "dialect",
+    [sqlite.dialect(), mysql.dialect(), postgresql.dialect()],
+    ids=["sqlite", "mysql", "postgresql"],
+)
+def test_agent_knowledge_scope_schema_and_migration_render(
+    dialect,
+    monkeypatch,
+) -> None:
+    table_names = {
+        "agent_knowledge_scopes",
+        "agent_knowledge_scope_bindings",
+        "identity_source_user_principal_snapshot_entries",
+    }
+    assert table_names <= set(Base.metadata.tables)
+    assert Agent.__table__.c.knowledge_scope_mode.server_default.arg == (
+        "LEGACY_ALL"
+    )
+    assert (
+        models.KnowledgeResource.__table__.c.management_mode.server_default.arg
+        == "NATIVE"
+    )
+
+    migration = import_module(
+        "server.db.migrations.versions."
+        "9c1d2e3f4a5b_add_agent_knowledge_scopes"
+    )
+    output = io.StringIO()
+    context = MigrationContext.configure(
+        dialect=dialect,
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    migration.upgrade()
+
+    rendered = output.getvalue().lower()
+    assert all(f"create table {name}" in rendered for name in table_names)
+    assert "knowledge_scope_mode" in rendered
+    assert "management_mode" in rendered
+    scope_column = models.AgentKnowledgeScope.__table__.c.knowledge_resource_ids_json
+    assert isinstance(
+        scope_column.type.dialect_impl(mysql.dialect()),
+        mysql.LONGTEXT,
+    )

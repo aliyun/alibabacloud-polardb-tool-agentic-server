@@ -29,4 +29,5 @@ scripts/
 security/
 server/
 tests/
+:(exclude)tests/test_internal_container_build.py
 web/

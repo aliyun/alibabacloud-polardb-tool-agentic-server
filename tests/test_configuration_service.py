@@ -16,7 +16,10 @@ from server.configuration.types import (
     ValidationOperation,
 )
 from server.configuration.external_validation import ExternalValidationError
-from tests._configuration_helpers import create_config_context
+from tests._configuration_helpers import (
+    create_config_context,
+    seed_v1_global_audit,
+)
 
 ADMIN = ConfigActor(scope="admin:1", actor_type="admin")
 
@@ -144,6 +147,104 @@ async def test_plan_is_dry_run_and_does_not_write(context) -> None:
     assert result.plan["config"]["direct_ak"]["access_key_secret"][
         "configured"
     ]
+    assert await context.repository.global_version() == before
+
+
+async def test_describe_projects_v1_global_audit_without_writing(
+    context,
+) -> None:
+    await seed_v1_global_audit(
+        context,
+        enabled=False,
+        retention_days=45,
+    )
+    before = await context.repository.global_version()
+
+    result = await context.service.execute(
+        command(ConfigAction.DESCRIBE, "observability"),
+        ADMIN,
+    )
+
+    stored_sql = await context.repository.get_module("sql_security")
+    stored_observability = await context.repository.get_module(
+        "observability"
+    )
+    assert result.module is not None
+    assert result.module["schema_version"] == 2
+    assert result.module["effective"]["config"]["audit_enabled"] is False
+    assert (
+        result.module["effective"]["config"]["audit_retention_days"]
+        == 45
+    )
+    assert stored_sql is not None and stored_sql.schema_version == 1
+    assert (
+        stored_observability is not None
+        and stored_observability.schema_version == 1
+    )
+    assert await context.repository.global_version() == before
+
+
+async def test_first_global_audit_save_migrates_pair_before_write(
+    context,
+) -> None:
+    _, legacy_observability = await seed_v1_global_audit(
+        context,
+        enabled=False,
+        retention_days=45,
+    )
+    before = await context.repository.global_version()
+
+    result = await context.service.execute(
+        command(
+            ConfigAction.SAVE_DRAFT,
+            "observability",
+            expected_revision=legacy_observability.revision,
+            config={"audit_retention_days": 90},
+        ),
+        ADMIN,
+    )
+
+    stored_sql = await context.repository.get_module("sql_security")
+    stored_observability = await context.repository.get_module(
+        "observability"
+    )
+    assert result.module is not None
+    assert stored_sql is not None and stored_sql.schema_version == 2
+    assert stored_observability is not None
+    assert stored_observability.schema_version == 2
+    assert stored_observability.draft is not None
+    assert stored_observability.draft["audit_retention_days"] == 90
+    assert stored_sql.effective is not None
+    assert "audit_enabled" not in stored_sql.effective.config
+    assert "audit_retention_days" not in stored_sql.effective.config
+    assert await context.repository.global_version() == before + 2
+
+
+async def test_stale_global_audit_write_does_not_migrate_pair(
+    context,
+) -> None:
+    _, legacy_observability = await seed_v1_global_audit(context)
+    before = await context.repository.global_version()
+
+    with pytest.raises(ConfigError) as captured:
+        await context.service.execute(
+            command(
+                ConfigAction.SAVE_DRAFT,
+                "observability",
+                expected_revision=legacy_observability.revision - 1,
+                config={"audit_retention_days": 90},
+            ),
+            ADMIN,
+        )
+
+    stored_sql = await context.repository.get_module("sql_security")
+    stored_observability = await context.repository.get_module(
+        "observability"
+    )
+    assert captured.value.code == "REVISION_CONFLICT"
+    assert stored_sql is not None and stored_sql.schema_version == 1
+    assert stored_observability is not None
+    assert stored_observability.schema_version == 1
     assert await context.repository.global_version() == before
 
 

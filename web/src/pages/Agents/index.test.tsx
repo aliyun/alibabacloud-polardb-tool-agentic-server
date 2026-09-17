@@ -29,7 +29,9 @@ const agent = {
 
 describe('Agents page', () => {
   beforeEach(() => {
-    vi.mocked(listAgents).mockResolvedValue({ data: [agent] } as never)
+    vi.mocked(listAgents).mockResolvedValue({
+      data: { items: [agent], total: 1, offset: 0, limit: 20 },
+    } as never)
     vi.mocked(updateAgent).mockResolvedValue({
       data: { ...agent, status: 'disabled' },
     } as never)
@@ -95,7 +97,9 @@ describe('Agents page', () => {
   })
 
   it('shows an actionable empty state', async () => {
-    vi.mocked(listAgents).mockResolvedValue({ data: [] } as never)
+    vi.mocked(listAgents).mockResolvedValue({
+      data: { items: [], total: 0, offset: 0, limit: 20 },
+    } as never)
     render(
       <MemoryRouter>
         <Agents />

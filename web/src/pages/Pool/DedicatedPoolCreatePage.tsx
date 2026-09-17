@@ -112,12 +112,12 @@ export default function DedicatedPoolCreatePage() {
           ])
         setReadiness(readinessResponse.data)
         setProfile(profileResponse.data)
-        setTemplates(templatesResponse.data)
+        setTemplates(templatesResponse.data.items)
         form.setFieldsValue({
           storage_type: profileResponse.data.default_storage_type,
           permission_template_revision_id:
             readinessResponse.data.permission_template.default_revision_id ??
-            templatesResponse.data[0]?.revisions[0]?.id,
+            templatesResponse.data.items[0]?.revisions[0]?.id,
         })
       } catch (requestError) {
         setError(

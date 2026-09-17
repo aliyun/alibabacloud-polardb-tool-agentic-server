@@ -41,6 +41,39 @@ codes. In VPC mode test resolution of regional `polardb-vpc` and `sts-vpc`
 endpoints from the backend Pod. Instance Test Connection also runs from that
 Pod; check MySQL whitelist, security groups, host, port, username, and password.
 
+## SSO validation or browser login fails
+
+First confirm `runtime_policy.external_base_url` is the exact external HTTPS
+origin and that the IdP callback is registered as
+`EXTERNAL_BASE_URL/auth/oidc/callback`.
+
+For same-machine mock testing, start PAS with `pas serve --local-sso-dev`,
+set the external base URL to `localhost` or `127.0.0.1`, and keep every
+provider endpoint on `localhost`, `127.0.0.1`, or `::1`. The flag is required;
+it also prevents remote access by binding every listener to `127.0.0.1`.
+
+For configuration validation, keep the failure boundary narrow:
+
+| Code | Corrective action |
+| --- | --- |
+| `OIDC_ENDPOINT_UNSAFE` | Browser SSO discovery, issuer, authorization, token, UserInfo, and JWKS addresses normally require public HTTPS. The explicit localhost development mode permits only exact loopback HTTP URLs. External Token Trust Introspection and external UserInfo are the exception: private-network HTTP is accepted with a plaintext-transport warning, while public HTTP, link-local or metadata targets, mixed address classes, wildcard, lookalike, other `127/8`, and unauthorized loopback destinations remain rejected. |
+| `OIDC_DNS_FAILURE`, `OIDC_CONNECT_TIMEOUT`, `OIDC_CONNECT_FAILURE` | Test DNS, route, firewall, and TLS reachability from the PAS backend Pod. |
+| `OIDC_REDIRECT_REJECTED` | Configure the final endpoint directly; PAS validation does not follow redirects. |
+| `OIDC_RESPONSE_TOO_LARGE`, `OIDC_INVALID_RESPONSE`, `OIDC_INVALID_JWKS` | Correct the provider response; discovery and JWKS must be JSON objects and JWKS must contain a non-empty `keys` array. |
+| `OIDC_ISSUER_REQUIRED`, `OIDC_ISSUER_MISMATCH`, `OIDC_ENDPOINT_REQUIRED`, `OIDC_JWKS_REQUIRED` | Correct discovery metadata or the manual advanced fields without weakening issuer matching. |
+
+After validation, complete **Test browser login** before activation.
+`SSO_TEST_REQUIRED` means no current passed proof exists;
+`SSO_TEST_STALE` means the draft changed; `SSO_IDENTITY_IN_USE` means the
+tested provider identity is already mapped to another PAS User. Restart the
+test after correcting the named condition. Do not activate by reusing another
+administrator's test ID.
+
+If ordinary browser login fails after activation, compare the configured
+issuer, client callback, ID Token audience and algorithm, nonce, and UserInfo
+`sub`. Use `/login/recovery` only with an active built-in administrator to
+repair SSO; it is not a general user login route.
+
 ## Alibaba Cloud credential errors
 
 Record the safe Alibaba Cloud Request ID shown with the result, then correct
@@ -69,11 +102,17 @@ the failing boundary.
 
 ## MCP or SQL fails
 
-Reconnect after binding changes. Call `list_db_instances`, use the returned
-`db_instance_id` as `instance_id`, and confirm the binding exposes required SQL
-capability. Then verify the stored MySQL account grants the requested database
-and statement. Do not broaden privileges before identifying which layer
-rejected the request.
+For an OAuth user, inspect `GET /api/me/workspace` first.
+`selection_required` requires the user to select a default Agent;
+`no_agent_access` requires an administrator to grant an active Agent;
+`default_agent_unavailable` requires an explicit replacement selection. PAS
+does not fall back to a direct user-instance binding.
+
+Reconnect after Agent or binding changes. Call `list_db_instances`, use the
+returned `db_instance_id` as `instance_id`, and confirm the selected Agent
+binding exposes required SQL capability. Then verify the stored MySQL account
+grants the requested database and statement. Do not broaden privileges before
+identifying which layer rejected the request.
 
 ## Provisioning is stuck
 

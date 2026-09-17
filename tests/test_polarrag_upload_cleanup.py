@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 import base64
 import os
 from datetime import UTC, datetime, timedelta
@@ -185,7 +186,7 @@ def _allow_access(
 
     plan = KnowledgeAccessPlan(
         resources=[resource],
-        instance=object(),
+        instance=SimpleNamespace(id=resource.polarrag_instance_id),
         space=space,
         acl_context={
             "identity_domain": space.identity_domain,

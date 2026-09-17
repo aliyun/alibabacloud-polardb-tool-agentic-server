@@ -11,11 +11,12 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.api.credentials import instance_router as credentials_router
+from server.api.pagination import Page
 from server.auth.dependencies import require_admin
 from server.core import (
     binding_manager,
@@ -603,10 +604,21 @@ class CreateTenantRequest(BaseModel):
     user_id: str
 
 
-@router.get("/{instance_id}/tenants")
+class TenantResponse(BaseModel):
+    user_id: str
+    display_name: str | None
+    tenant_name: str | None
+    provisioning_step: str | None
+    created_at: datetime | None
+
+
+@router.get("/{instance_id}/tenants", response_model=Page[TenantResponse])
 async def list_tenants(
     instance_id: str,
-    admin: User = Depends(require_admin),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
+    _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     from server.models import UserInstanceBinding
@@ -615,11 +627,34 @@ async def list_tenants(
     if not inst or inst.topology != InstanceTopology.MULTITENANT:
         raise HTTPException(404, "Multitenant instance not found")
 
-    bindings = (await session.execute(
-        select(UserInstanceBinding).where(
-            UserInstanceBinding.instance_id == instance_id,
-            UserInstanceBinding.credential_id.is_not(None),
+    filters = [
+        UserInstanceBinding.instance_id == instance_id,
+        UserInstanceBinding.credential_id.is_not(None),
+    ]
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                UserInstanceBinding.tenant_name.ilike(pattern),
+                User.display_name.ilike(pattern),
+                User.external_id.ilike(pattern),
+            )
         )
+    total = (
+        await session.scalar(
+            select(func.count(UserInstanceBinding.id))
+            .join(User, User.id == UserInstanceBinding.user_id)
+            .where(*filters)
+        )
+        or 0
+    )
+    bindings = (await session.execute(
+        select(UserInstanceBinding)
+        .join(User, User.id == UserInstanceBinding.user_id)
+        .where(*filters)
+        .order_by(UserInstanceBinding.created_at, UserInstanceBinding.id)
+        .offset(offset)
+        .limit(limit)
     )).scalars().all()
 
     result = []
@@ -638,7 +673,12 @@ async def list_tenants(
                 binding.created_at.isoformat() if binding.created_at else None
             ),
         })
-    return result
+    return Page(
+        items=[TenantResponse.model_validate(item) for item in result],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post("/{instance_id}/tenants", status_code=201)

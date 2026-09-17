@@ -71,8 +71,8 @@ export default function DedicatedPoolRoutes({
           listProvisioningBindings(agentId),
           listDedicatedPools(),
         ])
-      setBindings(bindingResponse.data)
-      setPools(poolResponse.data)
+      setBindings(bindingResponse.data.items)
+      setPools(poolResponse.data.items)
     } catch (requestError) {
       setError(getAPIErrorMessage(requestError, t('agentDetail.routesLoadFailed')))
     } finally {

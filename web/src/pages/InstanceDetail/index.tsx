@@ -157,9 +157,9 @@ export default function InstanceDetail() {
           ])
         if (!isCurrent(scope)) return
         setInstance(instanceResponse.data)
-        setCredentials(credentialResponse.data)
+        setCredentials(credentialResponse.data.items)
         setBackend(
-          backendsResponse.data.find(
+          backendsResponse.data.items.find(
             (item) => item.instance_id === scope.instanceId,
           ) ?? null,
         )

@@ -3,13 +3,12 @@ import { Layout as AntLayout, Menu, Modal, Form, Input, message, Dropdown } from
 import {
   DashboardOutlined,
   TeamOutlined,
-  RobotOutlined,
-  ApartmentOutlined,
   DatabaseOutlined,
   CloudServerOutlined,
   FileTextOutlined,
   SettingOutlined,
   CloudOutlined,
+  ApiOutlined,
   LockOutlined,
   LogoutOutlined,
 } from '@ant-design/icons'
@@ -44,26 +43,23 @@ export default function AppLayout({ user, onLogout, authMode }: LayoutProps) {
 
   const menuItems = [
     { key: '/dashboard', icon: <DashboardOutlined />, label: t('layout.dashboard') },
-    ...(isAdmin
-      ? [
-          { key: '/users', icon: <TeamOutlined />, label: t('layout.users') },
-          { key: '/departments', icon: <ApartmentOutlined />, label: t('layout.departments') },
-          { key: '/instances', icon: <DatabaseOutlined />, label: t('layout.instances') },
-          { key: '/agents', icon: <RobotOutlined />, label: t('layout.agents') },
-        ]
-      : []),
-    { key: '/my-instances', icon: <CloudServerOutlined />, label: t('layout.myInstances') },
-    ...(isAdmin
-      ? [
-          { key: '/audit-logs', icon: <FileTextOutlined />, label: t('layout.auditLogs') },
-          {
-            key: '/settings/configuration',
-            icon: <SettingOutlined />,
-            label: t('layout.configuration'),
-          },
-          { key: '/pool', icon: <CloudOutlined />, label: t('layout.pool') },
-        ]
-      : []),
+    ...(isAdmin ? [
+      { key: '/resources', icon: <DatabaseOutlined />, label: t('access.resources') },
+      { key: '/access', icon: <TeamOutlined />, label: t('access.accounts') },
+      { key: '/audit-logs', icon: <FileTextOutlined />, label: t('layout.auditLogs') },
+    ] : []),
+    { key: '/my-resources', icon: <CloudServerOutlined />, label: t('access.myResources') },
+    { key: '/connect', icon: <ApiOutlined />, label: t('access.connect') },
+    ...(isAdmin ? [{key: 'advanced', icon: <SettingOutlined />, label: t('access.advanced'), children: [
+      { key: '/settings/features', label: t('features.title') },
+      { key: '/settings/configuration', label: t('layout.configuration') },
+      { key: '/instances', label: t('access.advancedResource') },
+      { key: '/users', label: t('access.identities') },
+      { key: '/departments', label: t('access.groups') },
+      { key: '/agents', label: t('access.service') },
+      { key: '/external-applications', label: t('layout.externalApplications') },
+      { key: '/pool', icon: <CloudOutlined />, label: t('layout.pool') },
+    ]}] : []),
   ]
 
   const handleChangePassword = async (values: { current_password: string; new_password: string }) => {

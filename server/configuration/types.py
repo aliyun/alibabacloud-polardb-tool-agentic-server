@@ -33,6 +33,7 @@ class ConfigAction(StrEnum):
     DISABLE = "disable"
     RESET = "reset"
     EXPORT = "export"
+    SET_INITIAL_PASSWORD = "set_initial_password"
 
 
 class EffectiveConfig(BaseModel):
@@ -86,8 +87,13 @@ class ConfigActor(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     scope: str
-    actor_type: Literal["bootstrap", "admin", "system"]
+    actor_type: Literal[
+        "bootstrap", "admin", "system", "managed_initializer"
+    ]
     credential_hash: str | None = None
+    instance_id: str | None = None
+    instance_generation: int | None = None
+    lease_owner: str | None = None
 
 
 class ConfigCommand(BaseModel):
@@ -99,6 +105,7 @@ class ConfigCommand(BaseModel):
     expected_revision: int | None = None
     idempotency_key: str | None = None
     validation_id: str | None = None
+    sso_test_id: str | None = None
     confirm_impact: bool = False
     config: dict[str, Any] | None = None
 
@@ -113,6 +120,7 @@ class ConfigResult(BaseModel):
     validation: dict[str, Any] | None = None
     plan: dict[str, Any] | None = None
     export: dict[str, Any] | None = None
+    credential_state: str | None = None
 
 
 class ConfigError(ValueError):

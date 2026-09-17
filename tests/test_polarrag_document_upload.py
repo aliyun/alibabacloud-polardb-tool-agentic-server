@@ -18,6 +18,7 @@ from server.models import (
     EnterprisePrincipalType,
     KnowledgeBindingMode,
     KnowledgeResource,
+    KnowledgeResourceManagementMode,
     KnowledgeResourceSyncStatus,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
@@ -372,6 +373,44 @@ async def test_member_upload_rejects_kb_outside_selected_agent_scope(
 
     assert response.status_code == 404
     assert response.json()["detail"]["code"] == "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE"
+
+
+async def test_external_sync_resource_rejects_upload_before_side_effects(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, member_headers = client
+    resource_id = await _seed_upload_resource(setup)
+    agent_id = await _seed_document_agent(setup, resource_id)
+    updated = await http.put(
+        f"/api/polarrag/knowledge-resources/{resource_id}/management-mode",
+        json={"management_mode": KnowledgeResourceManagementMode.EXTERNAL_SYNC.value},
+        headers=admin_headers,
+    )
+    assert updated.status_code == 200
+    store = FakeObjectStore()
+    upstream = FakeSubmitClient()
+    monkeypatch.setattr(
+        "server.api.polarrag_documents.object_store_from_space",
+        lambda _space: store,
+    )
+    monkeypatch.setattr(
+        "server.api.polarrag_documents.client_from_instance",
+        lambda _instance: upstream,
+    )
+
+    response = await http.post(
+        "/api/me/polarrag/documents",
+        data={"agent_id": agent_id, "knowledge_resource_id": resource_id},
+        files={"file": ("guide.md", b"body", "text/markdown")},
+        headers=member_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "EXTERNAL_SYNC_RESOURCE_READ_ONLY"
+    assert store.uploads == []
+    assert upstream.calls == []
 
 
 async def test_submit_failure_deletes_uploaded_object_and_hides_upstream_body(

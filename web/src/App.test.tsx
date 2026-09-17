@@ -62,6 +62,12 @@ it('preserves an admin detail route while authentication loads', async () => {
     logout: vi.fn(),
     isAdmin: false,
     authMode: 'builtin',
+    authModeInfo: {
+      mode: 'builtin',
+      provider_name: null,
+      sso_login_url: null,
+      recovery_login_path: null,
+    },
   })
   const rendered = render(<App />)
 
@@ -81,6 +87,12 @@ it('preserves an admin detail route while authentication loads', async () => {
     logout: vi.fn(),
     isAdmin: true,
     authMode: 'builtin',
+    authModeInfo: {
+      mode: 'builtin',
+      provider_name: null,
+      sso_login_url: null,
+      recovery_login_path: null,
+    },
   })
   rendered.rerender(<App />)
 
@@ -109,6 +121,12 @@ it('redirects a non-admin away from an admin detail route', async () => {
     logout: vi.fn(),
     isAdmin: false,
     authMode: 'builtin',
+    authModeInfo: {
+      mode: 'builtin',
+      provider_name: null,
+      sso_login_url: null,
+      recovery_login_path: null,
+    },
   })
 
   render(<App />)
@@ -133,6 +151,12 @@ it('redirects the legacy PolarRAG route to the consolidated Instances tab', asyn
     logout: vi.fn(),
     isAdmin: true,
     authMode: 'builtin',
+    authModeInfo: {
+      mode: 'builtin',
+      provider_name: null,
+      sso_login_url: null,
+      recovery_login_path: null,
+    },
   })
 
   render(<App />)
@@ -162,6 +186,12 @@ it('redirects a non-admin away from the PolarRAG administration route', async ()
     logout: vi.fn(),
     isAdmin: false,
     authMode: 'builtin',
+    authModeInfo: {
+      mode: 'builtin',
+      provider_name: null,
+      sso_login_url: null,
+      recovery_login_path: null,
+    },
   })
 
   render(<App />)

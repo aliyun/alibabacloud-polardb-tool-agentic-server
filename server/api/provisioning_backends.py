@@ -4,12 +4,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
+from server.api.pagination import Page
 from server.core import provisioning_backend_service
 from server.core.provisioning_backend_repository import (
     backend_is_fresh_and_healthy,
@@ -211,17 +212,26 @@ def _update_changes(body: UpdateBackendRequest) -> dict[str, object]:
     return changes
 
 
-@router.get("", response_model=list[BackendResponse])
+@router.get("", response_model=Page[BackendResponse])
 async def list_provisioning_backends(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    return [
-        BackendResponse.from_model(backend)
-        for backend in await provisioning_backend_service.list_backends(
-            session
-        )
-    ]
+    backends, total = await provisioning_backend_service.list_backends_page(
+        session,
+        offset=offset,
+        limit=limit,
+        search=search,
+    )
+    return Page(
+        items=[BackendResponse.from_model(backend) for backend in backends],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post("", response_model=BackendResponse, status_code=201)

@@ -42,13 +42,18 @@ describe('Departments page', () => {
     vi.mocked(api.get).mockImplementation(async (url) => {
       if (url === '/api/departments') {
         return {
-          data: [
-            {
-              id: 'department-1',
-              name: 'Finance',
-              description: null,
-            },
-          ],
+          data: {
+            items: [
+              {
+                id: 'department-1',
+                name: 'Finance',
+                description: null,
+              },
+            ],
+            total: 1,
+            offset: 0,
+            limit: 20,
+          },
         } as never
       }
       if (url === '/api/departments/department-1/multitenant-instance') {
