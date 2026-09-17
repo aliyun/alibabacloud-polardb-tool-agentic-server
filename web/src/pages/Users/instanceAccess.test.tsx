@@ -105,7 +105,9 @@ describe('User instance access editor', () => {
       if (url === '/auth/mode') {
         return Promise.resolve({ data: { mode: 'builtin' } } as never)
       }
-      return Promise.resolve({ data: [] } as never)
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 20 },
+      } as never)
     })
     vi.mocked(listInstances).mockResolvedValue({
       items: [autoInstance, registeredInstance],
@@ -134,9 +136,122 @@ describe('User instance access editor', () => {
     })
     vi.mocked(listInstanceCredentials).mockImplementation((instanceId) =>
       Promise.resolve({
-        data: instanceId === registeredInstance.id ? [credential] : [],
+        data: {
+          items: instanceId === registeredInstance.id ? [credential] : [],
+          total: instanceId === registeredInstance.id ? 1 : 0,
+          offset: 0,
+          limit: 20,
+        },
       } as never),
     )
+  })
+
+  it('requests departments within the backend page-size limit', async () => {
+    render(<Users />)
+
+    await waitFor(() =>
+      expect(api.get).toHaveBeenCalledWith(
+        '/api/departments',
+        { params: { offset: 0, limit: 100 } },
+      ),
+    )
+  })
+
+  it('keeps the latest department search results when requests finish out of order', async () => {
+    const user = userEvent.setup()
+    const olderSearch = deferred<{
+      data: { items: Array<{ id: string; name: string }>; total: number }
+    }>()
+    const newerSearch = deferred<{
+      data: { items: Array<{ id: string; name: string }>; total: number }
+    }>()
+    vi.mocked(api.get).mockImplementation((url: string, config?: unknown) => {
+      if (url === '/api/users') {
+        return Promise.resolve({
+          data: { items: [member], total: 1, offset: 0, limit: 20 },
+        } as never)
+      }
+      if (url === '/auth/mode') {
+        return Promise.resolve({ data: { mode: 'builtin' } } as never)
+      }
+      if (url === '/api/departments') {
+        const search = (
+          config as { params?: { search?: string } } | undefined
+        )?.params?.search
+        if (search === 'a') return olderSearch.promise as never
+        if (search === 'ab') return newerSearch.promise as never
+      }
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 100 },
+      } as never)
+    })
+    render(<Users />)
+
+    await user.click(
+      await screen.findByRole('button', { name: /edit/i }),
+    )
+    const dialog = screen.getByRole('dialog', {
+      name: /edit user: production reporter/i,
+    })
+    const departmentSelect = within(dialog).getByRole('combobox', {
+      name: /departments/i,
+    })
+    await user.type(departmentSelect, 'ab')
+    await waitFor(() => {
+      expect(api.get).toHaveBeenCalledWith('/api/departments', {
+        params: { offset: 0, limit: 100, search: 'a' },
+      })
+      expect(api.get).toHaveBeenCalledWith('/api/departments', {
+        params: { offset: 0, limit: 100, search: 'ab' },
+      })
+    })
+
+    newerSearch.resolve({
+      data: { items: [{ id: 'newest', name: 'Newest result' }], total: 1 },
+    })
+    expect(await screen.findByText('Newest result')).toBeInTheDocument()
+
+    olderSearch.resolve({
+      data: { items: [{ id: 'stale', name: 'Stale result' }], total: 1 },
+    })
+    await waitFor(() => {
+      expect(screen.getByText('Newest result')).toBeInTheDocument()
+      expect(screen.queryByText('Stale result')).not.toBeInTheDocument()
+    })
+  })
+
+  it('opens the enterprise identity sources tab from a direct link', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/users') {
+        return Promise.resolve({
+          data: { items: [member], total: 1, offset: 0, limit: 20 },
+        } as never)
+      }
+      if (url === '/auth/mode') {
+        return Promise.resolve({ data: { mode: 'builtin' } } as never)
+      }
+      if (
+        url === '/api/identity-sources'
+        || url === '/api/identity-sources/spaces'
+      ) {
+        return Promise.resolve({ data: { items: [] } } as never)
+      }
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 20 },
+      } as never)
+    })
+    window.history.replaceState({}, '', '/users?tab=identity-sources')
+    try {
+      render(<Users />)
+
+      expect(
+        await screen.findByRole('tab', {
+          name: 'Enterprise identity sources',
+        }),
+      ).toHaveAttribute('aria-selected', 'true')
+    } finally {
+      window.history.replaceState({}, '', '/')
+    }
   })
 
   it('does not expose the retired provisioning mode editor', async () => {
@@ -172,7 +287,9 @@ describe('User instance access editor', () => {
       if (url === '/auth/mode') {
         return Promise.resolve({ data: { mode: 'builtin' } } as never)
       }
-      return Promise.resolve({ data: [] } as never)
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 20 },
+      } as never)
     })
 
     render(<Users />)
@@ -219,7 +336,9 @@ describe('User instance access editor', () => {
       if (url === `/api/polarrag/users/${syncedUser.id}/principals`) {
         return Promise.resolve({ data: { items: [] } } as never)
       }
-      return Promise.resolve({ data: [] } as never)
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 20 },
+      } as never)
     })
 
     render(<Users />)
@@ -265,7 +384,9 @@ describe('User instance access editor', () => {
       if (url === '/auth/mode') {
         return Promise.resolve({ data: { mode: 'builtin' } } as never)
       }
-      return Promise.resolve({ data: [] } as never)
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 20 },
+      } as never)
     })
     vi.mocked(api.post).mockImplementation(() => {
       created = true
@@ -387,7 +508,9 @@ describe('User instance access editor', () => {
           },
         } as never)
       }
-      return Promise.resolve({ data: [] } as never)
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 20 },
+      } as never)
     })
     vi.mocked(api.post).mockResolvedValue({ data: {} } as never)
     render(<Users />)
@@ -404,6 +527,7 @@ describe('User instance access editor', () => {
     ).toBeInTheDocument()
     expect(api.get).toHaveBeenCalledWith(
       `/api/polarrag/users/${member.id}/principals`,
+      { params: { offset: 0, limit: 20 } },
     )
     expect(screen.getByText('ou-1')).toBeInTheDocument()
     expect(
@@ -451,7 +575,9 @@ describe('User instance access editor', () => {
       if (url === `/api/polarrag/users/${member.id}/principals`) {
         return Promise.resolve({ data: { items: [] } } as never)
       }
-      return Promise.resolve({ data: [] } as never)
+      return Promise.resolve({
+        data: { items: [], total: 0, offset: 0, limit: 20 },
+      } as never)
     })
     vi.mocked(api.post).mockResolvedValue({ data: {} } as never)
     render(<Users />)

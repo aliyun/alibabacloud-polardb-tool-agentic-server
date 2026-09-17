@@ -36,11 +36,14 @@ pytest_plugins = ("tests._admin_api_fixtures",)
 @dataclass(frozen=True)
 class SeededEnterpriseAccess:
     agent_id: str
+    bound_instance_id: str
+    unbound_instance_id: str
     source_id: str
     other_source_id: str
     other_source_group_id: str
     other_source_external_group_id: str
     group_id: str
+    department_id: str
     user_id: str
     unmapped_user_id: str
     space_id: str
@@ -96,6 +99,12 @@ async def _seed_enterprise_access(setup) -> SeededEnterpriseAccess:
             display_name="Engineering",
             principal_type=EnterpriseDirectoryPrincipalType.GROUP,
         )
+        department = EnterpriseDirectoryGroup(
+            identity_source_id=source.id,
+            external_group_id="department-research",
+            display_name="Research",
+            principal_type=EnterpriseDirectoryPrincipalType.DEPARTMENT,
+        )
         other_group = EnterpriseDirectoryGroup(
             identity_source_id=other_source.id,
             external_group_id="group-other",
@@ -137,6 +146,7 @@ async def _seed_enterprise_access(setup) -> SeededEnterpriseAccess:
         session.add_all(
             [
                 group,
+                department,
                 other_group,
                 directory_user,
                 bound_space,
@@ -148,11 +158,14 @@ async def _seed_enterprise_access(setup) -> SeededEnterpriseAccess:
         await session.commit()
         return SeededEnterpriseAccess(
             agent_id=agent.id,
+            bound_instance_id=bound_instance.id,
+            unbound_instance_id=unbound_instance.id,
             source_id=source.id,
             other_source_id=other_source.id,
             other_source_group_id=other_group.id,
             other_source_external_group_id=other_group.external_group_id,
             group_id=group.id,
+            department_id=department.id,
             user_id=member.id,
             unmapped_user_id=admin.id,
             space_id=bound_space.knowledge_space_id,
@@ -222,6 +235,7 @@ async def test_enterprise_access_preview_rejects_implicit_all_users(
             "identity_source_id": seeded.source_id,
             "directory_group_ids": [],
             "pas_user_ids": [],
+            "polarrag_instance_ids": [seeded.bound_instance_id],
             "knowledge_space_ids": [seeded.space_id],
         },
     )
@@ -234,6 +248,7 @@ async def test_enterprise_access_preview_rejects_implicit_all_users(
     (
         ("directory_group_ids", "group_id", 500),
         ("pas_user_ids", "user_id", 500),
+        ("polarrag_instance_ids", "bound_instance_id", 200),
         ("knowledge_space_ids", "space_id", 200),
     ),
 )
@@ -251,6 +266,22 @@ async def test_enterprise_access_preview_rejects_oversized_selection_lists(
     detail = response.json()["detail"]
     assert detail[0]["loc"] == ["body", selection_field]
     assert detail[0]["type"] == "too_long"
+
+
+async def test_enterprise_access_preview_rejects_empty_explicit_instance_list(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+    selection = _selection(seeded)
+    selection["polarrag_instance_ids"] = []
+
+    response = await _preview(http, admin_headers, seeded, selection)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail[0]["loc"] == ["body", "polarrag_instance_ids"]
+    assert detail[0]["type"] == "too_short"
 
 
 @pytest.mark.parametrize(
@@ -327,6 +358,7 @@ async def test_enterprise_access_preview_accepts_any_active_user_mapping(
         {
             "identity_source_id": seeded.source_id,
             "pas_user_ids": [seeded.user_id],
+            "polarrag_instance_ids": [seeded.bound_instance_id],
             "knowledge_space_ids": [seeded.space_id],
         },
     )
@@ -334,6 +366,29 @@ async def test_enterprise_access_preview_accepts_any_active_user_mapping(
     assert response.status_code == 200
     assert [item["relation_type"] for item in response.json()["creates"]] == [
         "agent_user"
+    ]
+
+
+async def test_enterprise_access_preview_accepts_active_department(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+
+    response = await _preview(
+        http,
+        admin_headers,
+        seeded,
+        {
+            "identity_source_id": seeded.source_id,
+            "directory_group_ids": [seeded.department_id],
+            "knowledge_space_ids": [seeded.space_id],
+        },
+    )
+
+    assert response.status_code == 200
+    assert [item["relation_type"] for item in response.json()["creates"]] == [
+        "agent_identity_source_group"
     ]
 
 
@@ -364,7 +419,76 @@ def _selection(seeded: SeededEnterpriseAccess) -> dict[str, object]:
         "all_synced_users": True,
         "directory_group_ids": [seeded.group_id],
         "pas_user_ids": [seeded.user_id],
+        "polarrag_instance_ids": [seeded.bound_instance_id],
         "knowledge_space_ids": [seeded.space_id],
+    }
+
+
+async def test_enterprise_access_legacy_payload_derives_and_binds_instances(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+    selection = {
+        "identity_source_id": seeded.source_id,
+        "all_synced_users": True,
+        "directory_group_ids": [],
+        "pas_user_ids": [],
+        "knowledge_space_ids": [
+            seeded.space_id,
+            seeded.unbound_space_id,
+        ],
+    }
+
+    preview = await _preview(http, admin_headers, seeded, selection)
+
+    assert preview.status_code == 200
+    assert preview.json()["selection"]["polarrag_instance_ids"] == sorted(
+        [seeded.bound_instance_id, seeded.unbound_instance_id]
+    )
+    assert any(
+        item["relation_type"] == "agent_polarrag_instance_binding"
+        and item["relation_id"] is None
+        for item in preview.json()["creates"]
+    )
+    assert any(
+        item["relation_type"] == "agent_polarrag_instance_binding"
+        and item["relation_id"] is not None
+        for item in preview.json()["reuses"]
+    )
+
+    applied = await http.post(
+        f"/api/agents/{seeded.agent_id}/enterprise-access/apply",
+        json={**selection, "preview_hash": preview.json()["preview_hash"]},
+        headers=admin_headers,
+    )
+
+    assert applied.status_code == 200
+    assert applied.json()["selection"]["polarrag_instance_ids"] == sorted(
+        [seeded.bound_instance_id, seeded.unbound_instance_id]
+    )
+    assert any(
+        item["relation_type"] == "agent_polarrag_instance_binding"
+        and item["relation_id"] is not None
+        for item in applied.json()["creates"]
+    )
+    factory, _admin, _member = setup
+    async with factory() as session:
+        binding_instance_ids = set(
+            (
+                await session.execute(
+                    select(
+                        AgentPolarRAGInstanceBinding.polarrag_instance_id
+                    ).where(
+                        AgentPolarRAGInstanceBinding.agent_id
+                        == seeded.agent_id
+                    )
+                )
+            ).scalars()
+        )
+    assert binding_instance_ids == {
+        seeded.bound_instance_id,
+        seeded.unbound_instance_id,
     }
 
 
@@ -399,7 +523,7 @@ async def test_enterprise_access_apply_is_atomic_and_idempotent(
     assert repeated.status_code == 200
     assert repeated.json()["creates"] == []
     assert repeated.json()["global_changes"] == []
-    assert len(repeated.json()["reuses"]) == 4
+    assert len(repeated.json()["reuses"]) == 5
     await _assert_relation_counts(
         setup,
         groups=2,
@@ -413,6 +537,98 @@ async def test_enterprise_access_apply_is_atomic_and_idempotent(
         )
     assert audit_actions.count("identity_source.space_bind") == 1
     assert audit_actions.count("agent_enterprise_access.configure") == 2
+
+
+async def test_enterprise_access_apply_binds_selected_active_instance(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+    selection = {
+        **_selection(seeded),
+        "polarrag_instance_ids": [seeded.unbound_instance_id],
+        "knowledge_space_ids": [seeded.unbound_space_id],
+    }
+
+    preview = await _preview(http, admin_headers, seeded, selection)
+
+    assert preview.status_code == 200
+    assert any(
+        item["relation_type"] == "agent_polarrag_instance_binding"
+        and item["relation_id"] is None
+        for item in preview.json()["creates"]
+    )
+
+    applied = await http.post(
+        f"/api/agents/{seeded.agent_id}/enterprise-access/apply",
+        json={**selection, "preview_hash": preview.json()["preview_hash"]},
+        headers=admin_headers,
+    )
+
+    assert applied.status_code == 200
+    assert any(
+        item["relation_type"] == "agent_polarrag_instance_binding"
+        and item["relation_id"] is not None
+        for item in applied.json()["creates"]
+    )
+    factory, _admin, _member = setup
+    async with factory() as session:
+        bindings = list(
+            (
+                await session.execute(
+                    select(AgentPolarRAGInstanceBinding)
+                    .where(
+                        AgentPolarRAGInstanceBinding.agent_id
+                        == seeded.agent_id
+                    )
+                    .order_by(
+                        AgentPolarRAGInstanceBinding.polarrag_instance_id
+                    )
+                )
+            ).scalars()
+        )
+        assert {
+            binding.polarrag_instance_id for binding in bindings
+        } == {seeded.bound_instance_id, seeded.unbound_instance_id}
+        public_binding = next(
+            binding
+            for binding in bindings
+            if binding.polarrag_instance_id == seeded.bound_instance_id
+        )
+        assert public_binding.public_knowledge_resource_ids_json == (
+            '["resource-selected"]'
+        )
+
+
+async def test_enterprise_access_preview_rejects_inactive_instance(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+    factory, _admin, _member = setup
+    async with factory() as session:
+        instance = await session.get(
+            PolarRAGInstance, seeded.unbound_instance_id
+        )
+        assert instance is not None
+        instance.status = PolarRAGInstanceStatus.DISABLED
+        await session.commit()
+
+    response = await _preview(
+        http,
+        admin_headers,
+        seeded,
+        {
+            **_selection(seeded),
+            "polarrag_instance_ids": [seeded.unbound_instance_id],
+            "knowledge_space_ids": [seeded.unbound_space_id],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == (
+        "ENTERPRISE_ACCESS_INSTANCE_NOT_ELIGIBLE"
+    )
 
 
 async def test_enterprise_access_apply_serializes_concurrent_requests(

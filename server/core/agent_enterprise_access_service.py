@@ -3,8 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from typing import TypeVar
 
 from sqlalchemy import Select, select
@@ -12,7 +12,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.audit_logger import log_audit
-from server.enterprise_identity.service import identity_provider_key
+from server.enterprise_identity.service import (
+    identity_provider_key,
+    identity_source_snapshot_is_usable,
+)
 from server.models import (
     Agent,
     AgentGroupAssignment,
@@ -26,7 +29,8 @@ from server.models import (
     EnterpriseDirectoryUser,
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceSpaceBinding,
-    EnterpriseIdentitySourceStatus,
+    PolarRAGInstance,
+    PolarRAGInstanceStatus,
     PolarRAGSpace,
     User,
     UserExternalIdentity,
@@ -40,6 +44,7 @@ class EnterpriseAccessSelection:
     all_synced_users: bool
     directory_group_ids: tuple[str, ...]
     pas_user_ids: tuple[str, ...]
+    polarrag_instance_ids: tuple[str, ...]
     knowledge_space_ids: tuple[str, ...]
 
 
@@ -83,6 +88,7 @@ class _PreparedEnterpriseAccess:
     source: EnterpriseIdentitySource
     groups: tuple[EnterpriseDirectoryGroup, ...]
     users: tuple[User, ...]
+    instances: tuple[PolarRAGInstance, ...]
     spaces: tuple[PolarRAGSpace, ...]
 
 
@@ -95,6 +101,15 @@ def _normalize(selection: EnterpriseAccessSelection) -> EnterpriseAccessSelectio
         ),
         pas_user_ids=tuple(
             sorted({item.strip() for item in selection.pas_user_ids if item.strip()})
+        ),
+        polarrag_instance_ids=tuple(
+            sorted(
+                {
+                    item.strip()
+                    for item in selection.polarrag_instance_ids
+                    if item.strip()
+                }
+            )
         ),
         knowledge_space_ids=tuple(
             sorted({item.strip() for item in selection.knowledge_space_ids if item.strip()})
@@ -123,6 +138,7 @@ async def _prepare_enterprise_access(
     selection: EnterpriseAccessSelection,
     for_update: bool = False,
 ) -> _PreparedEnterpriseAccess:
+    current = datetime.now(UTC)
     normalized = _normalize(selection)
     if not normalized.identity_source_id:
         raise _validation_error(
@@ -143,7 +159,6 @@ async def _prepare_enterprise_access(
             "ENTERPRISE_ACCESS_SPACE_REQUIRED",
             "Select at least one PolarRAG Space",
         )
-
     agent = await session.get(Agent, agent_id, with_for_update=for_update)
     if agent is None:
         raise _validation_error(
@@ -155,13 +170,10 @@ async def _prepare_enterprise_access(
         normalized.identity_source_id,
         with_for_update=for_update,
     )
-    current = datetime.now(UTC)
     if (
         source is None
-        or source.status != EnterpriseIdentitySourceStatus.ACTIVE
         or source.last_synced_at is None
-        or _as_utc(source.last_synced_at)
-        < current - timedelta(seconds=source.stale_after_seconds)
+        or not identity_source_snapshot_is_usable(source, now=current)
     ):
         raise _validation_error(
             "ENTERPRISE_ACCESS_SOURCE_NOT_ELIGIBLE",
@@ -173,8 +185,12 @@ async def _prepare_enterprise_access(
         .where(
             EnterpriseDirectoryGroup.id.in_(normalized.directory_group_ids),
             EnterpriseDirectoryGroup.identity_source_id == source.id,
-            EnterpriseDirectoryGroup.principal_type
-            == EnterpriseDirectoryPrincipalType.GROUP,
+            EnterpriseDirectoryGroup.principal_type.in_(
+                (
+                    EnterpriseDirectoryPrincipalType.GROUP,
+                    EnterpriseDirectoryPrincipalType.DEPARTMENT,
+                )
+            ),
             EnterpriseDirectoryGroup.status
             == EnterpriseDirectoryEntryStatus.ACTIVE,
         )
@@ -249,25 +265,58 @@ async def _prepare_enterprise_access(
         )
         .order_by(PolarRAGSpace.knowledge_space_id)
     )
+    if not normalized.polarrag_instance_ids:
+        preliminary_spaces = tuple(
+            (await session.execute(space_statement)).scalars()
+        )
+        if len(preliminary_spaces) != len(normalized.knowledge_space_ids):
+            raise _validation_error(
+                "ENTERPRISE_ACCESS_SPACE_NOT_ELIGIBLE",
+                "Select at least one enabled Space from every selected instance",
+            )
+        normalized = replace(
+            normalized,
+            polarrag_instance_ids=tuple(
+                sorted(
+                    {
+                        space.polarrag_instance_id
+                        for space in preliminary_spaces
+                    }
+                )
+            ),
+        )
+
+    instance_statement = (
+        select(PolarRAGInstance)
+        .where(PolarRAGInstance.id.in_(normalized.polarrag_instance_ids))
+        .order_by(PolarRAGInstance.id)
+    )
+    if for_update:
+        instance_statement = instance_statement.with_for_update()
+    instances = tuple((await session.execute(instance_statement)).scalars())
+    if len(instances) != len(normalized.polarrag_instance_ids) or any(
+        instance.status != PolarRAGInstanceStatus.ACTIVE
+        for instance in instances
+    ):
+        raise _validation_error(
+            "ENTERPRISE_ACCESS_INSTANCE_NOT_ELIGIBLE",
+            "Every selected PolarRAG instance must be active",
+        )
+
     if for_update:
         space_statement = space_statement.with_for_update()
     spaces = tuple((await session.execute(space_statement)).scalars())
-    agent_binding_ids_statement = select(
-        AgentPolarRAGInstanceBinding.polarrag_instance_id
-    ).where(AgentPolarRAGInstanceBinding.agent_id == agent.id)
-    if for_update:
-        agent_binding_ids_statement = (
-            agent_binding_ids_statement.with_for_update()
-        )
-    bound_instances = set(
-        (await session.execute(agent_binding_ids_statement)).scalars()
-    )
+    selected_instance_ids = set(normalized.polarrag_instance_ids)
+    space_instance_ids = {
+        space.polarrag_instance_id for space in spaces
+    }
     if len(spaces) != len(normalized.knowledge_space_ids) or any(
-        space.polarrag_instance_id not in bound_instances for space in spaces
-    ):
+        space.polarrag_instance_id not in selected_instance_ids
+        for space in spaces
+    ) or space_instance_ids != selected_instance_ids:
         raise _validation_error(
             "ENTERPRISE_ACCESS_SPACE_NOT_ELIGIBLE",
-            "Every selected Space must be enabled on an Agent-bound instance",
+            "Select at least one enabled Space from every selected instance",
         )
 
     group_assignment_statement = select(AgentGroupAssignment).where(
@@ -312,10 +361,34 @@ async def _prepare_enterprise_access(
     space_binding_by_space = {
         row.knowledge_space_id: row for row in space_bindings
     }
+    agent_binding_statement = (
+        select(AgentPolarRAGInstanceBinding)
+        .where(AgentPolarRAGInstanceBinding.agent_id == agent.id)
+        .order_by(AgentPolarRAGInstanceBinding.id)
+    )
+    if for_update:
+        agent_binding_statement = agent_binding_statement.with_for_update()
+    agent_bindings = list(
+        (await session.execute(agent_binding_statement)).scalars()
+    )
+    agent_binding_by_instance = {
+        row.polarrag_instance_id: row for row in agent_bindings
+    }
 
     creates: list[EnterpriseAccessImpact] = []
     reuses: list[EnterpriseAccessImpact] = []
     global_changes: list[EnterpriseAccessImpact] = []
+    for instance in instances:
+        existing_binding = agent_binding_by_instance.get(instance.id)
+        impact = EnterpriseAccessImpact(
+            relation_type="agent_polarrag_instance_binding",
+            relation_id=(
+                existing_binding.id if existing_binding is not None else None
+            ),
+            display_name=instance.name,
+            scope="agent",
+        )
+        (reuses if existing_binding is not None else creates).append(impact)
     if normalized.all_synced_users:
         candidate = AgentGroupAssignment.for_identity_source_all_users(
             agent_id=agent.id,
@@ -384,16 +457,6 @@ async def _prepare_enterprise_access(
             reuses if existing_space_binding is not None else global_changes
         ).append(impact)
 
-    agent_binding_statement = (
-        select(AgentPolarRAGInstanceBinding)
-        .where(AgentPolarRAGInstanceBinding.agent_id == agent.id)
-        .order_by(AgentPolarRAGInstanceBinding.id)
-    )
-    if for_update:
-        agent_binding_statement = agent_binding_statement.with_for_update()
-    agent_bindings = list(
-        (await session.execute(agent_binding_statement)).scalars()
-    )
     hash_payload = {
         "selection": asdict(normalized),
         "agent_id": agent.id,
@@ -435,6 +498,15 @@ async def _prepare_enterprise_access(
                 "last_synced_at": _timestamp(space.last_synced_at),
             }
             for space in spaces
+        ],
+        "instances": [
+            {
+                "id": instance.id,
+                "name": instance.name,
+                "status": instance.status.value,
+                "updated_at": _timestamp(instance.updated_at),
+            }
+            for instance in instances
         ],
         "agent_bindings": [
             {
@@ -478,6 +550,7 @@ async def _prepare_enterprise_access(
         source=source,
         groups=groups,
         users=users,
+        instances=instances,
         spaces=spaces,
     )
 
@@ -594,7 +667,49 @@ async def apply_enterprise_access(
     creates: list[EnterpriseAccessImpact] = []
     reuses: list[EnterpriseAccessImpact] = []
     global_changes: list[EnterpriseAccessImpact] = []
+    created_agent_binding_ids: list[str] = []
     created_space_binding_ids: list[str] = []
+
+    for instance in prepared.instances:
+        agent_binding, created = await _insert_or_reuse(
+            session,
+            AgentPolarRAGInstanceBinding(
+                agent_id=agent_id,
+                polarrag_instance_id=instance.id,
+                created_by_user_id=admin.id,
+            ),
+            lookup=select(AgentPolarRAGInstanceBinding).where(
+                AgentPolarRAGInstanceBinding.agent_id == agent_id,
+                AgentPolarRAGInstanceBinding.polarrag_instance_id
+                == instance.id,
+            ),
+            constraint_name="uq_agent_polarrag_instance_binding",
+            sqlite_columns=(
+                "agent_polarrag_instance_bindings.agent_id, "
+                "agent_polarrag_instance_bindings.polarrag_instance_id"
+            ),
+        )
+        impact = EnterpriseAccessImpact(
+            relation_type="agent_polarrag_instance_binding",
+            relation_id=agent_binding.id,
+            display_name=instance.name,
+            scope="agent",
+        )
+        (creates if created else reuses).append(impact)
+        if created:
+            created_agent_binding_ids.append(agent_binding.id)
+            await _required_audit(
+                session,
+                admin=admin,
+                action="agent_polarrag_binding.create",
+                target_type="agent_polarrag_binding",
+                target_id=agent_binding.id,
+                metadata={
+                    "agent_id": agent_id,
+                    "polarrag_instance_id": instance.id,
+                    "mode": "enterprise_access",
+                },
+            )
 
     for space in prepared.spaces:
         space_binding, created = await _insert_or_reuse(
@@ -744,6 +859,10 @@ async def apply_enterprise_access(
             "agent_creates": len(creates),
             "global_creates": len(global_changes),
             "reuses": len(reuses),
+            "polarrag_instance_ids": list(
+                prepared.preview.selection.polarrag_instance_ids
+            ),
+            "created_agent_binding_ids": created_agent_binding_ids,
             "created_space_binding_ids": created_space_binding_ids,
         },
     )

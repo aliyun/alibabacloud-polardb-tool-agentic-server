@@ -31,6 +31,7 @@ from server.mcp.tools.handlers import (
     _actor_audit_fields,
     _actor_cache_key,
     _is_agent_actor,
+    _resource_agent,
     _resolve_user_sql_credential,
 )
 from server.models import (
@@ -84,7 +85,7 @@ async def handle_describe_schema(
 
     if _is_agent_actor(user):
         credential_result = await resolve_agent_sql_access(
-            user,
+            _resource_agent(user),
             session,
             instance_id=instance_id,
             database=database,

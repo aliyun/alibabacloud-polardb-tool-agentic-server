@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.config import OIDCConfig
+from server.core.user_workspace import ensure_user_workspace
 from server.models import User, AuthProvider, UserRole, UserStatus
 from server.models.oauth import UserExternalIdentity
 
@@ -264,6 +265,11 @@ class IdentityFederation:
                         endpoints.userinfo_endpoint,
                         data={"access_token": access_token},
                     )
+                elif config.userinfo_token_method == "query":
+                    resp = await client.get(
+                        endpoints.userinfo_endpoint,
+                        params={"access_token": access_token},
+                    )
                 else:
                     resp = await client.get(
                         endpoints.userinfo_endpoint,
@@ -293,7 +299,15 @@ class IdentityFederation:
                 "Cannot extract user identity: no userinfo endpoint and no id_token"
             )
 
-        subject = claims.get(config.user_id_claim)
+        subject_value = claims.get(config.user_id_claim)
+        if (
+            config.protocol_mode == "oauth2_userinfo"
+            and isinstance(subject_value, int)
+            and not isinstance(subject_value, bool)
+        ):
+            subject = str(subject_value)
+        else:
+            subject = subject_value
         if not isinstance(subject, str) or not subject:
             raise OIDCAuthenticationError(
                 f"OIDC user identity claim '{config.user_id_claim}' must be a non-empty string"
@@ -333,6 +347,8 @@ class IdentityFederation:
             )
             user = user_result.scalar_one_or_none()
             if user:
+                await ensure_user_workspace(session, user.id)
+                await session.commit()
                 return user
 
         # Create new user
@@ -368,5 +384,6 @@ class IdentityFederation:
                     user_id=user.id, department_id=dept.id, is_primary=True,
                 ))
 
+        await ensure_user_workspace(session, user.id)
         await session.commit()
         return user

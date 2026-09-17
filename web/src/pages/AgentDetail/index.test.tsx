@@ -196,26 +196,26 @@ function renderPage(withNavigation = false) {
   )
 }
 
+function pagedResponse(items: unknown[]) {
+  return {
+    data: { items, total: items.length, offset: 0, limit: 200 },
+  } as never
+}
+
 describe('Agent detail page', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(getAgent).mockResolvedValue({ data: agent } as never)
-    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue({ data: [] } as never)
+    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue(pagedResponse([]))
     vi.mocked(listInstances).mockResolvedValue({
       items: [instance], total: 1, offset: 0, limit: 200,
     } as never)
-    vi.mocked(listInstanceCredentials).mockResolvedValue({
-      data: [credential],
-    } as never)
-    vi.mocked(listAgentInstanceAccess).mockResolvedValue({
-      data: [],
-    } as never)
-    vi.mocked(listProvisioningBackends).mockResolvedValue({
-      data: [],
-    } as never)
-    vi.mocked(listAgentResources).mockResolvedValue({ data: [] } as never)
-    vi.mocked(listDedicatedPools).mockResolvedValue({ data: [] } as never)
-    vi.mocked(listProvisioningBindings).mockResolvedValue({ data: [] } as never)
+    vi.mocked(listInstanceCredentials).mockResolvedValue(pagedResponse([credential]))
+    vi.mocked(listAgentInstanceAccess).mockResolvedValue(pagedResponse([]))
+    vi.mocked(listProvisioningBackends).mockResolvedValue(pagedResponse([]))
+    vi.mocked(listAgentResources).mockResolvedValue(pagedResponse([]))
+    vi.mocked(listDedicatedPools).mockResolvedValue(pagedResponse([]))
+    vi.mocked(listProvisioningBindings).mockResolvedValue(pagedResponse([]))
     vi.mocked(updateAgent).mockResolvedValue({ data: agent } as never)
     vi.mocked(revealAgentToken).mockResolvedValue({
       data: { token: 'pas_agent_default_plaintext' },
@@ -706,11 +706,8 @@ describe('Agent detail page', () => {
 
   it('shows database and PolarRAG bindings only in their capability tabs', async () => {
     const user = userEvent.setup()
-    vi.mocked(listAgentInstanceAccess).mockResolvedValue({
-      data: [instanceAccess],
-    } as never)
-    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue({
-      data: [
+    vi.mocked(listAgentInstanceAccess).mockResolvedValue(pagedResponse([instanceAccess]))
+    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue(pagedResponse([
         {
           id: 'rag-binding-1',
           polarrag_instance_id: 'rag-1',
@@ -718,8 +715,7 @@ describe('Agent detail page', () => {
           public_knowledge_resource_ids: null,
           created_at: '2026-08-05T00:00:00Z',
         },
-      ],
-    } as never)
+      ]))
     renderPage()
 
     const heading = await screen.findByRole('heading', {
@@ -748,8 +744,7 @@ describe('Agent detail page', () => {
 
   it('updates a binding to selected PUBLIC knowledge resources', async () => {
     const user = userEvent.setup()
-    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue({
-      data: [
+    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue(pagedResponse([
         {
           id: 'rag-binding-1',
           polarrag_instance_id: 'rag-1',
@@ -757,16 +752,20 @@ describe('Agent detail page', () => {
           public_knowledge_resource_ids: null,
           created_at: '2026-08-05T00:00:00Z',
         },
-      ],
-    } as never)
+      ]))
     vi.mocked(listAgentPolarRAGPublicResources).mockResolvedValue({
-      data: [
-        {
-          knowledge_resource_id: 'resource-1',
-          name: 'Public handbook',
-          knowledge_space_name: 'Corporate',
-        },
-      ],
+      data: {
+        items: [
+          {
+            knowledge_resource_id: 'resource-1',
+            name: 'Public handbook',
+            knowledge_space_name: 'Corporate',
+          },
+        ],
+        total: 1,
+        offset: 0,
+        limit: 50,
+      },
     } as never)
     vi.mocked(updateAgentPolarRAGPublicResources).mockResolvedValue({
       data: {
@@ -835,9 +834,7 @@ describe('Agent detail page', () => {
       offset: 0,
       limit: 200,
     } as never)
-    vi.mocked(listAgentInstanceAccess).mockResolvedValue({
-      data: [instanceAccess],
-    } as never)
+    vi.mocked(listAgentInstanceAccess).mockResolvedValue(pagedResponse([instanceAccess]))
     renderPage()
 
     await user.click(
@@ -875,9 +872,7 @@ describe('Agent detail page', () => {
     vi.mocked(listInstances).mockResolvedValue({
       items: [multitenant], total: 1, offset: 0, limit: 200,
     } as never)
-    vi.mocked(listProvisioningBackends).mockResolvedValue({
-      data: [backend],
-    } as never)
+    vi.mocked(listProvisioningBackends).mockResolvedValue(pagedResponse([backend]))
     vi.mocked(createAgentInstanceAccess).mockResolvedValue({
       data: created,
     } as never)
@@ -910,9 +905,7 @@ describe('Agent detail page', () => {
 
   it('updates aggregate access by instance id', async () => {
     const user = userEvent.setup()
-    vi.mocked(listAgentInstanceAccess).mockResolvedValue({
-      data: [instanceAccess],
-    } as never)
+    vi.mocked(listAgentInstanceAccess).mockResolvedValue(pagedResponse([instanceAccess]))
     vi.mocked(updateAgentInstanceAccess).mockResolvedValue({
       data: {
         ...instanceAccess,
@@ -961,11 +954,8 @@ describe('Agent detail page', () => {
       provisioning_backend_id: backend.id,
       create_availability: 'available' as const,
     }
-    vi.mocked(listAgentInstanceAccess).mockResolvedValue({
-      data: [combined],
-    } as never)
-    vi.mocked(listAgentResources).mockResolvedValue({
-      data: [
+    vi.mocked(listAgentInstanceAccess).mockResolvedValue(pagedResponse([combined]))
+    vi.mocked(listAgentResources).mockResolvedValue(pagedResponse([
         {
           id: 'resource-1',
           backend_id: backend.id,
@@ -976,8 +966,7 @@ describe('Agent detail page', () => {
           created_at: '2026-07-26T00:00:00Z',
           updated_at: null,
         },
-      ],
-    } as never)
+      ]))
     vi.mocked(deleteAgentInstanceAccess).mockRejectedValue({
       response: {
         status: 409,
@@ -1018,8 +1007,7 @@ describe('Agent detail page', () => {
   })
 
   it('omits terminal resources even if a stale API response contains them', async () => {
-    vi.mocked(listAgentResources).mockResolvedValue({
-      data: [
+    vi.mocked(listAgentResources).mockResolvedValue(pagedResponse([
         {
           id: 'resource-ready',
           backend_id: 'backend-1',
@@ -1040,8 +1028,7 @@ describe('Agent detail page', () => {
           created_at: '2026-07-26T00:00:00Z',
           updated_at: null,
         },
-      ],
-    } as never)
+      ]))
     renderPage()
 
     expect(await screen.findByText('orders')).toBeInTheDocument()

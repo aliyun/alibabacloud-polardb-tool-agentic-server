@@ -21,7 +21,9 @@ vi.mock('../../api/dedicatedPools', async () => {
 })
 
 vi.mock('../../api/dbInstanceResources', () => ({
-  listDBInstanceResources: vi.fn().mockResolvedValue({ data: [] }),
+  listDBInstanceResources: vi.fn().mockResolvedValue({
+    data: { items: [], total: 0, offset: 0, limit: 20 },
+  }),
   restoreDBInstanceResource: vi.fn(),
 }))
 
@@ -69,11 +71,15 @@ function renderPanel() {
   )
 }
 
+function pagedPools(items: unknown[]) {
+  return {
+    data: { items, total: items.length, offset: 0, limit: 20 },
+  } as never
+}
+
 describe('DedicatedPoolPanel', () => {
   beforeEach(() => {
-    vi.mocked(listDedicatedPools).mockResolvedValue({
-      data: [basePool],
-    } as never)
+    vi.mocked(listDedicatedPools).mockResolvedValue(pagedPools([basePool]))
     vi.mocked(runDedicatedMemberAction).mockResolvedValue({ data: {} } as never)
   })
 
@@ -89,9 +95,9 @@ describe('DedicatedPoolPanel', () => {
   })
 
   it('shows the surplus explanation only after planning exceeds target', async () => {
-    vi.mocked(listDedicatedPools).mockResolvedValue({
-      data: [{ ...basePool, planning: 4, billable_total: 4, surplus: 2 }],
-    } as never)
+    vi.mocked(listDedicatedPools).mockResolvedValue(
+      pagedPools([{ ...basePool, planning: 4, billable_total: 4, surplus: 2 }]),
+    )
     renderPanel()
     expect(
       await screen.findByText(/planning capacity exceeds target by 2/i),
@@ -100,8 +106,7 @@ describe('DedicatedPoolPanel', () => {
   })
 
   it('distinguishes stale evidence from a failed quarantined member', async () => {
-    vi.mocked(listDedicatedPools).mockResolvedValue({
-      data: [
+    vi.mocked(listDedicatedPools).mockResolvedValue(pagedPools([
         {
           ...basePool,
           members: [
@@ -149,8 +154,7 @@ describe('DedicatedPoolPanel', () => {
             },
           ],
         },
-      ],
-    } as never)
+      ]))
     const user = userEvent.setup()
     renderPanel()
     expect(

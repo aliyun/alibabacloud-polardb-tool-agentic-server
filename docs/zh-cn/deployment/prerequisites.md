@@ -14,8 +14,9 @@
 - 所有后端 Pod 均可访问的 MySQL 8.0 或 PostgreSQL 元数据库。ACK 生产部署
   推荐使用 PolarDB MySQL 8.0。
 
-容器以 UID/GID `10001` 运行，监听 TCP `18760`，并要求 `/tmp`、
-`/app/log`、`/var/run/pas` 可写；根文件系统可以设置为只读。
+容器以 UID/GID `10001` 运行，业务监听端口默认为 TCP `18760`；平台分配
+其他端口时设置 `PAS_SERVER_PORT`。容器要求 `/tmp`、`/app/log`、
+`/var/run/pas` 可写；根文件系统可以设置为只读。
 
 ## 必需的启动配置
 
@@ -29,6 +30,21 @@
 
 每次部署新应用版本前，仅执行一次 `pas database migrate`。应用 Pod 启动时
 只执行只读的 `pas database check` 门禁，绝不会自动迁移。
+
+## 可选管理监听器
+
+只有显式设置 `PAS_MANAGEMENT_PORT` 和 `PAS_MANAGEMENT_AUTH_MODE` 才会启用
+管控面管理监听器。业务端口与管理端口必须不同。托管部署在渲染工作负载时还会
+以环境变量注入 `PAS_MANAGED_INSTANCE_ID` 和
+`PAS_MANAGED_INSTANCE_GENERATION`，这些设置不是 CLI 参数。
+
+`trusted-network` 只能用于独立的 ClusterIP Service，并配合默认拒绝、仅允许
+管控面访问的 NetworkPolicy。只要其他租户或公网可能访问该监听器，就必须使用
+`bearer-token`，并让 `PAS_MANAGEMENT_TOKEN_FILE` 指向权限受限的挂载文件；
+绝不能把 token 值放进环境变量。
+
+管理监听器是运维接口，不是客户 OpenAPI。不要把它加入业务 Service、Ingress、
+负载均衡或公共 API 网关。
 
 ## 镜像仓库访问
 

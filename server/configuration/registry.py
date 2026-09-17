@@ -19,10 +19,22 @@ from server.configuration.aliyun_access import (
 )
 from server.configuration.secrets import SecretFieldSpec
 from server.configuration.types import ModuleState
+from server.configuration.url_policy import is_pas_ipv4_loopback_http_origin
+from server.config import EnterpriseIdentitySyncConfig, PolarRAGToolLimitsConfig
+
+
+SQL_SECURITY_SCHEMA_VERSION = 2
+OBSERVABILITY_SCHEMA_VERSION = 2
 
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class KnowledgeModuleConfig(_StrictModel):
+    enabled: bool = False
+    validation_resource_id: str | None = Field(default=None, max_length=36)
+    validation_user_id: str | None = Field(default=None, max_length=36)
 
 
 class CoreAdminConfig(_StrictModel):
@@ -33,15 +45,77 @@ class AgentTokenAuthConfig(_StrictModel):
     enabled: Literal[True] = True
 
 
+class ExternalTokenTrustConfig(_StrictModel):
+    enabled: bool = False
+    provider: Literal[
+        "oidc_jwt",
+        "oauth2_introspection",
+        "oauth2_userinfo",
+        "feishu",
+        "buc",
+    ] = "oidc_jwt"
+    direct_mcp_enabled: bool = False
+    identity_source_id: str | None = None
+    expected_audience: str | None = None
+    introspection_endpoint: AnyHttpUrl | None = None
+    userinfo_endpoint: AnyHttpUrl | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    introspection_auth_method: Literal[
+        "client_secret_basic",
+        "client_secret_post",
+    ] = "client_secret_basic"
+    access_token_ttl_seconds: int = Field(default=28800, ge=60, le=86400)
+
+    @model_validator(mode="after")
+    def validate_provider_requirements(self) -> "ExternalTokenTrustConfig":
+        if self.direct_mcp_enabled and not self.enabled:
+            raise ValueError(
+                "Direct MCP external tokens require external token trust"
+            )
+        if not self.enabled:
+            return self
+        if (
+            self.provider == "feishu"
+            and self.direct_mcp_enabled
+            and not self.identity_source_id
+        ):
+            raise ValueError(
+                "Direct MCP Feishu token trust requires identity_source_id"
+            )
+        if (
+            self.provider == "oauth2_introspection"
+            and self.introspection_endpoint is None
+        ):
+            raise ValueError(
+                "OAuth token introspection requires introspection_endpoint"
+            )
+        if bool(self.client_id) != bool(self.client_secret):
+            raise ValueError(
+                "External validation client_id and client_secret must be configured together"
+            )
+        if (
+            self.userinfo_endpoint is not None
+            and self.provider == "oauth2_introspection"
+            and not self.identity_source_id
+        ):
+            raise ValueError(
+                "External UserInfo requires identity_source_id"
+            )
+        return self
+
+
 class UserSSOConfig(_StrictModel):
+    browser_login_enabled: bool = True
+    protocol_mode: Literal["oidc", "oauth2_userinfo"] = "oidc"
     discovery_url: AnyHttpUrl | None = None
     issuer: AnyHttpUrl | None = None
     authorization_endpoint: AnyHttpUrl | None = None
     token_endpoint: AnyHttpUrl | None = None
     userinfo_endpoint: AnyHttpUrl | None = None
     jwks_uri: AnyHttpUrl | None = None
-    client_id: str = Field(min_length=1)
-    client_secret: str = Field(min_length=1)
+    client_id: str | None = Field(default=None, min_length=1)
+    client_secret: str | None = Field(default=None, min_length=1)
     scopes: list[str] = Field(
         default_factory=lambda: ["openid", "profile", "email"]
     )
@@ -50,14 +124,52 @@ class UserSSOConfig(_StrictModel):
     email_claim: str = "email"
     provider_name: str = "oidc"
     idp_pkce: bool = False
-    userinfo_token_method: str = "bearer_header"
+    userinfo_token_method: Literal[
+        "bearer_header",
+        "form_post",
+        "query",
+    ] = "bearer_header"
     id_token_algorithms: list[str] = Field(
         default_factory=lambda: ["RS256", "ES256"]
     )
     default_department: str = ""
+    external_token_trust: ExternalTokenTrustConfig = Field(
+        default_factory=ExternalTokenTrustConfig
+    )
 
     @model_validator(mode="after")
     def validate_manual_endpoints(self) -> "UserSSOConfig":
+        trust = self.external_token_trust
+        if not self.browser_login_enabled:
+            if not trust.enabled:
+                raise ValueError(
+                    "Token-exchange-only mode requires external token trust"
+                )
+            if trust.provider in {"oidc_jwt", "buc"}:
+                raise ValueError(
+                    "Token-exchange-only mode supports OAuth introspection, "
+                    "OAuth UserInfo, or Feishu providers"
+                )
+            if (
+                trust.provider == "oauth2_introspection"
+                and (not trust.client_id or not trust.client_secret)
+            ):
+                raise ValueError(
+                    "Token-exchange-only introspection requires dedicated "
+                    "client_id and client_secret"
+                )
+            if (
+                trust.provider == "oauth2_userinfo"
+                and trust.userinfo_endpoint is None
+            ):
+                raise ValueError(
+                    "Token-exchange-only UserInfo requires userinfo_endpoint"
+                )
+            return self
+        if not self.client_id or not self.client_secret:
+            raise ValueError(
+                "Browser SSO requires client_id and client_secret"
+            )
         manual_values = (
             self.issuer,
             self.authorization_endpoint,
@@ -69,11 +181,30 @@ class UserSSOConfig(_StrictModel):
             if not (
                 self.issuer
                 and self.authorization_endpoint
-                and self.token_endpoint
-            ):
+                and self.token_endpoint):
                 raise ValueError(
-                    "Manual OIDC configuration requires issuer, "
-                    "authorization_endpoint, and token_endpoint"
+                    "Manual OIDC configuration requires issuer, authorization_endpoint, and token_endpoint"
+                )
+        if (
+            self.protocol_mode == "oauth2_userinfo"
+            and self.userinfo_endpoint is None
+            and self.discovery_url is None
+        ):
+            raise ValueError(
+                "OAuth 2.0 UserInfo mode requires userinfo_endpoint"
+            )
+        if trust.enabled and trust.provider == "buc":
+            if self.protocol_mode != "oauth2_userinfo":
+                raise ValueError(
+                    "BUC token trust requires OAuth 2.0 UserInfo mode"
+                )
+            if self.userinfo_token_method != "form_post":
+                raise ValueError(
+                    "BUC token trust requires form_post UserInfo tokens"
+                )
+            if self.user_id_claim != "account_id":
+                raise ValueError(
+                    "BUC token trust requires user_id_claim=account_id"
                 )
         return self
 
@@ -113,8 +244,7 @@ class RuntimePolicyConfig(_StrictModel):
         )
         if self.dedicated_worker_heartbeat_stale_after_seconds < minimum:
             raise ValueError(
-                "Dedicated worker heartbeat stale threshold must be at least "
-                "three intervals and 30 seconds"
+                "Dedicated worker heartbeat stale threshold must be at least three intervals and 30 seconds"
             )
         return self
 
@@ -132,8 +262,6 @@ class SQLSecurityModuleConfig(_StrictModel):
     rate_limit_enabled: bool = True
     requests_per_minute: int = Field(default=60, ge=1)
     burst: int = Field(default=10, ge=1)
-    audit_enabled: bool = True
-    audit_retention_days: int = Field(default=180, ge=1)
 
 
 class ObservabilityConfig(_StrictModel):
@@ -145,6 +273,8 @@ class ObservabilityConfig(_StrictModel):
     max_bytes: int = Field(default=104_857_600, ge=1)
     backup_count: int = Field(default=10, ge=0)
     timezone: str = "UTC+8"
+    audit_enabled: bool = True
+    audit_retention_days: int = Field(default=180, ge=1)
 
 
 class TokenSecurityConfig(_StrictModel):
@@ -192,7 +322,10 @@ MODULE_REGISTRY: dict[str, ModuleDefinition] = {
         UserSSOConfig,
         ModuleState.SKIPPED,
         dependencies=("token_security",),
-        secret_fields=(SecretFieldSpec("client_secret"),),
+        secret_fields=(
+            SecretFieldSpec("client_secret"),
+            SecretFieldSpec("external_token_trust.client_secret"),
+        ),
     ),
     "aliyun_access": ModuleDefinition(
         "aliyun_access",
@@ -228,12 +361,39 @@ MODULE_REGISTRY: dict[str, ModuleDefinition] = {
         optional=False,
         system_owned=True,
     ),
+    "knowledge": ModuleDefinition(
+        "knowledge", KnowledgeModuleConfig, ModuleState.ACTIVE,
+        optional=False, system_owned=True,
+        ui_hints={"restart_required": True, "feature": "knowledge"},
+    ),
+    "polarrag_tool_limits": ModuleDefinition(
+        "polarrag_tool_limits",
+        PolarRAGToolLimitsConfig,
+        ModuleState.ACTIVE,
+        optional=False,
+        system_owned=True,
+        ui_hints={
+            "local_limit_semantics": (
+                "Limits apply independently in each PAS replica; aggregate "
+                "capacity is approximately the configured value multiplied "
+                "by the number of replicas."
+            )
+        },
+    ),
+    "enterprise_identity_sync": ModuleDefinition(
+        "enterprise_identity_sync",
+        EnterpriseIdentitySyncConfig,
+        ModuleState.ACTIVE,
+        optional=False,
+        system_owned=True,
+    ),
     "sql_security": ModuleDefinition(
         "sql_security",
         SQLSecurityModuleConfig,
         ModuleState.ACTIVE,
         optional=False,
         system_owned=True,
+        schema_version=SQL_SECURITY_SCHEMA_VERSION,
     ),
     "observability": ModuleDefinition(
         "observability",
@@ -241,6 +401,7 @@ MODULE_REGISTRY: dict[str, ModuleDefinition] = {
         ModuleState.ACTIVE,
         optional=False,
         system_owned=True,
+        schema_version=OBSERVABILITY_SCHEMA_VERSION,
     ),
     "token_security": ModuleDefinition(
         "token_security",
@@ -296,6 +457,7 @@ def validate_module_config(
     config: dict[str, Any],
     *,
     effective_configs: dict[str, dict[str, Any]],
+    allow_insecure_loopback_urls: bool = False,
 ) -> ModuleValidationResult:
     definition = MODULE_REGISTRY.get(module)
     if definition is None:
@@ -320,15 +482,25 @@ def validate_module_config(
     if module == "user_sso":
         runtime = effective_configs.get("runtime_policy", {})
         external_base_url = runtime.get("external_base_url")
-        if not isinstance(external_base_url, str) or not external_base_url.startswith(
-            "https://"
-        ):
+        valid_external_base_url = (
+            isinstance(external_base_url, str)
+            and (
+                external_base_url.startswith("https://")
+                or (
+                    allow_insecure_loopback_urls
+                    and is_pas_ipv4_loopback_http_origin(external_base_url)
+                )
+            )
+        )
+        if not valid_external_base_url:
             return ModuleValidationResult(
                 valid=False,
                 normalized_config=normalized,
                 error_code="EXTERNAL_BASE_URL_REQUIRED",
                 message=(
-                    "An explicit HTTPS external_base_url is required"
+                    "An explicit HTTPS external_base_url is required. "
+                    "Local development mode additionally permits an exact "
+                    "localhost or 127.0.0.1 HTTP origin."
                 ),
             )
     return ModuleValidationResult(

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { expect, it, vi } from 'vitest'
 
 import type { ConfigModule } from '../../api/configuration'
+import { i18n } from '../../i18n/i18n'
 import ConfigModuleForm from './index'
 
 const module: ConfigModule = {
@@ -140,4 +141,98 @@ it('omits the documentation block when no docs are provided', () => {
   render(<ConfigModuleForm module={module} onSubmit={vi.fn()} />)
 
   expect(screen.queryByRole('link')).not.toBeInTheDocument()
+})
+
+it('renders PolarRAG governance controls and local replica semantics', () => {
+  const limits: ConfigModule = {
+    ...module,
+    name: 'polarrag_tool_limits',
+    schema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', title: 'Enabled', default: true },
+        user_requests_per_minute: {
+          type: 'integer',
+          title: 'User requests per minute',
+          minimum: 1,
+          default: 60,
+        },
+        user_burst: {
+          type: 'integer',
+          title: 'User burst',
+          minimum: 1,
+          default: 10,
+        },
+        agent_requests_per_minute: {
+          type: 'integer',
+          title: 'Agent requests per minute',
+          minimum: 1,
+          default: 120,
+        },
+        agent_burst: {
+          type: 'integer',
+          title: 'Agent burst',
+          minimum: 1,
+          default: 20,
+        },
+        instance_max_inflight: {
+          type: 'integer',
+          title: 'Instance max in-flight calls',
+          minimum: 1,
+          default: 16,
+        },
+        max_fanout: {
+          type: 'integer',
+          title: 'Maximum fan-out',
+          minimum: 1,
+          default: 8,
+        },
+        retry_after_seconds: {
+          type: 'integer',
+          title: 'Retry interval',
+          minimum: 1,
+          default: 1,
+        },
+        upstream_request_timeout_ms: {
+          type: 'integer',
+          title: 'Upstream request timeout',
+          minimum: 100,
+          maximum: 300000,
+          default: 20000,
+        },
+      },
+    },
+  }
+
+  render(<ConfigModuleForm module={limits} onSubmit={vi.fn()} />)
+
+  expect(screen.getByText('Limits apply independently in each PAS replica.')).toBeInTheDocument()
+  expect(screen.getByLabelText(/Enable PolarRAG runtime governance/)).toBeChecked()
+  expect(screen.getByLabelText(/User requests per minute/)).toHaveValue('60')
+  expect(screen.getByLabelText(/User burst capacity/)).toHaveValue('10')
+  expect(screen.getByLabelText(/Agent requests per minute/)).toHaveValue('120')
+  expect(screen.getByLabelText(/Agent burst capacity/)).toHaveValue('20')
+  expect(screen.getByLabelText(/Instance maximum in-flight calls/)).toHaveValue('16')
+  expect(screen.getByLabelText(/Maximum fan-out per Tool call/)).toHaveValue('8')
+  expect(screen.getByLabelText(/Concurrency retry interval/)).toHaveValue('1')
+  expect(screen.getByLabelText(/Upstream request timeout/)).toHaveValue('20000')
+})
+
+it('renders PolarRAG local replica semantics in Chinese', async () => {
+  await i18n.changeLanguage('zh-CN')
+  render(
+    <ConfigModuleForm
+      module={{
+        ...module,
+        name: 'polarrag_tool_limits',
+        schema: { type: 'object', properties: {} },
+      }}
+      onSubmit={vi.fn()}
+    />,
+  )
+
+  expect(
+    screen.getByText('限额在每个 PAS 副本中独立生效。'),
+  ).toBeInTheDocument()
+  expect(screen.getByText(/部署 N 个副本时/)).toBeInTheDocument()
 })

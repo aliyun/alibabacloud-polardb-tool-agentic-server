@@ -463,7 +463,9 @@ async def test_admin_explicitly_upgrades_legacy_purchase_profile(
         await session.commit()
 
     listed = await http.get("/api/dedicated-pools", headers=admin_headers)
-    legacy = next(item for item in listed.json() if item["id"] == pool_id)
+    legacy = next(
+        item for item in listed.json()["items"] if item["id"] == pool_id
+    )
     assert legacy["purchase_profile_status"] == "upgrade_required"
     assert "purchase_config" not in legacy
 

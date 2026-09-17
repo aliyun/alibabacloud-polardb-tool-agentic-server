@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.models import (
@@ -24,6 +24,7 @@ from server.polarrag.access import (
     KnowledgeAccessErrorCode,
     KnowledgeResourceScope,
     list_visible_knowledge_resources,
+    list_visible_knowledge_resources_cursor_page,
     plan_knowledge_access,
 )
 
@@ -331,6 +332,51 @@ async def test_native_personal_owner_is_visible_without_domain_principal(
             {"provider": "polarrag", "type": "user", "id": user.external_id}
         ],
     }
+
+
+async def test_visible_resource_cursor_page_fetches_only_limit_plus_one(seeded) -> None:
+    session, user, resources, _owner_resource = seeded
+    template = resources[0]
+    session.add_all(
+        [
+            KnowledgeResource(
+                knowledge_space_id=template.knowledge_space_id,
+                polarrag_instance_id=template.polarrag_instance_id,
+                space_id=template.space_id,
+                kb_id=f"bounded-{index}",
+                name=f"Bounded {index}",
+                kb_type="PUBLIC",
+                identity_domain=template.identity_domain,
+                binding_mode=KnowledgeBindingMode.DOMAIN,
+                sync_status=KnowledgeResourceSyncStatus.ACTIVE,
+                enabled=True,
+            )
+            for index in range(10)
+        ]
+    )
+    await session.commit()
+    statements: list[tuple[str, object]] = []
+
+    def record_statement(_conn, _cursor, statement, parameters, _context, _many):
+        if "ORDER BY knowledge_resources.id" in statement and " LIMIT " in statement:
+            statements.append((statement, parameters))
+
+    event.listen(session.bind.sync_engine, "before_cursor_execute", record_statement)
+    try:
+        page, has_more, cursor_valid = await list_visible_knowledge_resources_cursor_page(
+            session,
+            user,
+            knowledge_space_id=template.knowledge_space_id,
+            limit=2,
+        )
+    finally:
+        event.remove(session.bind.sync_engine, "before_cursor_execute", record_statement)
+
+    assert len(page) == 2
+    assert has_more is True
+    assert cursor_valid is True
+    assert len(statements) == 1
+    assert 3 in statements[0][1]
 
 
 async def test_agent_instance_scope_includes_future_enabled_spaces_with_acl(

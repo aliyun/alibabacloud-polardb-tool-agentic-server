@@ -13,21 +13,26 @@ fi
   exit 2
 }
 
-: "${POLARDB_HOST:?missing POLARDB_HOST}"
-: "${POLARDB_USER:?missing POLARDB_USER}"
+POLARDB_HOST_PROVIDED="${POLARDB_HOST+x}"
+POLARDB_USER_PROVIDED="${POLARDB_USER+x}"
+POLARDB_PORT_PROVIDED="${POLARDB_PORT+x}"
+POLARDB_PASSWORD_PROVIDED="${POLARDB_PASSWORD+x}"
+POLARDB_PASSWORD_FILE_PROVIDED="${POLARDB_PASSWORD_FILE+x}"
 
+PAS_DATABASE_ENGINE="${PAS_DATABASE_ENGINE:-mysql}"
 POLARDB_PORT="${POLARDB_PORT:-3306}"
 PAS_DB_NAME="${PAS_DB_NAME:-pas_meta}"
 PAS_HOME="${PAS_HOME:-/data/polar-mcp}"
 PAS_REPO="${PAS_REPO:-https://github.com/aliyun/alibabacloud-polardb-tool-agentic-server.git}"
-PAS_VERSION="${PAS_VERSION:-0.0.11}"
+PAS_VERSION="${PAS_VERSION:-0.0.12}"
 PAS_REF="${PAS_REF:-v${PAS_VERSION}}"
 PAS_UPDATE_REPO="${PAS_UPDATE_REPO:-1}"
 PAS_IMAGE="${PAS_IMAGE:-ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:${PAS_VERSION}}"
 PAS_ALLOW_LOCAL_BUILD="${PAS_ALLOW_LOCAL_BUILD:-0}"
 PAS_PORT="${PAS_PORT:-18760}"
 PAS_COMPOSE_PROJECT="${PAS_COMPOSE_PROJECT:-polardb-agentic}"
-COMPOSE_FILE="deploy/compose/compose.external-mysql.yaml"
+PAS_SQLITE_VOLUME="${PAS_SQLITE_VOLUME:-${PAS_COMPOSE_PROJECT}-sqlite-data}"
+COMPOSE_FILE=""
 PYPI_INDEX="${PYPI_INDEX:-https://mirrors.aliyun.com/pypi/simple/}"
 DEBIAN_MIRROR="${DEBIAN_MIRROR:-http://mirrors.aliyun.com/debian}"
 DEBIAN_SECURITY_MIRROR="${DEBIAN_SECURITY_MIRROR:-http://mirrors.aliyun.com/debian-security}"
@@ -35,6 +40,38 @@ SECRETS_DIR="$PAS_HOME/.secrets"
 
 log() { printf '[deploy] %s\n' "$*"; }
 fatal() { printf '[deploy] ERROR: %s\n' "$*" >&2; exit 1; }
+
+sqlite_mode() {
+  [ "$PAS_DATABASE_ENGINE" = "sqlite" ]
+}
+
+select_database_mode() {
+  case "$PAS_DATABASE_ENGINE" in
+    mysql) COMPOSE_FILE="deploy/compose/compose.external-mysql.yaml" ;;
+    sqlite) COMPOSE_FILE="deploy/compose/compose.sqlite.yaml" ;;
+    *) fatal "PAS_DATABASE_ENGINE must be mysql or sqlite" ;;
+  esac
+}
+
+validate_sqlite_volume_name() {
+  case "$PAS_SQLITE_VOLUME" in
+    ''|*[!A-Za-z0-9_.-]*|[.-]*)
+      fatal "PAS_SQLITE_VOLUME must start with a letter or number and contain only letters, numbers, dot, underscore, and hyphen"
+      ;;
+  esac
+  [ "${#PAS_SQLITE_VOLUME}" -le 255 ] \
+    || fatal "PAS_SQLITE_VOLUME must be at most 255 characters"
+}
+
+reject_sqlite_mysql_inputs() {
+  [ -z "$POLARDB_HOST_PROVIDED" ] || fatal "POLARDB_HOST must not be set when PAS_DATABASE_ENGINE=sqlite"
+  [ -z "$POLARDB_USER_PROVIDED" ] || fatal "POLARDB_USER must not be set when PAS_DATABASE_ENGINE=sqlite"
+  [ -z "$POLARDB_PORT_PROVIDED" ] || fatal "POLARDB_PORT must not be set when PAS_DATABASE_ENGINE=sqlite"
+  [ -z "$POLARDB_PASSWORD_PROVIDED" ] || fatal "POLARDB_PASSWORD must not be set when PAS_DATABASE_ENGINE=sqlite"
+  [ -z "$POLARDB_PASSWORD_FILE_PROVIDED" ] || fatal "POLARDB_PASSWORD_FILE must not be set when PAS_DATABASE_ENGINE=sqlite"
+  [ "$PAS_DB_NAME" = "pas_meta" ] \
+    || fatal "PAS_DB_NAME must remain pas_meta when PAS_DATABASE_ENGINE=sqlite"
+}
 
 SUDO=()
 DOCKER_COMMAND=(docker)
@@ -64,22 +101,30 @@ pkg_install() {
 
 validate_inputs() {
   [ "$(uname -s)" = "Linux" ] || fatal "the deployment target must be Linux"
-  case "$POLARDB_PORT" in ''|*[!0-9]*) fatal "POLARDB_PORT must be an integer" ;; esac
-  [ "$POLARDB_PORT" -ge 1 ] && [ "$POLARDB_PORT" -le 65535 ] \
-    || fatal "POLARDB_PORT must be between 1 and 65535"
+  select_database_mode
   case "$PAS_PORT" in ''|*[!0-9]*) fatal "PAS_PORT must be an integer" ;; esac
   [ "$PAS_PORT" -ge 1 ] && [ "$PAS_PORT" -le 65535 ] \
     || fatal "PAS_PORT must be between 1 and 65535"
-  case "$PAS_DB_NAME" in
-    ''|*[!A-Za-z0-9_]*) fatal "PAS_DB_NAME may contain only letters, numbers, and underscore" ;;
-  esac
-  [ "${#PAS_DB_NAME}" -le 64 ] || fatal "PAS_DB_NAME must be at most 64 characters"
-  case "$POLARDB_HOST" in
-    *[[:space:]]*|'') fatal "POLARDB_HOST must be a non-empty hostname or IP without whitespace" ;;
-  esac
-  case "$POLARDB_USER" in
-    *$'\n'*|*$'\r'*|'') fatal "POLARDB_USER must be non-empty and single-line" ;;
-  esac
+  if sqlite_mode; then
+    validate_sqlite_volume_name
+    reject_sqlite_mysql_inputs
+  else
+    : "${POLARDB_HOST:?missing POLARDB_HOST}"
+    : "${POLARDB_USER:?missing POLARDB_USER}"
+    case "$POLARDB_PORT" in ''|*[!0-9]*) fatal "POLARDB_PORT must be an integer" ;; esac
+    [ "$POLARDB_PORT" -ge 1 ] && [ "$POLARDB_PORT" -le 65535 ] \
+      || fatal "POLARDB_PORT must be between 1 and 65535"
+    case "$PAS_DB_NAME" in
+      ''|*[!A-Za-z0-9_]*) fatal "PAS_DB_NAME may contain only letters, numbers, and underscore" ;;
+    esac
+    [ "${#PAS_DB_NAME}" -le 64 ] || fatal "PAS_DB_NAME must be at most 64 characters"
+    case "$POLARDB_HOST" in
+      *[[:space:]]*|'') fatal "POLARDB_HOST must be a non-empty hostname or IP without whitespace" ;;
+    esac
+    case "$POLARDB_USER" in
+      *$'\n'*|*$'\r'*|'') fatal "POLARDB_USER must be non-empty and single-line" ;;
+    esac
+  fi
   case "$PAS_HOME" in /*) ;; *) fatal "PAS_HOME must be an absolute path" ;; esac
   [ "$PAS_HOME" != "/" ] || fatal "PAS_HOME cannot be /"
   case "$PAS_COMPOSE_PROJECT" in
@@ -160,6 +205,11 @@ resolve_docker() {
     || fatal "Docker Compose v2 is required"
 }
 
+require_buildx_for_local_build() {
+  "${DOCKER_COMMAND[@]}" buildx version >/dev/null 2>&1 \
+    || fatal "PAS_ALLOW_LOCAL_BUILD=1 requires Docker Buildx; install a trusted Docker Buildx plugin or use an approved PAS_IMAGE with PAS_ALLOW_LOCAL_BUILD=0"
+}
+
 verify_image_architecture() {
   local image="$1" host_arch image_arch
   host_arch=$("${DOCKER_COMMAND[@]}" version --format '{{.Server.Arch}}')
@@ -169,11 +219,21 @@ verify_image_architecture() {
 }
 
 compose() {
-  env -u PAS_DATABASE_URL -u PAS_ENCRYPTION_KEY -u PAS_PORT -u PAS_IMAGE \
-    "${DOCKER_COMMAND[@]}" compose \
-    -p "$PAS_COMPOSE_PROJECT" \
-    --env-file "$SECRETS_DIR/pas-compose.env" \
-    -f "$COMPOSE_FILE" "$@"
+  if sqlite_mode; then
+    env -u PAS_DATABASE_URL -u PAS_ENCRYPTION_KEY -u PAS_PORT -u PAS_IMAGE \
+      -u PAS_SQLITE_VOLUME \
+      PAS_IMAGE="$EFFECTIVE_IMAGE" PAS_PORT="$PAS_PORT" \
+      PAS_SQLITE_VOLUME="$PAS_SQLITE_VOLUME" \
+      "${DOCKER_COMMAND[@]}" compose \
+      -p "$PAS_COMPOSE_PROJECT" \
+      -f "$COMPOSE_FILE" "$@"
+  else
+    env -u PAS_DATABASE_URL -u PAS_ENCRYPTION_KEY -u PAS_PORT -u PAS_IMAGE \
+      "${DOCKER_COMMAND[@]}" compose \
+      -p "$PAS_COMPOSE_PROJECT" \
+      --env-file "$SECRETS_DIR/pas-compose.env" \
+      -f "$COMPOSE_FILE" "$@"
+  fi
 }
 
 load_password() {
@@ -201,7 +261,9 @@ load_password() {
 
 validate_target() {
   validate_inputs
-  tcp_preflight
+  if ! sqlite_mode; then
+    tcp_preflight
+  fi
   if [ -e "$PAS_HOME" ] && [ ! -d "$PAS_HOME/.git" ] \
     && [ -n "$(ls -A "$PAS_HOME" 2>/dev/null)" ]; then
     fatal "$PAS_HOME is non-empty and is not a Git checkout"
@@ -211,6 +273,9 @@ validate_target() {
   fi
   if command -v docker >/dev/null; then
     resolve_docker
+    if [ "$PAS_ALLOW_LOCAL_BUILD" = "1" ]; then
+      require_buildx_for_local_build
+    fi
     log "Docker daemon and Compose v2 are available"
   elif command -v dnf >/dev/null || command -v yum >/dev/null \
     || command -v apt-get >/dev/null; then
@@ -218,7 +283,11 @@ validate_target() {
   else
     fatal "Docker is absent and no supported package manager is available"
   fi
-  log "validation passed: Linux target, inputs, database TCP path, Docker path, PAS_HOME, and repository identity"
+  if sqlite_mode; then
+    log "validation passed: Linux target, SQLite inputs, Docker path, PAS_HOME, and repository identity"
+  else
+    log "validation passed: Linux target, inputs, database TCP path, Docker path, PAS_HOME, and repository identity"
+  fi
 }
 
 prepare_home() {
@@ -262,8 +331,10 @@ if [ "$VALIDATE_ONLY" -eq 1 ]; then
   log "validate-only completed; no files, packages, images, containers, or services were changed"
   exit 0
 fi
-load_password
-trap 'unset POLARDB_PASSWORD ENCODED_PASSWORD ENCRYPTION_KEY; [ -z "${PASSWORD_TMP:-}" ] || rm -f "$PASSWORD_TMP"' EXIT
+if ! sqlite_mode; then
+  load_password
+  trap 'unset POLARDB_PASSWORD ENCODED_PASSWORD ENCRYPTION_KEY; [ -z "${PASSWORD_TMP:-}" ] || rm -f "$PASSWORD_TMP"' EXIT
+fi
 
 command -v curl >/dev/null || pkg_install curl
 command -v git >/dev/null || pkg_install git
@@ -281,6 +352,9 @@ if ! command -v docker >/dev/null; then
     || fatal "Docker was installed but could not be started"
 fi
 resolve_docker
+if [ "$PAS_ALLOW_LOCAL_BUILD" = "1" ]; then
+  require_buildx_for_local_build
+fi
 
 checkout_release
 cd "$PAS_HOME"
@@ -296,6 +370,58 @@ build_local_image() {
     -t "$LOCAL_TAG" .
   EFFECTIVE_IMAGE="$LOCAL_TAG"
   verify_image_architecture "$EFFECTIVE_IMAGE"
+}
+
+initialize_sqlite_volume() {
+  log "initializing persistent SQLite volume $PAS_SQLITE_VOLUME"
+  "${DOCKER_COMMAND[@]}" volume create "$PAS_SQLITE_VOLUME" >/dev/null
+  "${DOCKER_COMMAND[@]}" run --rm -i --user 0:0 --entrypoint python \
+    --mount "type=volume,source=$PAS_SQLITE_VOLUME,target=/var/lib/pas" \
+    "$EFFECTIVE_IMAGE" - <<'PY'
+import base64
+import fcntl
+import os
+import stat
+from pathlib import Path
+
+
+data_dir = Path("/var/lib/pas")
+if data_dir.is_symlink() or not data_dir.is_dir():
+    raise SystemExit("SQLite data path is not a directory")
+
+lock_path = data_dir / ".pas-initialize.lock"
+lock_flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+try:
+    lock_descriptor = os.open(lock_path, lock_flags, 0o600)
+except OSError as error:
+    raise SystemExit("cannot open SQLite initialization lock") from error
+
+with os.fdopen(lock_descriptor, "r+b", closefd=True):
+    fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+    os.fchmod(lock_descriptor, 0o600)
+    os.fchown(lock_descriptor, 0, 0)
+    key_path = data_dir / "pas_encryption_key"
+    try:
+        metadata = key_path.lstat()
+    except FileNotFoundError:
+        key_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            key_descriptor = os.open(key_path, key_flags, 0o600)
+        except FileExistsError:
+            metadata = key_path.lstat()
+        else:
+            with os.fdopen(key_descriptor, "wb", closefd=True) as stream:
+                stream.write(base64.b64encode(os.urandom(32)) + b"\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            metadata = key_path.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit("SQLite encryption key is not a regular file")
+    os.chown(data_dir, 10001, 10001)
+    os.chmod(data_dir, 0o700)
+    os.chown(key_path, 10001, 10001)
+    os.chmod(key_path, 0o600)
+PY
 }
 
 EFFECTIVE_IMAGE="$PAS_IMAGE"
@@ -314,25 +440,28 @@ else
   fatal "image pull failed and local build is disabled; set PAS_IMAGE to an approved image or explicitly set PAS_ALLOW_LOCAL_BUILD=1"
 fi
 
-mkdir -p "$SECRETS_DIR"
-if [ ! -f "$SECRETS_DIR/pas_encryption_key" ]; then
-  python3 -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())' \
-    > "$SECRETS_DIR/pas_encryption_key"
-  chmod 600 "$SECRETS_DIR/pas_encryption_key"
-fi
-ENCRYPTION_KEY=$(tr -d '\n' < "$SECRETS_DIR/pas_encryption_key")
+if sqlite_mode; then
+  initialize_sqlite_volume
+else
+  mkdir -p "$SECRETS_DIR"
+  if [ ! -f "$SECRETS_DIR/pas_encryption_key" ]; then
+    python3 -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())' \
+      > "$SECRETS_DIR/pas_encryption_key"
+    chmod 600 "$SECRETS_DIR/pas_encryption_key"
+  fi
+  ENCRYPTION_KEY=$(tr -d '\n' < "$SECRETS_DIR/pas_encryption_key")
 
-PASSWORD_TMP=$(mktemp "$SECRETS_DIR/.polardb-password.XXXXXX")
-printf '%s' "$POLARDB_PASSWORD" > "$PASSWORD_TMP"
-log "ensuring metadata database $PAS_DB_NAME exists"
-"${DOCKER_COMMAND[@]}" run --rm -i --network host --user 0:0 \
-  --entrypoint python \
-  --mount "type=bind,source=$PASSWORD_TMP,target=/run/secrets/polardb-password,readonly" \
-  -e POLARDB_HOST="$POLARDB_HOST" \
-  -e POLARDB_PORT="$POLARDB_PORT" \
-  -e POLARDB_USER="$POLARDB_USER" \
-  -e PAS_DB_NAME="$PAS_DB_NAME" \
-  "$EFFECTIVE_IMAGE" - <<'PY'
+  PASSWORD_TMP=$(mktemp "$SECRETS_DIR/.polardb-password.XXXXXX")
+  printf '%s' "$POLARDB_PASSWORD" > "$PASSWORD_TMP"
+  log "ensuring metadata database $PAS_DB_NAME exists"
+  "${DOCKER_COMMAND[@]}" run --rm -i --network host --user 0:0 \
+    --entrypoint python \
+    --mount "type=bind,source=$PASSWORD_TMP,target=/run/secrets/polardb-password,readonly" \
+    -e POLARDB_HOST="$POLARDB_HOST" \
+    -e POLARDB_PORT="$POLARDB_PORT" \
+    -e POLARDB_USER="$POLARDB_USER" \
+    -e PAS_DB_NAME="$PAS_DB_NAME" \
+    "$EFFECTIVE_IMAGE" - <<'PY'
 import asyncio
 import os
 
@@ -367,21 +496,22 @@ async def main():
 
 asyncio.run(main())
 PY
-rm -f "$PASSWORD_TMP"
-PASSWORD_TMP=""
+  rm -f "$PASSWORD_TMP"
+  PASSWORD_TMP=""
 
-ENCODED_USER=$(printf '%s' "$POLARDB_USER" | python3 -c \
-  'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')
-ENCODED_PASSWORD=$(printf '%s' "$POLARDB_PASSWORD" | python3 -c \
-  'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')
-cat > "$SECRETS_DIR/pas-compose.env" <<EOF
+  ENCODED_USER=$(printf '%s' "$POLARDB_USER" | python3 -c \
+    'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')
+  ENCODED_PASSWORD=$(printf '%s' "$POLARDB_PASSWORD" | python3 -c \
+    'import sys, urllib.parse; print(urllib.parse.quote(sys.stdin.read(), safe=""))')
+  cat > "$SECRETS_DIR/pas-compose.env" <<EOF
 PAS_DATABASE_URL=mysql+asyncmy://$ENCODED_USER:$ENCODED_PASSWORD@$POLARDB_HOST:$POLARDB_PORT/$PAS_DB_NAME
 PAS_ENCRYPTION_KEY=$ENCRYPTION_KEY
 PAS_PORT=$PAS_PORT
 PAS_IMAGE=$EFFECTIVE_IMAGE
 EOF
-chmod 600 "$SECRETS_DIR/pas-compose.env"
-unset POLARDB_PASSWORD ENCODED_PASSWORD ENCRYPTION_KEY
+  chmod 600 "$SECRETS_DIR/pas-compose.env"
+  unset POLARDB_PASSWORD ENCODED_PASSWORD ENCRYPTION_KEY
+fi
 
 log "starting Compose project $PAS_COMPOSE_PROJECT"
 compose config --quiet
@@ -406,6 +536,7 @@ PAS_MODE=$(printf '%s' "$READY_JSON" | python3 -c \
   'import json, sys; print(json.load(sys.stdin).get("mode", "UNKNOWN"))')
 if [ "$PAS_MODE" = "SETUP" ]; then
   TOKEN_CONTAINER_PATH="/var/run/pas/bootstrap-token.$$.txt"
+  mkdir -p "$SECRETS_DIR"
   rm -f "$SECRETS_DIR/bootstrap_token.txt"
   compose exec -T server sh -c \
     'rm -f "$1"; pas config bootstrap-token issue --output "$1" >/dev/null' \

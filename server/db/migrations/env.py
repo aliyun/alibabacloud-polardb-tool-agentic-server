@@ -2,11 +2,16 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
+from alembic.operations import Operations
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from server.bootstrap import load_bootstrap_settings
 from server.db.engine import enable_sqlite_foreign_keys
+from server.db.legacy_f6_schema_repair import (
+    repair_legacy_managed_f6_schema,
+)
+from server.db import mysql_check_compat as _mysql_check_compat  # noqa: F401
 from server.models import Base
 
 config = context.config
@@ -52,6 +57,12 @@ def do_run_migrations(connection) -> None:
     )
     try:
         with context.begin_transaction():
+            migration_function = context.get_context().opts.get("fn")
+            if getattr(migration_function, "__name__", None) == "upgrade":
+                repair_legacy_managed_f6_schema(
+                    connection,
+                    Operations(context.get_context()),
+                )
             context.run_migrations()
         if sqlite:
             violations = connection.exec_driver_sql(
@@ -80,7 +91,11 @@ async def run_async_migrations() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
-    asyncio.run(run_async_migrations())
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        do_run_migrations(connection)
+    else:
+        asyncio.run(run_async_migrations())
 
 
 if context.is_offline_mode():

@@ -8,6 +8,7 @@ import {
   Form,
   Input,
   Modal,
+  Pagination,
   Skeleton,
   Select,
   Space,
@@ -36,12 +37,16 @@ import {
   disablePolarRAGInstance,
   disablePolarRAGSpace,
   enablePolarRAGSpace,
+  getPolarRAGSpaceSyncStatus,
   listPolarRAGInstances,
+  listPolarRAGKnowledgeResources,
+  listPolarRAGOwnerCandidates,
   listPolarRAGSpaces,
   listUnclaimedPolarRAGKnowledgeBases,
   syncPolarRAGSpace,
   updatePolarRAGInstance,
   type PolarRAGInstance,
+  type PolarRAGKnowledgeResource,
   type PolarRAGOwnerCandidate,
   type PolarRAGSpace,
   type UnclaimedPolarRAGKnowledgeBase,
@@ -51,6 +56,8 @@ import {
 import './PolarRAG.css'
 
 const { Text } = Typography
+const KNOWLEDGE_RESOURCE_PAGE_SIZE = 20
+const UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE = 20
 
 function ownerOptionValue(candidate: PolarRAGOwnerCandidate) {
   return candidate.principal_assignment_id
@@ -79,6 +86,8 @@ export default function InstancesPanel({
     <Tag color="orange">{t('polarragAdmin.required')}</Tag>
   )
   const [instances, setInstances] = useState<PolarRAGInstance[]>([])
+  const [instanceTotal, setInstanceTotal] = useState(0)
+  const [instancePage, setInstancePage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [rotateInstance, setRotateInstance] =
@@ -88,15 +97,27 @@ export default function InstancesPanel({
   const [spaceInstance, setSpaceInstance] =
     useState<PolarRAGInstance | null>(null)
   const [spaces, setSpaces] = useState<PolarRAGSpace[]>([])
+  const [spacePage, setSpacePage] = useState(1)
+  const [spaceNextCursor, setSpaceNextCursor] = useState<string | null>(null)
+  const [spaceCursors, setSpaceCursors] = useState<Record<number, string | null>>({ 1: null })
   const [spacesLoading, setSpacesLoading] = useState(false)
   const [spaceError, setSpaceError] = useState<string | null>(null)
   const [spaceAction, setSpaceAction] = useState<string | null>(null)
   const [unclaimedKnowledgeBases, setUnclaimedKnowledgeBases] = useState<
     UnclaimedPolarRAGKnowledgeBase[]
   >([])
+  const [unclaimedLoading, setUnclaimedLoading] = useState(false)
+  const [unclaimedPage, setUnclaimedPage] = useState(1)
+  const [unclaimedNextCursor, setUnclaimedNextCursor] = useState<string | null>(null)
+  const [unclaimedCursors, setUnclaimedCursors] = useState<Record<number, string | null>>({ 1: null })
+  const [knowledgeResources, setKnowledgeResources] = useState<PolarRAGKnowledgeResource[]>([])
+  const [knowledgeResourcesTotal, setKnowledgeResourcesTotal] = useState(0)
+  const [knowledgeResourcesOffset, setKnowledgeResourcesOffset] = useState(0)
+  const [knowledgeResourcesLoading, setKnowledgeResourcesLoading] = useState(false)
   const [ownerCandidates, setOwnerCandidates] = useState<
-    PolarRAGOwnerCandidate[]
-  >([])
+    Record<string, PolarRAGOwnerCandidate[]>
+  >({})
+  const [ownerCandidatesLoading, setOwnerCandidatesLoading] = useState<string | null>(null)
   const [selectedOwners, setSelectedOwners] = useState<
     Record<string, string>
   >({})
@@ -105,12 +126,17 @@ export default function InstancesPanel({
   const [ossSpace, setOssSpace] = useState<PolarRAGSpace | null>(null)
   const [ossSaving, setOssSaving] = useState(false)
 
-  const loadInstances = useCallback(async () => {
+  const loadInstances = useCallback(async (page = instancePage) => {
     setLoading(true)
     setError(null)
     try {
-      const response = await listPolarRAGInstances()
+      const response = await listPolarRAGInstances({
+        offset: (page - 1) * 20,
+        limit: 20,
+      })
       setInstances(response.data.items)
+      setInstanceTotal(response.data.total)
+      setInstancePage(page)
     } catch (requestError) {
       setError(
         getAPIErrorMessage(
@@ -121,7 +147,7 @@ export default function InstancesPanel({
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [instancePage])
 
   useEffect(() => {
     void loadInstances()
@@ -188,22 +214,107 @@ export default function InstancesPanel({
     })
   }
 
+  const loadUnclaimedKnowledgeBases = async (
+    instanceId: string,
+    page = 1,
+    cursor: string | null = null,
+  ) => {
+    setUnclaimedLoading(true)
+    try {
+      const response = await listUnclaimedPolarRAGKnowledgeBases(
+        instanceId,
+        cursor,
+        UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE,
+      )
+      setUnclaimedKnowledgeBases(response.data.items)
+      setUnclaimedPage(page)
+      setUnclaimedNextCursor(response.data.next_cursor)
+      setUnclaimedCursors((current) => ({ ...current, [page]: cursor }))
+    } catch (requestError) {
+      setSpaceError(
+        getAPIErrorMessage(
+          requestError,
+          'Could not enumerate knowledge bases awaiting an owner.',
+        ),
+      )
+    } finally {
+      setUnclaimedLoading(false)
+    }
+  }
+
+  const loadOwnerCandidates = async (identityDomain: string, search = '') => {
+    if (!spaceInstance) return
+    setOwnerCandidatesLoading(identityDomain)
+    try {
+      const response = await listPolarRAGOwnerCandidates(
+        spaceInstance.id,
+        identityDomain,
+        search,
+        0,
+        20,
+      )
+      setOwnerCandidates((current) => ({
+        ...current,
+        [identityDomain]: response.data.items,
+      }))
+    } catch (requestError) {
+      setSpaceError(
+        getAPIErrorMessage(requestError, 'Could not load eligible KB owners.'),
+      )
+    } finally {
+      setOwnerCandidatesLoading(null)
+    }
+  }
+
+  const loadKnowledgeResources = async (instanceId: string, offset = 0) => {
+    setKnowledgeResourcesLoading(true)
+    try {
+      const response = await listPolarRAGKnowledgeResources(
+        instanceId,
+        offset,
+        KNOWLEDGE_RESOURCE_PAGE_SIZE,
+      )
+      setKnowledgeResources(response.data.items)
+      setKnowledgeResourcesTotal(response.data.total)
+      setKnowledgeResourcesOffset(response.data.offset)
+    } catch (requestError) {
+      setSpaceError(
+        getAPIErrorMessage(
+          requestError,
+          'Could not enumerate synchronized knowledge bases.',
+        ),
+      )
+    } finally {
+      setKnowledgeResourcesLoading(false)
+    }
+  }
+
   const openSpaces = async (instance: PolarRAGInstance) => {
     setSpaceInstance(instance)
     setSpaces([])
+    setSpacePage(1)
+    setSpaceNextCursor(null)
+    setSpaceCursors({ 1: null })
     setUnclaimedKnowledgeBases([])
-    setOwnerCandidates([])
+    setOwnerCandidates({})
+    setUnclaimedPage(1)
+    setUnclaimedNextCursor(null)
+    setUnclaimedCursors({ 1: null })
+    setKnowledgeResources([])
+    setKnowledgeResourcesTotal(0)
+    setKnowledgeResourcesOffset(0)
     setSelectedOwners({})
     setSpaceError(null)
     setSpacesLoading(true)
     try {
-      const [spaceResponse, pendingResponse] = await Promise.all([
-        listPolarRAGSpaces(instance.id),
-        listUnclaimedPolarRAGKnowledgeBases(instance.id),
-      ])
+      const spaceResponse = await listPolarRAGSpaces(instance.id, { limit: 20 })
       setSpaces(spaceResponse.data.items)
-      setUnclaimedKnowledgeBases(pendingResponse.data.items)
-      setOwnerCandidates(pendingResponse.data.owner_candidates)
+      setSpaceNextCursor(spaceResponse.data.next_cursor)
+      if (spaceResponse.data.next_cursor) {
+        setSpaceCursors({ 1: null, 2: spaceResponse.data.next_cursor })
+      }
+      void loadUnclaimedKnowledgeBases(instance.id)
+      void loadKnowledgeResources(instance.id)
     } catch (requestError) {
       setSpaceError(
         getAPIErrorMessage(
@@ -216,15 +327,30 @@ export default function InstancesPanel({
     }
   }
 
-  const reloadSpaces = async () => {
+  const reloadSpaces = async (
+    page = spacePage,
+    cursor = spaceCursors[spacePage] ?? null,
+  ) => {
     if (!spaceInstance) return
-    const [spaceResponse, pendingResponse] = await Promise.all([
-      listPolarRAGSpaces(spaceInstance.id),
-      listUnclaimedPolarRAGKnowledgeBases(spaceInstance.id),
-    ])
+    const spaceResponse = await listPolarRAGSpaces(spaceInstance.id, {
+      cursor,
+      limit: 20,
+    })
     setSpaces(spaceResponse.data.items)
-    setUnclaimedKnowledgeBases(pendingResponse.data.items)
-    setOwnerCandidates(pendingResponse.data.owner_candidates)
+    setSpacePage(page)
+    setSpaceNextCursor(spaceResponse.data.next_cursor)
+    if (spaceResponse.data.next_cursor) {
+      setSpaceCursors((current) => ({
+        ...current,
+        [page + 1]: spaceResponse.data.next_cursor,
+      }))
+    }
+    void loadUnclaimedKnowledgeBases(
+      spaceInstance.id,
+      unclaimedPage,
+      unclaimedCursors[unclaimedPage] ?? null,
+    )
+    void loadKnowledgeResources(spaceInstance.id, knowledgeResourcesOffset)
   }
 
   const enableSpace = async (space: PolarRAGSpace) => {
@@ -280,14 +406,37 @@ export default function InstancesPanel({
     if (!spaceInstance) return
     setSpaceAction(`sync:${space.space_id}`)
     try {
-      const response = await syncPolarRAGSpace(
+      await syncPolarRAGSpace(
         spaceInstance.id,
         space.space_id,
       )
-      message.success(
-        `${space.name} synchronized; ${response.data.knowledge_bases} knowledge bases, ${response.data.active} active resources`,
-      )
-      await reloadSpaces()
+      message.info(`${space.name} synchronization started`)
+      setSpaceAction(null)
+      const deadline = Date.now() + 15 * 60 * 1000
+      let restarted = false
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000))
+        const response = await getPolarRAGSpaceSyncStatus(
+          spaceInstance.id,
+          space.space_id,
+        )
+        if (response.data.status === 'running') continue
+        if (response.data.status === 'idle' && !restarted) {
+          await syncPolarRAGSpace(spaceInstance.id, space.space_id)
+          restarted = true
+          continue
+        }
+        if (response.data.status === 'completed' && response.data.result) {
+          message.success(
+            `${space.name} synchronized; ${response.data.result.knowledge_bases} knowledge bases, ${response.data.result.active} active resources`,
+          )
+          await reloadSpaces()
+        } else if (response.data.status === 'failed') {
+          setSpaceError(`Space synchronization failed: ${response.data.error ?? 'unknown error'}`)
+        }
+        return
+      }
+      setSpaceError('Space synchronization is still running; refresh later to check the catalog.')
     } catch (requestError) {
       setSpaceError(
         getAPIErrorMessage(
@@ -331,7 +480,7 @@ export default function InstancesPanel({
   ) => {
     if (!spaceInstance) return
     const key = `${knowledgeBase.space_id}:${knowledgeBase.kb_id}`
-    const candidate = ownerCandidates.find(
+    const candidate = (ownerCandidates[knowledgeBase.identity_domain] ?? []).find(
       (item) => ownerOptionValue(item) === selectedOwners[key],
     )
     if (!candidate) return
@@ -363,13 +512,6 @@ export default function InstancesPanel({
       setSpaceAction(null)
     }
   }
-
-  const knowledgeResources = spaces.flatMap((space) =>
-    space.knowledge_resources.map((resource) => ({
-      ...resource,
-      space_name: space.name,
-    })),
-  )
 
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
@@ -407,7 +549,13 @@ export default function InstancesPanel({
         <Table
           rowKey="id"
           dataSource={instances}
-          pagination={false}
+          pagination={{
+            current: instancePage,
+            pageSize: 20,
+            total: instanceTotal,
+            showSizeChanger: false,
+            onChange: (page) => void loadInstances(page),
+          }}
           scroll={{ x: 1180 }}
           expandable={{
             expandedRowRender: (instance) => (
@@ -679,7 +827,7 @@ export default function InstancesPanel({
                 render: (_: unknown, record) => (
                   <Space direction="vertical" size={0}>
                     <Text>
-                      {t('polarragAdmin.kbCount', { count: record.knowledge_resources.length })}
+                      {t('polarragAdmin.kbCount', { count: record.knowledge_resource_count ?? 0 })}
                     </Text>
                     <Text type="secondary">
                       {record.last_synced_at
@@ -751,10 +899,23 @@ export default function InstancesPanel({
               },
               ]}
             />
+            <Pagination
+              current={spacePage}
+              pageSize={20}
+              total={(spacePage - 1) * 20 + spaces.length + (spaceNextCursor ? 1 : 0)}
+              showSizeChanger={false}
+              onChange={(page) => {
+                const cursor = spaceCursors[page]
+                if (page < spacePage || cursor !== undefined) {
+                  void reloadSpaces(page, cursor ?? null)
+                }
+              }}
+            />
             <Text strong>{t('polarragAdmin.awaitingOwner')}</Text>
             <Table
               rowKey={(record) => `${record.space_id}:${record.kb_id}`}
               dataSource={unclaimedKnowledgeBases}
+              loading={unclaimedLoading}
               pagination={false}
               size="small"
               locale={{ emptyText: 'No knowledge bases awaiting owner' }}
@@ -778,9 +939,7 @@ export default function InstancesPanel({
                   title: 'Owner',
                   render: (_: unknown, record) => {
                     const key = `${record.space_id}:${record.kb_id}`
-                    const candidates = ownerCandidates.filter(
-                      (candidate) => candidate.identity_domain === record.identity_domain,
-                    )
+                    const candidates = ownerCandidates[record.identity_domain] ?? []
                     return (
                       <Select
                         aria-label={`Owner for ${record.name}`}
@@ -793,7 +952,14 @@ export default function InstancesPanel({
                         }
                         placeholder={t('polarragAccess.selectUser')}
                         showSearch
-                        optionFilterProp="label"
+                        filterOption={false}
+                        loading={ownerCandidatesLoading === record.identity_domain}
+                        onOpenChange={(open) => {
+                          if (open && !ownerCandidates[record.identity_domain]) {
+                            void loadOwnerCandidates(record.identity_domain)
+                          }
+                        }}
+                        onSearch={(value) => void loadOwnerCandidates(record.identity_domain, value)}
                         options={candidates.map((candidate) => ({
                           value: ownerOptionValue(candidate),
                           label: `${candidate.user_name} · ${candidate.user_external_id} · ${candidate.provider}`,
@@ -824,11 +990,46 @@ export default function InstancesPanel({
                 },
               ]}
             />
+            {(unclaimedPage > 1 || unclaimedNextCursor) && (
+              <Pagination
+                simple
+                current={unclaimedPage}
+                pageSize={UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE}
+                total={unclaimedNextCursor
+                  ? unclaimedPage * UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE + 1
+                  : (unclaimedPage - 1) * UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE
+                    + unclaimedKnowledgeBases.length}
+                showSizeChanger={false}
+                onChange={(page) => {
+                  if (!spaceInstance || page === unclaimedPage) return
+                  const cursor = page < unclaimedPage
+                    ? unclaimedCursors[page]
+                    : unclaimedNextCursor
+                  if (page === 1 || (cursor !== undefined && cursor !== null)) {
+                    void loadUnclaimedKnowledgeBases(spaceInstance.id, page, cursor)
+                  }
+                }}
+              />
+            )}
             <Text strong>{t('polarragAdmin.synchronizedKbs')}</Text>
             <Table
               rowKey="knowledge_resource_id"
               dataSource={knowledgeResources}
-              pagination={{ pageSize: 10, showSizeChanger: true }}
+              loading={knowledgeResourcesLoading}
+              pagination={{
+                current: Math.floor(knowledgeResourcesOffset / KNOWLEDGE_RESOURCE_PAGE_SIZE) + 1,
+                pageSize: KNOWLEDGE_RESOURCE_PAGE_SIZE,
+                total: knowledgeResourcesTotal,
+                showSizeChanger: false,
+                onChange: (page) => {
+                  if (spaceInstance) {
+                    void loadKnowledgeResources(
+                      spaceInstance.id,
+                      (page - 1) * KNOWLEDGE_RESOURCE_PAGE_SIZE,
+                    )
+                  }
+                },
+              }}
               size="small"
               locale={{ emptyText: 'No synchronized knowledge bases' }}
               columns={[

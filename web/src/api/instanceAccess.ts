@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 import { listAllAdminInstances } from './instances'
 
 export type { InstanceSummary } from './instances'
@@ -116,9 +117,10 @@ export interface AgentResource {
 
 export const listInstances = () => listAllAdminInstances()
 
-export const listAgentInstanceAccess = (agentId: string) =>
-  api.get<AgentInstanceAccess[]>(
+export const listAgentInstanceAccess = (agentId: string, params: PageParams = {}) =>
+  api.get<Page<AgentInstanceAccess>>(
     `/api/agents/${encodeURIComponent(agentId)}/instance-bindings`,
+    { params },
   )
 
 export const createAgentInstanceAccess = (
@@ -148,9 +150,10 @@ export const deleteAgentInstanceAccess = (
     `/api/agents/${encodeURIComponent(agentId)}/instance-bindings/${encodeURIComponent(instanceId)}`,
   )
 
-export const listDirectBindings = (agentId: string) =>
-  api.get<DirectBinding[]>(
+export const listDirectBindings = (agentId: string, params: PageParams = {}) =>
+  api.get<Page<DirectBinding>>(
     `/api/agents/${encodeURIComponent(agentId)}/instance-bindings`,
+    { params },
   )
 
 export const createDirectBinding = (
@@ -177,9 +180,10 @@ export const deleteDirectBinding = (agentId: string, bindingId: string) =>
     `/api/agents/${encodeURIComponent(agentId)}/instance-bindings/${encodeURIComponent(bindingId)}`,
   )
 
-export const listProvisioningBindings = (agentId: string) =>
-  api.get<ProvisioningBinding[]>(
+export const listProvisioningBindings = (agentId: string, params: PageParams = {}) =>
+  api.get<Page<ProvisioningBinding>>(
     `/api/agents/${encodeURIComponent(agentId)}/provisioning-bindings`,
+    { params },
   )
 
 export const createProvisioningBinding = (
@@ -218,9 +222,10 @@ export const deleteProvisioningBinding = (
     `/api/agents/${encodeURIComponent(agentId)}/provisioning-bindings/${encodeURIComponent(bindingId)}`,
   )
 
-export const listAgentResources = (agentId: string) =>
-  api.get<AgentResource[]>(
+export const listAgentResources = (agentId: string, params: PageParams = {}) =>
+  api.get<Page<AgentResource>>(
     `/api/agents/${encodeURIComponent(agentId)}/resources`,
+    { params },
   )
 
 export const getUserInstanceAccess = (userId: string, instanceId: string) =>

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import axios from 'axios'
 import {
   Alert,
@@ -28,10 +35,24 @@ import {
   type EnterpriseSpaceCandidate,
 } from '../../api/enterpriseAccess'
 import { getAPIErrorMessage } from '../../api/client'
+import type { PolarRAGInstance } from '../../api/polarrag'
 
 const { Text } = Typography
 const DIRECTORY_PAGE_SIZE = 100
 const DIRECTORY_SEARCH_DEBOUNCE_MS = 300
+
+type DirectoryEntryType = 'users' | 'groups'
+
+interface DirectoryPage {
+  offset: number
+  search: string
+  total: number
+}
+
+const initialDirectoryPages: Record<DirectoryEntryType, DirectoryPage> = {
+  groups: { offset: 0, search: '', total: 0 },
+  users: { offset: 0, search: '', total: 0 },
+}
 
 interface StalePreviewErrorBody {
   detail?: {
@@ -43,13 +64,13 @@ interface StalePreviewErrorBody {
 
 async function listDirectoryCandidates(
   sourceId: string,
-  entryType: 'users' | 'groups',
-  search?: string,
+  entryType: DirectoryEntryType,
+  options: { offset?: number; search?: string } = {},
 ) {
   const response = await listEnterpriseIdentitySourceDirectory(sourceId, entryType, {
-    offset: 0,
+    offset: options.offset ?? 0,
     limit: DIRECTORY_PAGE_SIZE,
-    ...(search ? { search } : {}),
+    ...(options.search ? { search: options.search } : {}),
   })
   return response.data
 }
@@ -96,12 +117,14 @@ function ImpactList({
 export default function EnterpriseAccessDrawer({
   agentId,
   bindings,
+  instances = [],
   open,
   onClose,
   onApplied,
 }: {
   agentId: string
   bindings: AgentPolarRAGBinding[]
+  instances?: PolarRAGInstance[]
   open: boolean
   onClose: () => void
   onApplied: () => void | Promise<void>
@@ -111,10 +134,20 @@ export default function EnterpriseAccessDrawer({
   const [spaces, setSpaces] = useState<EnterpriseSpaceCandidate[]>([])
   const [groups, setGroups] = useState<EnterpriseDirectoryGroupCandidate[]>([])
   const [users, setUsers] = useState<EnterpriseDirectoryUserCandidate[]>([])
+  const [selectedGroups, setSelectedGroups] = useState<
+    EnterpriseDirectoryGroupCandidate[]
+  >([])
+  const [selectedUsers, setSelectedUsers] = useState<
+    (EnterpriseDirectoryUserCandidate & { pas_user_id: string })[]
+  >([])
+  const [directoryPages, setDirectoryPages] = useState<
+    Record<DirectoryEntryType, DirectoryPage>
+  >(initialDirectoryPages)
   const [identitySourceId, setIdentitySourceId] = useState<string>()
   const [allSyncedUsers, setAllSyncedUsers] = useState(false)
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([])
   const [selectedUserIds, setSelectedUserIds] = useState<string[]>([])
+  const [selectedInstanceIds, setSelectedInstanceIds] = useState<string[]>([])
   const [selectedSpaceIds, setSelectedSpaceIds] = useState<string[]>([])
   const [preview, setPreview] = useState<EnterpriseAccessPreview | null>(null)
   const [loading, setLoading] = useState(false)
@@ -136,20 +169,47 @@ export default function EnterpriseAccessDrawer({
     selectedUserIdsRef.current = []
     setSelectedGroupIds([])
     setSelectedUserIds([])
+    setSelectedInstanceIds([])
+    setSelectedGroups([])
+    setSelectedUsers([])
     setSelectedSpaceIds([])
     setPreview(null)
     setStalePreview(false)
   }, [])
 
-  const changeSelectedGroupIds = useCallback((groupIds: string[]) => {
-    selectedGroupIdsRef.current = groupIds
-    setSelectedGroupIds(groupIds)
-  }, [])
+  const changeSelectedGroupIds = useCallback(
+    (groupIds: string[]) => {
+      selectedGroupIdsRef.current = groupIds
+      setSelectedGroupIds(groupIds)
+      setSelectedGroups((current) =>
+        groupIds.flatMap((groupId) => {
+          const group =
+            groups.find((candidate) => candidate.id === groupId) ??
+            current.find((candidate) => candidate.id === groupId)
+          return group ? [group] : []
+        }),
+      )
+    },
+    [groups],
+  )
 
-  const changeSelectedUserIds = useCallback((userIds: string[]) => {
-    selectedUserIdsRef.current = userIds
-    setSelectedUserIds(userIds)
-  }, [])
+  const changeSelectedUserIds = useCallback(
+    (userIds: string[]) => {
+      selectedUserIdsRef.current = userIds
+      setSelectedUserIds(userIds)
+      setSelectedUsers((current) =>
+        userIds.flatMap((userId) => {
+          const user =
+            users
+              .filter(isMappedActiveUser)
+              .find((candidate) => candidate.pas_user_id === userId) ??
+            current.find((candidate) => candidate.pas_user_id === userId)
+          return user ? [user] : []
+        }),
+      )
+    },
+    [users],
+  )
 
   const invalidateDirectoryRequests = useCallback(() => {
     directoryRequestId.current += 1
@@ -167,6 +227,7 @@ export default function EnterpriseAccessDrawer({
     setIdentitySourceId(undefined)
     setGroups([])
     setUsers([])
+    setDirectoryPages(initialDirectoryPages)
     setError(null)
     resetSelections()
   }, [invalidateDirectoryRequests, resetSelections])
@@ -184,7 +245,7 @@ export default function EnterpriseAccessDrawer({
     ])
       .then(([sourceResponse, spaceResponse]) => {
         setSources(
-          sourceResponse.data.items.filter((source) => source.status === 'active'),
+          sourceResponse.data.items.filter((source) => source.status !== 'disabled'),
         )
         setSpaces(spaceResponse.data.items)
       })
@@ -203,12 +264,28 @@ export default function EnterpriseAccessDrawer({
     () => new Set(bindings.map((binding) => binding.polarrag_instance_id)),
     [bindings],
   )
+  const activeInstances = useMemo(
+    () =>
+      [...instances]
+        .filter((instance) => instance.status === 'active')
+        .sort((left, right) => {
+          const bindingDifference =
+            Number(boundInstanceIds.has(right.id)) -
+            Number(boundInstanceIds.has(left.id))
+          return bindingDifference || left.name.localeCompare(right.name)
+        }),
+    [boundInstanceIds, instances],
+  )
+  const selectedInstanceIdSet = useMemo(
+    () => new Set(selectedInstanceIds),
+    [selectedInstanceIds],
+  )
   const eligibleSpaces = useMemo(
     () =>
       spaces.filter((space) =>
-        boundInstanceIds.has(space.polarrag_instance_id),
+        selectedInstanceIdSet.has(space.polarrag_instance_id),
       ),
-    [boundInstanceIds, spaces],
+    [selectedInstanceIdSet, spaces],
   )
   const allEligibleSpacesSelected =
     eligibleSpaces.length > 0 &&
@@ -218,11 +295,25 @@ export default function EnterpriseAccessDrawer({
   const mappedUsers = useMemo(
     () =>
       mergeCandidates(
-        [],
+        selectedUsers,
         users.filter(isMappedActiveUser),
         (user) => user.pas_user_id,
       ),
-    [users],
+    [selectedUsers, users],
+  )
+  const availableGroups = useMemo(
+    () =>
+      mergeCandidates(
+        selectedGroups,
+        groups.filter(
+          (group) =>
+            group.status === 'active' &&
+            (group.principal_type === 'group' ||
+              group.principal_type === 'department'),
+        ),
+        (group) => group.id,
+      ),
+    [groups, selectedGroups],
   )
 
   const chooseSource = async (sourceId: string) => {
@@ -237,6 +328,7 @@ export default function EnterpriseAccessDrawer({
     setIdentitySourceId(sourceId)
     setGroups([])
     setUsers([])
+    setDirectoryPages(initialDirectoryPages)
     setError(null)
     resetSelections()
     setDirectoryLoading(true)
@@ -249,10 +341,23 @@ export default function EnterpriseAccessDrawer({
       setGroups(
         groupResponse.groups.filter(
           (group) =>
-            group.status === 'active' && group.principal_type === 'group',
+            group.status === 'active' &&
+            (group.principal_type === 'group' || group.principal_type === 'department'),
         ),
       )
       setUsers(userResponse.users)
+      setDirectoryPages({
+        groups: {
+          offset: 0,
+          search: '',
+          total: groupResponse.total ?? 0,
+        },
+        users: {
+          offset: 0,
+          search: '',
+          total: userResponse.total ?? 0,
+        },
+      })
     } catch (requestError: unknown) {
       if (requestId !== directoryRequestId.current) return
       setError(
@@ -268,83 +373,177 @@ export default function EnterpriseAccessDrawer({
     }
   }
 
+  const loadDirectoryPage = useCallback(
+    (
+      entryType: DirectoryEntryType,
+      offset: number,
+      search: string,
+      requestId = directorySearchRequestIds.current[entryType] + 1,
+    ) => {
+      if (!identitySourceId) return
+      directorySearchRequestIds.current[entryType] = requestId
+      const directoryGeneration = directoryRequestId.current
+      setDirectoryLoading(true)
+      void listDirectoryCandidates(identitySourceId, entryType, { offset, search })
+        .then((response) => {
+          if (
+            directoryGeneration !== directoryRequestId.current ||
+            requestId !== directorySearchRequestIds.current[entryType]
+          ) {
+            return
+          }
+          setDirectoryPages((current) => ({
+            ...current,
+            [entryType]: { offset, search, total: response.total ?? 0 },
+          }))
+          if (entryType === 'groups') {
+            setGroups(
+              response.groups.filter(
+                (group) =>
+                  group.status === 'active' &&
+                  (group.principal_type === 'group' ||
+                    group.principal_type === 'department'),
+              ),
+            )
+            return
+          }
+          setUsers(response.users)
+        })
+        .catch((requestError: unknown) => {
+          if (
+            directoryGeneration === directoryRequestId.current &&
+            requestId === directorySearchRequestIds.current[entryType]
+          ) {
+            setError(
+              getAPIErrorMessage(
+                requestError,
+                t('enterpriseAccess.directoryLoadFailed'),
+              ),
+            )
+          }
+        })
+        .finally(() => {
+          if (
+            directoryGeneration === directoryRequestId.current &&
+            requestId === directorySearchRequestIds.current[entryType]
+          ) {
+            setDirectoryLoading(false)
+          }
+        })
+    },
+    [identitySourceId, t],
+  )
+
   const searchDirectory = useCallback(
-    (entryType: 'groups' | 'users', search: string) => {
+    (entryType: DirectoryEntryType, search: string) => {
       if (!identitySourceId) return
       const existingTimer = directorySearchTimers.current[entryType]
       if (existingTimer) clearTimeout(existingTimer)
 
       const requestId = directorySearchRequestIds.current[entryType] + 1
       directorySearchRequestIds.current[entryType] = requestId
-      const directoryGeneration = directoryRequestId.current
       setDirectoryLoading(true)
       directorySearchTimers.current[entryType] = setTimeout(() => {
-        void listDirectoryCandidates(identitySourceId, entryType, search)
-          .then((response) => {
-            if (
-              directoryGeneration !== directoryRequestId.current ||
-              requestId !== directorySearchRequestIds.current[entryType]
-            ) {
-              return
-            }
-            if (entryType === 'groups') {
-              const activeGroups = response.groups.filter(
-                (group) =>
-                  group.status === 'active' && group.principal_type === 'group',
-              )
-              setGroups((current) =>
-                mergeCandidates(
-                  current.filter((group) =>
-                    selectedGroupIdsRef.current.includes(group.id),
-                  ),
-                  activeGroups,
-                  (group) => group.id,
-                ),
-              )
-              return
-            }
-            setUsers((current) =>
-              mergeCandidates(
-                current
-                  .filter(isMappedActiveUser)
-                  .filter((user) =>
-                    selectedUserIdsRef.current.includes(user.pas_user_id),
-                  ),
-                response.users.filter(isMappedActiveUser),
-                (user) => user.pas_user_id,
-              ),
-            )
-          })
-          .catch((requestError: unknown) => {
-            if (
-              directoryGeneration === directoryRequestId.current &&
-              requestId === directorySearchRequestIds.current[entryType]
-            ) {
-              setError(
-                getAPIErrorMessage(
-                  requestError,
-                  t('enterpriseAccess.directoryLoadFailed'),
-                ),
-              )
-            }
-          })
-          .finally(() => {
-            if (
-              directoryGeneration === directoryRequestId.current &&
-              requestId === directorySearchRequestIds.current[entryType]
-            ) {
-              setDirectoryLoading(false)
-            }
-          })
+        loadDirectoryPage(entryType, 0, search, requestId)
       }, DIRECTORY_SEARCH_DEBOUNCE_MS)
     },
-    [identitySourceId, t],
+    [identitySourceId, loadDirectoryPage],
   )
 
   const hasSubject =
     allSyncedUsers || selectedGroupIds.length > 0 || selectedUserIds.length > 0
+  const selectedSource = sources.find((source) => source.id === identitySourceId)
+  const sourceHasSnapshot =
+    selectedSource?.last_synced_at !== null &&
+    (selectedSource?.status === 'active' || selectedSource?.status === 'stale')
+  const selectedSpaceInstanceIds = new Set(
+    eligibleSpaces
+      .filter((space) =>
+        selectedSpaceIds.includes(space.knowledge_space_id),
+      )
+      .map((space) => space.polarrag_instance_id),
+  )
+  const everySelectedInstanceHasSpace = selectedInstanceIds.every(
+    (instanceId) => selectedSpaceInstanceIds.has(instanceId),
+  )
   const canPreview =
-    Boolean(identitySourceId) && hasSubject && selectedSpaceIds.length > 0
+    sourceHasSnapshot &&
+    hasSubject &&
+    selectedInstanceIds.length > 0 &&
+    selectedSpaceIds.length > 0 &&
+    everySelectedInstanceHasSpace
+
+  const renderDirectoryPopup = (
+    entryType: DirectoryEntryType,
+    menu: ReactNode,
+  ) => {
+    const page = directoryPages[entryType]
+    const pageCount = Math.max(1, Math.ceil(page.total / DIRECTORY_PAGE_SIZE))
+    const currentPage = Math.floor(page.offset / DIRECTORY_PAGE_SIZE) + 1
+    const isGroup = entryType === 'groups'
+    const previousLabel = t(
+      isGroup
+        ? 'enterpriseAccess.previousEnterpriseGroupPage'
+        : 'enterpriseAccess.previousSynchronizedUserPage',
+    )
+    const nextLabel = t(
+      isGroup
+        ? 'enterpriseAccess.nextEnterpriseGroupPage'
+        : 'enterpriseAccess.nextSynchronizedUserPage',
+    )
+    return (
+      <>
+        {menu}
+        {pageCount > 1 && (
+          <Space
+            align="center"
+            style={{ display: 'flex', justifyContent: 'center', padding: 8 }}
+            onMouseDown={(event) => {
+              event.preventDefault()
+              event.stopPropagation()
+            }}
+          >
+            <Button
+              aria-label={previousLabel}
+              disabled={currentPage === 1}
+              size="small"
+              type="text"
+              onClick={() =>
+                loadDirectoryPage(
+                  entryType,
+                  Math.max(0, page.offset - DIRECTORY_PAGE_SIZE),
+                  page.search,
+                )
+              }
+            >
+              ‹
+            </Button>
+            <Text type="secondary">
+              {currentPage} / {pageCount}
+            </Text>
+            <Button
+              aria-label={nextLabel}
+              disabled={currentPage === pageCount}
+              size="small"
+              type="text"
+              onClick={() =>
+                loadDirectoryPage(
+                  entryType,
+                  Math.min(
+                    page.offset + DIRECTORY_PAGE_SIZE,
+                    (pageCount - 1) * DIRECTORY_PAGE_SIZE,
+                  ),
+                  page.search,
+                )
+              }
+            >
+              ›
+            </Button>
+          </Space>
+        )}
+      </>
+    )
+  }
 
   const requestPreview = async () => {
     if (!identitySourceId || !canPreview) return
@@ -357,6 +556,7 @@ export default function EnterpriseAccessDrawer({
         all_synced_users: allSyncedUsers,
         directory_group_ids: selectedGroupIds,
         pas_user_ids: selectedUserIds,
+        polarrag_instance_ids: selectedInstanceIds,
         knowledge_space_ids: selectedSpaceIds,
       })
       setPreview(response.data)
@@ -462,11 +662,19 @@ export default function EnterpriseAccessDrawer({
           placeholder={t('enterpriseAccess.selectIdentitySource')}
           options={sources.map((source) => ({
             value: source.id,
-            label: source.name,
+            label: `${source.name} (${source.status})`,
           }))}
           onChange={(sourceId) => void chooseSource(sourceId)}
           style={{ width: '100%' }}
         />
+
+        {selectedSource && !sourceHasSnapshot && (
+          <Alert
+            type="warning"
+            showIcon
+            message={t('enterpriseAccess.sourceNotReady')}
+          />
+        )}
 
         {identitySourceId && !preview && (
           <Space direction="vertical" size={16} style={{ width: '100%' }}>
@@ -487,15 +695,19 @@ export default function EnterpriseAccessDrawer({
                   mode="multiple"
                   value={selectedGroupIds}
                   placeholder={t('enterpriseAccess.selectEnterpriseGroups')}
-                  options={groups.map((group) => ({
+                  options={availableGroups.map((group) => ({
                     value: group.id,
-                    label: group.display_name,
+                    label:
+                      group.principal_type === 'department'
+                        ? `${group.display_name} (department)`
+                        : group.display_name,
                   }))}
                   onChange={changeSelectedGroupIds}
                   showSearch
                   filterOption={false}
                   loading={directoryLoading}
                   onSearch={(search) => searchDirectory('groups', search)}
+                  popupRender={(menu) => renderDirectoryPopup('groups', menu)}
                   style={{ width: '100%' }}
                 />
                 <Select
@@ -512,15 +724,46 @@ export default function EnterpriseAccessDrawer({
                   filterOption={false}
                   loading={directoryLoading}
                   onSearch={(search) => searchDirectory('users', search)}
+                  popupRender={(menu) => renderDirectoryPopup('users', menu)}
                   style={{ width: '100%' }}
                 />
               </>
             )}
             <Select
+              aria-label={t('enterpriseAccess.instances')}
+              mode="multiple"
+              value={selectedInstanceIds}
+              placeholder={t('enterpriseAccess.selectInstances')}
+              options={activeInstances.map((instance) => ({
+                value: instance.id,
+                label: instance.name,
+              }))}
+              onChange={(instanceIds) => {
+                const nextInstanceIds = new Set(instanceIds)
+                setSelectedInstanceIds(instanceIds)
+                setSelectedSpaceIds((current) =>
+                  current.filter((spaceId) => {
+                    const space = spaces.find(
+                      (candidate) =>
+                        candidate.knowledge_space_id === spaceId,
+                    )
+                    return Boolean(
+                      space &&
+                        nextInstanceIds.has(space.polarrag_instance_id),
+                    )
+                  }),
+                )
+              }}
+              showSearch
+              optionFilterProp="label"
+              style={{ width: '100%' }}
+            />
+            <Select
               aria-label={t('enterpriseAccess.spaces')}
               mode="multiple"
               value={selectedSpaceIds}
               placeholder={t('enterpriseAccess.selectSpaces')}
+              disabled={selectedInstanceIds.length === 0}
               options={eligibleSpaces.map((space) => ({
                 value: space.knowledge_space_id,
                 label: space.name,

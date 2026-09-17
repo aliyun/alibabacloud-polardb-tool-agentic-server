@@ -49,9 +49,93 @@ async def test_bootstrap_authorized_describe_is_no_store(
     assert response.headers["cache-control"] == "no-store"
     body = response.json()
     assert body["system_state"] == "SETUP"
-    assert body["module"]["effective"]["config"]["private_key"] == {
-        "configured": True
+    assert body["module"]["effective"]["config"]["private_key"] == {"configured": True}
+
+
+async def test_polarrag_limits_schema_is_independent_and_described(
+    api_context,
+) -> None:
+    context, client = api_context
+    from server.configuration.bootstrap import rotate_bootstrap_token
+
+    token = await rotate_bootstrap_token(context.repository)
+    response = await client.post(
+        "/api/config",
+        headers={"Authorization": f"Bootstrap {token}"},
+        json={
+            "protocol_version": 1,
+            "action": "describe",
+            "module": "polarrag_tool_limits",
+        },
+    )
+
+    assert response.status_code == 200
+    module = response.json()["module"]
+    assert module["name"] == "polarrag_tool_limits"
+    assert set(module["schema"]["properties"]) == {
+        "enabled",
+        "user_requests_per_minute",
+        "user_burst",
+        "agent_requests_per_minute",
+        "agent_burst",
+        "instance_max_inflight",
+        "max_fanout",
+        "max_exhaustive_knowledge_resources",
+        "retry_after_seconds",
+        "upstream_request_timeout_ms",
     }
+    assert module["schema"]["properties"]["max_fanout"]["minimum"] == 1
+    assert module["schema"]["properties"]["max_fanout"]["maximum"] == 1000
+    assert (
+        module["schema"]["properties"]["max_exhaustive_knowledge_resources"]
+        ["maximum"]
+        == 10000
+    )
+    assert module["schema"]["properties"]["upstream_request_timeout_ms"]["minimum"] == 100
+    assert module["schema"]["properties"]["upstream_request_timeout_ms"]["maximum"] == 300000
+    assert "replica" in module["ui_hints"]["local_limit_semantics"]
+
+
+async def test_polarrag_limits_validation_blocks_unbounded_integer(
+    api_context,
+) -> None:
+    context, client = api_context
+    from server.configuration.bootstrap import rotate_bootstrap_token
+
+    token = await rotate_bootstrap_token(context.repository)
+    document = await context.repository.get_module("polarrag_tool_limits")
+    assert document is not None
+    saved = await client.post(
+        "/api/config",
+        headers={"Authorization": f"Bootstrap {token}"},
+        json={
+            "protocol_version": 1,
+            "action": "save_draft",
+            "module": "polarrag_tool_limits",
+            "expected_revision": document.revision,
+            "config": {"user_burst": 10**1000},
+        },
+    )
+
+    assert saved.status_code == 200
+    validated = await client.post(
+        "/api/config",
+        headers={"Authorization": f"Bootstrap {token}"},
+        json={
+            "protocol_version": 1,
+            "action": "validate",
+            "module": "polarrag_tool_limits",
+            "expected_revision": saved.json()["module"]["revision"],
+        },
+    )
+
+    assert validated.status_code == 409
+    assert validated.json()["detail"]["code"] == "INVALID_MODULE_CONFIG"
+    rejected = await context.repository.get_module("polarrag_tool_limits")
+    assert rejected is not None
+    assert rejected.last_error_code == "INVALID_MODULE_CONFIG"
+    assert rejected.effective is not None
+    assert rejected.effective.config["user_burst"] == 10
 
 
 async def test_bootstrap_token_is_required_in_setup(api_context) -> None:

@@ -802,7 +802,7 @@ class TestTenantManagementAPI:
         c, cookies, _, instance_id = client_with_mt
         resp = await c.get(f"/api/instances/{instance_id}/tenants", cookies=cookies)
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json()["items"] == []
 
     async def test_create_and_list_tenant(self, client_with_mt):
         c, cookies, _, instance_id = client_with_mt
@@ -817,7 +817,7 @@ class TestTenantManagementAPI:
 
         resp = await c.get(f"/api/instances/{instance_id}/tenants", cookies=cookies)
         assert resp.status_code == 200
-        tenants = resp.json()
+        tenants = resp.json()["items"]
         assert len(tenants) == 1
         assert tenants[0]["user_id"] == admin_id
         assert tenants[0]["tenant_name"] is not None
@@ -853,4 +853,4 @@ class TestTenantManagementAPI:
         assert resp.status_code == 204
 
         resp = await c.get(f"/api/instances/{instance_id}/tenants", cookies=cookies)
-        assert resp.json() == []
+        assert resp.json()["items"] == []

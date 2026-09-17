@@ -1,3 +1,4 @@
+import { useFeatures } from '../../hooks/useFeatures'
 import {
   useCallback,
   useLayoutEffect,
@@ -71,6 +72,8 @@ import MCPConnectionPanel from './MCPConnectionPanel'
 import RESTAPIConnectionPanel from './RESTAPIConnectionPanel'
 import DedicatedPoolRoutes from './DedicatedPoolRoutes'
 import PolarRAGAccessPanel from './PolarRAGAccessPanel'
+
+const PUBLIC_RESOURCE_PAGE_SIZE = 50
 
 const { Text, Title } = Typography
 
@@ -155,6 +158,7 @@ function SectionHeading({
 }
 
 export default function AgentDetail() {
+  const { knowledge } = useFeatures()
   const { t } = useTranslation()
   const { id = '' } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -187,6 +191,8 @@ export default function AgentDetail() {
   >([])
   const [publicScopeDraft, setPublicScopeDraft] = useState<string[] | null>(null)
   const [publicScopeLoading, setPublicScopeLoading] = useState(false)
+  const [publicScopeSearch, setPublicScopeSearch] = useState('')
+  const [publicScopeHasMore, setPublicScopeHasMore] = useState(false)
   const [resources, setResources] = useState<AgentResource[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -238,18 +244,18 @@ export default function AgentDetail() {
         listInstances(),
         listProvisioningBackends(),
         listAgentInstanceAccess(scope.agentId),
-        listAgentPolarRAGBindings(scope.agentId),
+        knowledge ? listAgentPolarRAGBindings(scope.agentId) : Promise.resolve({ data: { items: [] } }),
         listAgentResources(scope.agentId),
       ])
       if (!isCurrentScope(scope)) return
       const loadedAgent = agentResponse.data
       setAgent(loadedAgent)
       setInstances(instancesResponse.items)
-      setBackends(backendsResponse.data)
-      setInstanceAccess(accessResponse.data)
-      setPolarRAGBindings(polarRAGBindingsResponse.data)
+      setBackends(backendsResponse.data.items)
+      setInstanceAccess(accessResponse.data.items)
+      setPolarRAGBindings(polarRAGBindingsResponse.data.items)
       setResources(
-        resourcesResponse.data.filter((resource) => resource.status !== 'deleted'),
+        resourcesResponse.data.items.filter((resource) => resource.status !== 'deleted'),
       )
     } catch (requestError) {
       if (!isCurrentScope(scope)) return
@@ -257,7 +263,7 @@ export default function AgentDetail() {
     } finally {
       if (isCurrentScope(scope)) setLoading(false)
     }
-  }, [isCurrentScope, t])
+  }, [isCurrentScope, t, knowledge])
 
   const loadMCPServerURL = useCallback(
     async (scope: RouteScope) => {
@@ -330,7 +336,7 @@ export default function AgentDetail() {
           ...current.filter(
             (credential) => credential.instance_id !== instanceId,
           ),
-          ...response.data,
+          ...response.data.items,
         ])
         setCredentialLoadedIds((current) =>
           current.includes(instanceId) ? current : [...current, instanceId],
@@ -404,19 +410,32 @@ export default function AgentDetail() {
     )
   }
 
-  const openPublicScope = async (binding: AgentPolarRAGBinding) => {
+  const loadPublicScopeOptions = async (
+    binding: AgentPolarRAGBinding,
+    search = '',
+    offset = 0,
+    append = false,
+  ) => {
     const scope = { ...scopeRef.current }
-    setPublicScopeBinding(binding)
-    setPublicScopeDraft(binding.public_knowledge_resource_ids)
-    setPublicScopeOptions([])
     setPublicScopeLoading(true)
-    setError(null)
     try {
       const response = await listAgentPolarRAGPublicResources(
         scope.agentId,
         binding.id,
+        {
+          offset,
+          limit: PUBLIC_RESOURCE_PAGE_SIZE,
+          ...(search ? { search } : {}),
+        },
       )
-      if (isCurrentScope(scope)) setPublicScopeOptions(response.data)
+      if (isCurrentScope(scope)) {
+        setPublicScopeOptions((current) =>
+          append ? [...current, ...response.data.items] : response.data.items,
+        )
+        setPublicScopeHasMore(
+          offset + response.data.items.length < response.data.total,
+        )
+      }
     } catch (requestError) {
       if (isCurrentScope(scope)) {
         setError(
@@ -425,11 +444,21 @@ export default function AgentDetail() {
             t('agentDetail.publicScopeLoadFailed'),
           ),
         )
-        setPublicScopeBinding(null)
+        if (!append) setPublicScopeBinding(null)
       }
     } finally {
       if (isCurrentScope(scope)) setPublicScopeLoading(false)
     }
+  }
+
+  const openPublicScope = async (binding: AgentPolarRAGBinding) => {
+    setPublicScopeBinding(binding)
+    setPublicScopeDraft(binding.public_knowledge_resource_ids)
+    setPublicScopeOptions([])
+    setPublicScopeSearch('')
+    setPublicScopeHasMore(false)
+    setError(null)
+    await loadPublicScopeOptions(binding)
   }
 
   const savePublicScope = async () => {
@@ -706,8 +735,8 @@ export default function AgentDetail() {
         tokenStatus={agent.token_summary?.status ?? null}
         expiresAt={agent.token_summary?.expires_at ?? null}
         lastUsedAt={agent.token_summary?.last_used_at ?? null}
-        revealToken={async (password) => {
-          const response = await revealAgentToken(agent.id, { password })
+        revealToken={async () => {
+          const response = await revealAgentToken(agent.id)
           if (!response.data.token) {
             throw new Error('Agent Token is not active')
           }
@@ -1193,8 +1222,32 @@ export default function AgentDetail() {
                         aria-label={t('agentDetail.publicKnowledgeResources')}
                         loading={publicScopeLoading}
                         disabled={publicScopeDraft === null}
+                        showSearch
+                        filterOption={false}
                         value={publicScopeDraft ?? []}
                         onChange={setPublicScopeDraft}
+                        onSearch={(search) => {
+                          setPublicScopeSearch(search)
+                          if (publicScopeBinding) {
+                            void loadPublicScopeOptions(publicScopeBinding, search)
+                          }
+                        }}
+                        onPopupScroll={(event) => {
+                          const target = event.currentTarget
+                          if (
+                            publicScopeBinding &&
+                            publicScopeHasMore &&
+                            !publicScopeLoading &&
+                            target.scrollTop + target.clientHeight >= target.scrollHeight - 16
+                          ) {
+                            void loadPublicScopeOptions(
+                              publicScopeBinding,
+                              publicScopeSearch,
+                              publicScopeOptions.length,
+                              true,
+                            )
+                          }
+                        }}
                         options={publicScopeOptions.map((resource) => ({
                           value: resource.knowledge_resource_id,
                           label: `${resource.name} · ${resource.knowledge_space_name}`,
@@ -1216,7 +1269,7 @@ export default function AgentDetail() {
                 </Space>
               ),
             },
-          ]}
+          ].filter(item => knowledge || item.key !== 'polarrag')}
         />
       </Space>
 

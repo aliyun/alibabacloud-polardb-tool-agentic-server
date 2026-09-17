@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import uuid
-from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import distinct, func, or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import and_, delete, distinct, exists, func, literal, or_, select, union_all, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,22 +17,14 @@ from sqlalchemy.orm import selectinload
 from server.auth.dependencies import require_admin
 from server.core import agent_user_token_service
 from server.core.agent_access import has_group_agent_access
-from server.core.agent_enterprise_access_service import (
-    EnterpriseAccessAuditError,
-    EnterpriseAccessPreviewStaleError,
-    EnterpriseAccessSelection,
-    EnterpriseAccessValidationError,
-    apply_enterprise_access,
-    preview_enterprise_access,
-)
-from server.core.resource_write_guard import serialized_resource_write
 from server.core.audit_logger import log_audit
 from server.db.engine import get_session
+from server.enterprise_identity.service import identity_source_snapshot_is_usable
 from server.models import (
     Agent,
     AgentGroupAssignment,
     AgentGroupKind,
-    AgentPolarRAGInstanceBinding,
+    AgentKnowledgeScopeBinding,
     AgentUserAssignment,
     AuditStatus,
     Department,
@@ -45,32 +39,40 @@ from server.models import (
     EnterpriseDirectoryUser,
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceStatus,
-    KnowledgeBindingMode,
-    KnowledgeResource,
-    KnowledgeResourceSyncStatus,
-    PolarRAGInstance,
-    PolarRAGSpace,
+    ExternalUserPrincipalMembership,
     User,
     UserDepartment,
 )
 from server.models.base import utc_now
 
 router = APIRouter(prefix="/agents", tags=["agent-polarrag-access"])
+logger = logging.getLogger(__name__)
+
+USER_ASSIGNMENT_BULK_REQUEST_TIMEOUT_SECONDS = 2.0
+_BULK_ASSIGNMENT_LEASE_SECONDS = 3600
 
 
-class PolarRAGBindingRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    polarrag_instance_id: str
 
 
-class PolarRAGPublicScopeRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    public_knowledge_resource_ids: list[str] | None
 
 
 class UserAssignmentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_id: str
+
+
+class UserOptionResponse(BaseModel):
+    id: str
+    display_name: str
+    external_id: str
+    status: str
+
+
+class UserOptionListResponse(BaseModel):
+    items: list[UserOptionResponse]
+    total: int
+    offset: int
+    limit: int
 
 
 class GroupAssignmentRequest(BaseModel):
@@ -83,18 +85,8 @@ class GroupAssignmentRequest(BaseModel):
     principal_id: str | None = None
 
 
-class EnterpriseAccessSelectionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    identity_source_id: str = Field(min_length=1, max_length=36)
-    all_synced_users: bool = False
-    directory_group_ids: list[str] = Field(default_factory=list, max_length=500)
-    pas_user_ids: list[str] = Field(default_factory=list, max_length=500)
-    knowledge_space_ids: list[str] = Field(min_length=1, max_length=200)
 
 
-class EnterpriseAccessApplyRequest(EnterpriseAccessSelectionRequest):
-    preview_hash: str
 
 
 class GroupOptionResponse(BaseModel):
@@ -111,40 +103,33 @@ class GroupOptionResponse(BaseModel):
     member_count: int
 
 
+class GroupOptionListResponse(BaseModel):
+    items: list[GroupOptionResponse]
+    total: int
+    offset: int
+    limit: int
+
+
 class GroupAssignmentResponse(GroupOptionResponse):
     id: str
     created_at: datetime
 
 
-class PolarRAGBindingResponse(BaseModel):
-    id: str
-    polarrag_instance_id: str
-    instance_name: str
-    public_knowledge_resource_ids: list[str] | None
-    created_at: datetime
+class GroupAssignmentListResponse(BaseModel):
+    items: list[GroupAssignmentResponse]
+    total: int
+    offset: int
+    limit: int
 
 
-class PolarRAGPublicResourceResponse(BaseModel):
-    knowledge_resource_id: str
-    name: str
-    knowledge_space_name: str
 
 
-def _public_resource_ids(
-    row: AgentPolarRAGInstanceBinding,
-) -> list[str] | None:
-    raw = row.public_knowledge_resource_ids_json
-    if raw is None:
-        return None
-    try:
-        value = json.loads(raw)
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(value, list) or any(
-        not isinstance(item, str) for item in value
-    ):
-        return []
-    return value
+
+
+
+
+
+
 
 
 class UserTokenSummaryResponse(BaseModel):
@@ -163,16 +148,30 @@ class UserAssignmentResponse(BaseModel):
     created_at: datetime
 
 
-def _binding_response(
-    row: AgentPolarRAGInstanceBinding,
-) -> PolarRAGBindingResponse:
-    return PolarRAGBindingResponse(
-        id=row.id,
-        polarrag_instance_id=row.polarrag_instance_id,
-        instance_name=row.instance.name,
-        public_knowledge_resource_ids=_public_resource_ids(row),
-        created_at=row.created_at,
+class UserAssignmentListResponse(BaseModel):
+    items: list[UserAssignmentResponse]
+    total: int
+    offset: int
+    limit: int
+
+
+class BulkUserAssignmentResponse(BaseModel):
+    status: Literal["running", "completed", "failed"]
+    created_count: int = 0
+    error: str | None = None
+
+
+def _bulk_user_assignment_response(agent: Agent) -> BulkUserAssignmentResponse:
+    return BulkUserAssignmentResponse(
+        status=cast(
+            Literal["running", "completed", "failed"],
+            agent.bulk_assignment_status,
+        ),
+        created_count=agent.bulk_assignment_created_count,
+        error=agent.bulk_assignment_error,
     )
+
+
 
 
 def _assignment_response(row: AgentUserAssignment) -> UserAssignmentResponse:
@@ -244,93 +243,10 @@ async def _audit(
     )
 
 
-def _enterprise_access_selection(
-    body: EnterpriseAccessSelectionRequest,
-) -> EnterpriseAccessSelection:
-    return EnterpriseAccessSelection(
-        identity_source_id=body.identity_source_id,
-        all_synced_users=body.all_synced_users,
-        directory_group_ids=tuple(body.directory_group_ids),
-        pas_user_ids=tuple(body.pas_user_ids),
-        knowledge_space_ids=tuple(body.knowledge_space_ids),
-    )
 
 
-@router.post("/{agent_id}/enterprise-access/preview")
-async def preview_agent_enterprise_access(
-    agent_id: str,
-    body: EnterpriseAccessSelectionRequest,
-    _admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    try:
-        preview = await preview_enterprise_access(
-            session,
-            agent_id=agent_id,
-            selection=_enterprise_access_selection(body),
-        )
-    except EnterpriseAccessValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": exc.code, "message": exc.message},
-        ) from exc
-    return asdict(preview)
 
 
-@router.post("/{agent_id}/enterprise-access/apply")
-async def apply_agent_enterprise_access(
-    agent_id: str,
-    body: EnterpriseAccessApplyRequest,
-    admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    try:
-        if session.in_transaction():
-            await session.rollback()
-        async with serialized_resource_write(session):
-            result = await apply_enterprise_access(
-                session,
-                agent_id=agent_id,
-                admin=admin,
-                selection=_enterprise_access_selection(body),
-                preview_hash=body.preview_hash,
-            )
-            await session.commit()
-    except EnterpriseAccessPreviewStaleError as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "ENTERPRISE_ACCESS_PREVIEW_STALE",
-                "message": "Configuration changed; review the refreshed preview",
-                "preview": asdict(exc.preview),
-            },
-        ) from exc
-    except EnterpriseAccessValidationError as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=422,
-            detail={"code": exc.code, "message": exc.message},
-        ) from exc
-    except EnterpriseAccessAuditError as exc:
-        await session.rollback()
-        raise HTTPException(status_code=503, detail="Audit unavailable") from exc
-    except IntegrityError as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "ENTERPRISE_ACCESS_CONFLICT",
-                "message": "Enterprise access configuration conflicted",
-            },
-        ) from exc
-    except Exception as exc:
-        await session.rollback()
-        raise HTTPException(
-            status_code=503,
-            detail="Enterprise access configuration unavailable",
-        ) from exc
-    return asdict(result)
 
 
 async def _enterprise_group_exists(
@@ -342,14 +258,11 @@ async def _enterprise_group_exists(
     return (
         await session.execute(
             select(EnterprisePrincipalAssignment.id).where(
-                EnterprisePrincipalAssignment.identity_domain
-                == identity_domain,
+                EnterprisePrincipalAssignment.identity_domain == identity_domain,
                 EnterprisePrincipalAssignment.provider == provider,
-                EnterprisePrincipalAssignment.principal_type
-                == EnterprisePrincipalType.GROUP,
+                EnterprisePrincipalAssignment.principal_type == EnterprisePrincipalType.GROUP,
                 EnterprisePrincipalAssignment.principal_id == principal_id,
-                EnterprisePrincipalAssignment.status
-                == EnterprisePrincipalStatus.ACTIVE,
+                EnterprisePrincipalAssignment.status == EnterprisePrincipalStatus.ACTIVE,
                 or_(
                     EnterprisePrincipalAssignment.valid_until.is_(None),
                     EnterprisePrincipalAssignment.valid_until > utc_now(),
@@ -364,25 +277,41 @@ async def _identity_source_group_exists(
     identity_source_id: str,
     external_group_id: str,
 ) -> bool:
+    source = await session.get(EnterpriseIdentitySource, identity_source_id)
+    if source is None or not identity_source_snapshot_is_usable(source):
+        return False
+    directory_group_exists = (
+        await session.execute(
+            select(EnterpriseDirectoryGroup.id).where(
+                EnterpriseDirectoryGroup.identity_source_id == identity_source_id,
+                EnterpriseDirectoryGroup.external_group_id == external_group_id,
+                EnterpriseDirectoryGroup.principal_type.in_(
+                    (
+                        EnterpriseDirectoryPrincipalType.GROUP,
+                        EnterpriseDirectoryPrincipalType.DEPARTMENT,
+                        EnterpriseDirectoryPrincipalType.ACL_GROUP,
+                    )
+                ),
+                EnterpriseDirectoryGroup.status == EnterpriseDirectoryEntryStatus.ACTIVE,
+            )
+        )
+    ).first() is not None
+    if directory_group_exists:
+        return True
     return (
         await session.execute(
-            select(EnterpriseDirectoryGroup.id)
-            .join(
-                EnterpriseIdentitySource,
-                EnterpriseIdentitySource.id
-                == EnterpriseDirectoryGroup.identity_source_id,
-            )
+            select(ExternalUserPrincipalMembership.id)
             .where(
-                EnterpriseDirectoryGroup.identity_source_id
+                ExternalUserPrincipalMembership.identity_source_id
                 == identity_source_id,
-                EnterpriseDirectoryGroup.external_group_id == external_group_id,
-                EnterpriseDirectoryGroup.principal_type
-                == EnterpriseDirectoryPrincipalType.GROUP,
-                EnterpriseDirectoryGroup.status
-                == EnterpriseDirectoryEntryStatus.ACTIVE,
-                EnterpriseIdentitySource.status
-                == EnterpriseIdentitySourceStatus.ACTIVE,
+                ExternalUserPrincipalMembership.principal_id
+                == external_group_id,
+                or_(
+                    ExternalUserPrincipalMembership.expires_at.is_(None),
+                    ExternalUserPrincipalMembership.expires_at > utc_now(),
+                ),
             )
+            .limit(1)
         )
     ).first() is not None
 
@@ -391,15 +320,8 @@ async def _identity_source_exists(
     session: AsyncSession,
     identity_source_id: str,
 ) -> bool:
-    return (
-        await session.execute(
-            select(EnterpriseIdentitySource.id).where(
-                EnterpriseIdentitySource.id == identity_source_id,
-                EnterpriseIdentitySource.status
-                == EnterpriseIdentitySourceStatus.ACTIVE,
-            )
-        )
-    ).first() is not None
+    source = await session.get(EnterpriseIdentitySource, identity_source_id)
+    return source is not None and identity_source_snapshot_is_usable(source)
 
 
 async def _group_member_count(
@@ -409,49 +331,87 @@ async def _group_member_count(
     if row.group_kind == AgentGroupKind.DEPARTMENT:
         return int(
             await session.scalar(
-                select(func.count(UserDepartment.user_id)).where(
-                    UserDepartment.department_id == row.department_id
-                )
+                select(func.count(UserDepartment.user_id)).where(UserDepartment.department_id == row.department_id)
             )
             or 0
         )
     if row.group_kind == AgentGroupKind.IDENTITY_SOURCE_ALL:
+        members = union_all(
+            select(
+                EnterpriseDirectoryUser.external_user_id.label(
+                    "external_user_id"
+                )
+            ).where(
+                EnterpriseDirectoryUser.identity_source_id
+                == row.identity_source_id,
+                EnterpriseDirectoryUser.status
+                == EnterpriseDirectoryEntryStatus.ACTIVE,
+            ),
+            select(
+                ExternalUserPrincipalMembership.external_user_id.label(
+                    "external_user_id"
+                )
+            ).where(
+                ExternalUserPrincipalMembership.identity_source_id
+                == row.identity_source_id,
+                or_(
+                    ExternalUserPrincipalMembership.expires_at.is_(None),
+                    ExternalUserPrincipalMembership.expires_at > utc_now(),
+                ),
+            ),
+        ).subquery()
         return int(
             await session.scalar(
-                select(func.count(EnterpriseDirectoryUser.id)).where(
-                    EnterpriseDirectoryUser.identity_source_id
-                    == row.identity_source_id,
-                    EnterpriseDirectoryUser.status
-                    == EnterpriseDirectoryEntryStatus.ACTIVE,
-                )
+                select(func.count(distinct(members.c.external_user_id)))
             )
             or 0
         )
     if row.group_kind == AgentGroupKind.IDENTITY_SOURCE:
+        members = union_all(
+            select(
+                EnterpriseDirectoryUser.external_user_id.label(
+                    "external_user_id"
+                )
+            )
+            .join(
+                EnterpriseDirectoryMembership,
+                (
+                    EnterpriseDirectoryMembership.identity_source_id
+                    == EnterpriseDirectoryUser.identity_source_id
+                )
+                & (
+                    EnterpriseDirectoryMembership.external_member_id
+                    == EnterpriseDirectoryUser.external_user_id
+                ),
+            )
+            .where(
+                EnterpriseDirectoryUser.identity_source_id
+                == row.identity_source_id,
+                EnterpriseDirectoryUser.status
+                == EnterpriseDirectoryEntryStatus.ACTIVE,
+                EnterpriseDirectoryMembership.external_group_id
+                == row.principal_id,
+                EnterpriseDirectoryMembership.member_type
+                == EnterpriseDirectoryMembershipType.USER,
+            ),
+            select(
+                ExternalUserPrincipalMembership.external_user_id.label(
+                    "external_user_id"
+                )
+            ).where(
+                ExternalUserPrincipalMembership.identity_source_id
+                == row.identity_source_id,
+                ExternalUserPrincipalMembership.principal_id
+                == row.principal_id,
+                or_(
+                    ExternalUserPrincipalMembership.expires_at.is_(None),
+                    ExternalUserPrincipalMembership.expires_at > utc_now(),
+                ),
+            ),
+        ).subquery()
         return int(
             await session.scalar(
-                select(func.count(distinct(EnterpriseDirectoryUser.id)))
-                .join(
-                    EnterpriseDirectoryMembership,
-                    (
-                        EnterpriseDirectoryMembership.identity_source_id
-                        == EnterpriseDirectoryUser.identity_source_id
-                    )
-                    & (
-                        EnterpriseDirectoryMembership.external_member_id
-                        == EnterpriseDirectoryUser.external_user_id
-                    ),
-                )
-                .where(
-                    EnterpriseDirectoryUser.identity_source_id
-                    == row.identity_source_id,
-                    EnterpriseDirectoryUser.status
-                    == EnterpriseDirectoryEntryStatus.ACTIVE,
-                    EnterpriseDirectoryMembership.external_group_id
-                    == row.principal_id,
-                    EnterpriseDirectoryMembership.member_type
-                    == EnterpriseDirectoryMembershipType.USER,
-                )
+                select(func.count(distinct(members.c.external_user_id)))
             )
             or 0
         )
@@ -460,11 +420,9 @@ async def _group_member_count(
             select(func.count(distinct(EnterprisePrincipalAssignment.pas_user_id))).where(
                 EnterprisePrincipalAssignment.identity_domain == row.identity_domain,
                 EnterprisePrincipalAssignment.provider == row.provider,
-                EnterprisePrincipalAssignment.principal_type
-                == EnterprisePrincipalType.GROUP,
+                EnterprisePrincipalAssignment.principal_type == EnterprisePrincipalType.GROUP,
                 EnterprisePrincipalAssignment.principal_id == row.principal_id,
-                EnterprisePrincipalAssignment.status
-                == EnterprisePrincipalStatus.ACTIVE,
+                EnterprisePrincipalAssignment.status == EnterprisePrincipalStatus.ACTIVE,
                 or_(
                     EnterprisePrincipalAssignment.valid_until.is_(None),
                     EnterprisePrincipalAssignment.valid_until > utc_now(),
@@ -489,8 +447,7 @@ async def _group_assignment_response(
         group = (
             await session.execute(
                 select(EnterpriseDirectoryGroup).where(
-                    EnterpriseDirectoryGroup.identity_source_id
-                    == row.identity_source_id,
+                    EnterpriseDirectoryGroup.identity_source_id == row.identity_source_id,
                     EnterpriseDirectoryGroup.external_group_id == row.principal_id,
                 )
             )
@@ -506,11 +463,7 @@ async def _group_assignment_response(
         provider=row.provider,
         identity_source_id=row.identity_source_id,
         identity_source_name=identity_source_name,
-        external_group_id=(
-            row.principal_id
-            if row.group_kind == AgentGroupKind.IDENTITY_SOURCE
-            else None
-        ),
+        external_group_id=(row.principal_id if row.group_kind == AgentGroupKind.IDENTITY_SOURCE else None),
         external_group_name=external_group_name,
         principal_id=row.principal_id,
         member_count=await _group_member_count(session, row),
@@ -518,257 +471,369 @@ async def _group_assignment_response(
     )
 
 
+def _group_option_columns(
+    rank: int,
+    kind: str,
+    *,
+    department_id: Any = None,
+    department_name: Any = None,
+    identity_domain: Any = None,
+    provider: Any = None,
+    identity_source_id: Any = None,
+    identity_source_name: Any = None,
+    external_group_id: Any = None,
+    external_group_name: Any = None,
+    principal_id: Any = None,
+    member_count: Any = None,
+    sort_1: Any = None,
+    sort_2: Any = None,
+    sort_3: Any = None,
+) -> tuple[Any, ...]:
+    def labeled(value: Any, name: str) -> Any:
+        return (literal(None) if value is None else value).label(name)
+
+    return (
+        literal(rank).label("kind_rank"),
+        literal(kind).label("group_kind"),
+        labeled(department_id, "department_id"),
+        labeled(department_name, "department_name"),
+        labeled(identity_domain, "identity_domain"),
+        labeled(provider, "provider"),
+        labeled(identity_source_id, "identity_source_id"),
+        labeled(identity_source_name, "identity_source_name"),
+        labeled(external_group_id, "external_group_id"),
+        labeled(external_group_name, "external_group_name"),
+        labeled(principal_id, "principal_id"),
+        labeled(member_count, "member_count"),
+        labeled(sort_1, "sort_1"),
+        labeled(sort_2, "sort_2"),
+        labeled(sort_3, "sort_3"),
+    )
+
+
+def _group_options_query(agent_id: str, normalized_search: str) -> Any:
+    pattern = f"%{normalized_search}%"
+    usable_source = or_(
+        EnterpriseIdentitySource.status == EnterpriseIdentitySourceStatus.ACTIVE,
+        and_(
+            EnterpriseIdentitySource.status == EnterpriseIdentitySourceStatus.STALE,
+            EnterpriseIdentitySource.last_synced_at.is_not(None),
+        ),
+    )
+    department_assigned = exists(
+        select(AgentGroupAssignment.id).where(
+            AgentGroupAssignment.agent_id == agent_id,
+            AgentGroupAssignment.group_kind == AgentGroupKind.DEPARTMENT,
+            AgentGroupAssignment.department_id == Department.id,
+        )
+    )
+    source_all_assigned = exists(
+        select(AgentGroupAssignment.id).where(
+            AgentGroupAssignment.agent_id == agent_id,
+            AgentGroupAssignment.group_kind == AgentGroupKind.IDENTITY_SOURCE_ALL,
+            AgentGroupAssignment.identity_source_id == EnterpriseIdentitySource.id,
+        )
+    )
+    enterprise_assigned = exists(
+        select(AgentGroupAssignment.id).where(
+            AgentGroupAssignment.agent_id == agent_id,
+            AgentGroupAssignment.group_kind == AgentGroupKind.ENTERPRISE,
+            AgentGroupAssignment.identity_domain
+            == EnterprisePrincipalAssignment.identity_domain,
+            AgentGroupAssignment.provider == EnterprisePrincipalAssignment.provider,
+            AgentGroupAssignment.principal_id
+            == EnterprisePrincipalAssignment.principal_id,
+        )
+    )
+    source_group_assigned = exists(
+        select(AgentGroupAssignment.id).where(
+            AgentGroupAssignment.agent_id == agent_id,
+            AgentGroupAssignment.group_kind == AgentGroupKind.IDENTITY_SOURCE,
+            AgentGroupAssignment.identity_source_id == EnterpriseIdentitySource.id,
+            AgentGroupAssignment.principal_id
+            == EnterpriseDirectoryGroup.external_group_id,
+        )
+    )
+    department_query = (
+        select(
+            *_group_option_columns(
+                0,
+                AgentGroupKind.DEPARTMENT.value,
+                department_id=Department.id,
+                department_name=Department.name,
+                member_count=func.count(UserDepartment.user_id),
+                sort_1=Department.name,
+                sort_2=Department.id,
+            )
+        )
+        .outerjoin(UserDepartment, UserDepartment.department_id == Department.id)
+        .where(~department_assigned)
+        .group_by(Department.id, Department.name)
+    )
+    source_all_query = (
+        select(
+            *_group_option_columns(
+                1,
+                AgentGroupKind.IDENTITY_SOURCE_ALL.value,
+                identity_source_id=EnterpriseIdentitySource.id,
+                identity_source_name=EnterpriseIdentitySource.name,
+                member_count=func.count(EnterpriseDirectoryUser.id),
+                sort_1=EnterpriseIdentitySource.name,
+                sort_2=EnterpriseIdentitySource.id,
+            )
+        )
+        .outerjoin(
+            EnterpriseDirectoryUser,
+            (
+                EnterpriseDirectoryUser.identity_source_id
+                == EnterpriseIdentitySource.id
+            )
+            & (
+                EnterpriseDirectoryUser.status
+                == EnterpriseDirectoryEntryStatus.ACTIVE
+            ),
+        )
+        .where(usable_source, ~source_all_assigned)
+        .group_by(EnterpriseIdentitySource.id, EnterpriseIdentitySource.name)
+    )
+    enterprise_query = (
+        select(
+            *_group_option_columns(
+                2,
+                AgentGroupKind.ENTERPRISE.value,
+                identity_domain=EnterprisePrincipalAssignment.identity_domain,
+                provider=EnterprisePrincipalAssignment.provider,
+                principal_id=EnterprisePrincipalAssignment.principal_id,
+                member_count=func.count(
+                    distinct(EnterprisePrincipalAssignment.pas_user_id)
+                ),
+                sort_1=EnterprisePrincipalAssignment.identity_domain,
+                sort_2=EnterprisePrincipalAssignment.provider,
+                sort_3=EnterprisePrincipalAssignment.principal_id,
+            )
+        )
+        .where(
+            EnterprisePrincipalAssignment.principal_type
+            == EnterprisePrincipalType.GROUP,
+            EnterprisePrincipalAssignment.status
+            == EnterprisePrincipalStatus.ACTIVE,
+            or_(
+                EnterprisePrincipalAssignment.valid_until.is_(None),
+                EnterprisePrincipalAssignment.valid_until > utc_now(),
+            ),
+            ~enterprise_assigned,
+        )
+        .group_by(
+            EnterprisePrincipalAssignment.identity_domain,
+            EnterprisePrincipalAssignment.provider,
+            EnterprisePrincipalAssignment.principal_id,
+        )
+    )
+    source_group_query = (
+        select(
+            *_group_option_columns(
+                3,
+                AgentGroupKind.IDENTITY_SOURCE.value,
+                identity_source_id=EnterpriseIdentitySource.id,
+                identity_source_name=EnterpriseIdentitySource.name,
+                external_group_id=EnterpriseDirectoryGroup.external_group_id,
+                external_group_name=EnterpriseDirectoryGroup.display_name,
+                principal_id=EnterpriseDirectoryGroup.external_group_id,
+                member_count=func.count(distinct(EnterpriseDirectoryUser.id)),
+                sort_1=EnterpriseIdentitySource.name,
+                sort_2=EnterpriseDirectoryGroup.display_name,
+                sort_3=EnterpriseDirectoryGroup.external_group_id,
+            )
+        )
+        .join(
+            EnterpriseDirectoryGroup,
+            EnterpriseDirectoryGroup.identity_source_id
+            == EnterpriseIdentitySource.id,
+        )
+        .outerjoin(
+            EnterpriseDirectoryMembership,
+            (
+                EnterpriseDirectoryMembership.identity_source_id
+                == EnterpriseDirectoryGroup.identity_source_id
+            )
+            & (
+                EnterpriseDirectoryMembership.external_group_id
+                == EnterpriseDirectoryGroup.external_group_id
+            )
+            & (
+                EnterpriseDirectoryMembership.member_type
+                == EnterpriseDirectoryMembershipType.USER
+            ),
+        )
+        .outerjoin(
+            EnterpriseDirectoryUser,
+            (
+                EnterpriseDirectoryUser.identity_source_id
+                == EnterpriseDirectoryMembership.identity_source_id
+            )
+            & (
+                EnterpriseDirectoryUser.external_user_id
+                == EnterpriseDirectoryMembership.external_member_id
+            )
+            & (
+                EnterpriseDirectoryUser.status
+                == EnterpriseDirectoryEntryStatus.ACTIVE
+            ),
+        )
+        .where(
+            usable_source,
+            EnterpriseDirectoryGroup.status
+            == EnterpriseDirectoryEntryStatus.ACTIVE,
+            EnterpriseDirectoryGroup.principal_type.in_(
+                (
+                    EnterpriseDirectoryPrincipalType.GROUP,
+                    EnterpriseDirectoryPrincipalType.DEPARTMENT,
+                )
+            ),
+            ~source_group_assigned,
+        )
+        .group_by(
+            EnterpriseIdentitySource.id,
+            EnterpriseIdentitySource.name,
+            EnterpriseDirectoryGroup.external_group_id,
+            EnterpriseDirectoryGroup.display_name,
+        )
+    )
+    if normalized_search:
+        department_query = department_query.where(Department.name.ilike(pattern))
+        source_all_query = source_all_query.where(
+            EnterpriseIdentitySource.name.ilike(pattern)
+        )
+        enterprise_query = enterprise_query.where(
+            or_(
+                EnterprisePrincipalAssignment.identity_domain.ilike(pattern),
+                EnterprisePrincipalAssignment.provider.ilike(pattern),
+                EnterprisePrincipalAssignment.principal_id.ilike(pattern),
+            )
+        )
+        source_group_query = source_group_query.where(
+            or_(
+                EnterpriseIdentitySource.name.ilike(pattern),
+                EnterpriseDirectoryGroup.display_name.ilike(pattern),
+                EnterpriseDirectoryGroup.external_group_id.ilike(pattern),
+            )
+        )
+    return union_all(
+        department_query,
+        source_all_query,
+        enterprise_query,
+        source_group_query,
+    ).subquery()
+
+
 @router.get(
     "/{agent_id}/group-options",
-    response_model=list[GroupOptionResponse],
+    response_model=GroupOptionListResponse,
 )
 async def list_group_options(
     agent_id: str,
+    search: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     await _require_agent(session, agent_id)
-    department_rows = (
+    normalized_search = (search or "").strip()
+    options_query = _group_options_query(agent_id, normalized_search)
+    total = int(await session.scalar(select(func.count()).select_from(options_query)) or 0)
+    rows = (
         await session.execute(
-            select(
-                Department.id,
-                Department.name,
-                func.count(UserDepartment.user_id),
-            )
-            .outerjoin(
-                UserDepartment,
-                UserDepartment.department_id == Department.id,
-            )
-            .group_by(Department.id, Department.name)
-            .order_by(Department.name, Department.id)
-        )
-    ).all()
-    enterprise_rows = (
-        await session.execute(
-            select(
-                EnterprisePrincipalAssignment.identity_domain,
-                EnterprisePrincipalAssignment.provider,
-                EnterprisePrincipalAssignment.principal_id,
-                func.count(
-                    distinct(EnterprisePrincipalAssignment.pas_user_id)
-                ),
-            )
-            .where(
-                EnterprisePrincipalAssignment.principal_type
-                == EnterprisePrincipalType.GROUP,
-                EnterprisePrincipalAssignment.status
-                == EnterprisePrincipalStatus.ACTIVE,
-                or_(
-                    EnterprisePrincipalAssignment.valid_until.is_(None),
-                    EnterprisePrincipalAssignment.valid_until > utc_now(),
-                ),
-            )
-            .group_by(
-                EnterprisePrincipalAssignment.identity_domain,
-                EnterprisePrincipalAssignment.provider,
-                EnterprisePrincipalAssignment.principal_id,
-            )
+            select(options_query)
             .order_by(
-                EnterprisePrincipalAssignment.identity_domain,
-                EnterprisePrincipalAssignment.provider,
-                EnterprisePrincipalAssignment.principal_id,
+                options_query.c.kind_rank,
+                options_query.c.sort_1,
+                options_query.c.sort_2,
+                options_query.c.sort_3,
             )
+            .offset(offset)
+            .limit(limit)
         )
-    ).all()
-    identity_source_all_rows = list(
-        (
-            await session.execute(
-                select(
-                    EnterpriseIdentitySource.id,
-                    EnterpriseIdentitySource.name,
-                    func.count(EnterpriseDirectoryUser.id),
-                )
-                .outerjoin(
-                    EnterpriseDirectoryUser,
-                    (
-                        EnterpriseDirectoryUser.identity_source_id
-                        == EnterpriseIdentitySource.id
-                    )
-                    & (
-                        EnterpriseDirectoryUser.status
-                        == EnterpriseDirectoryEntryStatus.ACTIVE
-                    ),
-                )
-                .where(
-                    EnterpriseIdentitySource.status
-                    == EnterpriseIdentitySourceStatus.ACTIVE,
-                )
-                .group_by(
-                    EnterpriseIdentitySource.id,
-                    EnterpriseIdentitySource.name,
-                )
-                .order_by(
-                    EnterpriseIdentitySource.name,
-                    EnterpriseIdentitySource.id,
-                )
+    ).mappings().all()
+    return GroupOptionListResponse(
+        items=[
+            GroupOptionResponse(
+                **{
+                    key: row[key]
+                    for key in GroupOptionResponse.model_fields
+                }
             )
-        ).all()
+            for row in rows
+        ],
+        total=total,
+        offset=offset,
+        limit=limit,
     )
-    identity_source_rows = list(
-        (
-            await session.execute(
-                select(
-                    EnterpriseIdentitySource.id,
-                    EnterpriseIdentitySource.name,
-                    EnterpriseDirectoryGroup.external_group_id,
-                    EnterpriseDirectoryGroup.display_name,
-                    func.count(distinct(EnterpriseDirectoryUser.id)),
-                )
-                .join(
-                    EnterpriseDirectoryGroup,
-                    EnterpriseDirectoryGroup.identity_source_id
-                    == EnterpriseIdentitySource.id,
-                )
-                .outerjoin(
-                    EnterpriseDirectoryMembership,
-                    (
-                        EnterpriseDirectoryMembership.identity_source_id
-                        == EnterpriseDirectoryGroup.identity_source_id
-                    )
-                    & (
-                        EnterpriseDirectoryMembership.external_group_id
-                        == EnterpriseDirectoryGroup.external_group_id
-                    )
-                    & (
-                        EnterpriseDirectoryMembership.member_type
-                        == EnterpriseDirectoryMembershipType.USER
-                    ),
-                )
-                .outerjoin(
-                    EnterpriseDirectoryUser,
-                    (
-                        EnterpriseDirectoryUser.identity_source_id
-                        == EnterpriseDirectoryMembership.identity_source_id
-                    )
-                    & (
-                        EnterpriseDirectoryUser.external_user_id
-                        == EnterpriseDirectoryMembership.external_member_id
-                    )
-                    & (
-                        EnterpriseDirectoryUser.status
-                        == EnterpriseDirectoryEntryStatus.ACTIVE
-                    ),
-                )
-                .where(
-                    EnterpriseIdentitySource.status
-                    == EnterpriseIdentitySourceStatus.ACTIVE,
-                    EnterpriseDirectoryGroup.status
-                    == EnterpriseDirectoryEntryStatus.ACTIVE,
-                    EnterpriseDirectoryGroup.principal_type
-                    == EnterpriseDirectoryPrincipalType.GROUP,
-                )
-                .group_by(
-                    EnterpriseIdentitySource.id,
-                    EnterpriseIdentitySource.name,
-                    EnterpriseDirectoryGroup.external_group_id,
-                    EnterpriseDirectoryGroup.display_name,
-                )
-                .order_by(
-                    EnterpriseIdentitySource.name,
-                    EnterpriseDirectoryGroup.display_name,
-                    EnterpriseDirectoryGroup.external_group_id,
-                )
-            )
-        ).all()
-    )
-    return [
-        GroupOptionResponse(
-            group_kind=AgentGroupKind.DEPARTMENT,
-            department_id=department_id,
-            department_name=name,
-            identity_domain=None,
-            provider=None,
-            identity_source_id=None,
-            identity_source_name=None,
-            external_group_id=None,
-            external_group_name=None,
-            principal_id=None,
-            member_count=count,
-        )
-        for department_id, name, count in department_rows
-    ] + [
-        GroupOptionResponse(
-            group_kind=AgentGroupKind.IDENTITY_SOURCE_ALL,
-            department_id=None,
-            department_name=None,
-            identity_domain=None,
-            provider=None,
-            identity_source_id=source_id,
-            identity_source_name=source_name,
-            external_group_id=None,
-            external_group_name=None,
-            principal_id=None,
-            member_count=count,
-        )
-        for source_id, source_name, count in identity_source_all_rows
-    ] + [
-        GroupOptionResponse(
-            group_kind=AgentGroupKind.ENTERPRISE,
-            department_id=None,
-            department_name=None,
-            identity_domain=identity_domain,
-            provider=provider,
-            identity_source_id=None,
-            identity_source_name=None,
-            external_group_id=None,
-            external_group_name=None,
-            principal_id=principal_id,
-            member_count=count,
-        )
-        for identity_domain, provider, principal_id, count in enterprise_rows
-    ] + [
-        GroupOptionResponse(
-            group_kind=AgentGroupKind.IDENTITY_SOURCE,
-            department_id=None,
-            department_name=None,
-            identity_domain=None,
-            provider=None,
-            identity_source_id=source_id,
-            identity_source_name=source_name,
-            external_group_id=external_group_id,
-            external_group_name=external_group_name,
-            principal_id=external_group_id,
-            member_count=count,
-        )
-        for (
-            source_id,
-            source_name,
-            external_group_id,
-            external_group_name,
-            count,
-        ) in identity_source_rows
-    ]
 
 
 @router.get(
     "/{agent_id}/group-assignments",
-    response_model=list[GroupAssignmentResponse],
+    response_model=GroupAssignmentListResponse,
 )
 async def list_group_assignments(
     agent_id: str,
+    search: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     await _require_agent(session, agent_id)
+    filters = [AgentGroupAssignment.agent_id == agent_id]
+    normalized_search = (search or "").strip()
+    if normalized_search:
+        pattern = f"%{normalized_search}%"
+        filters.append(
+            or_(
+                Department.name.ilike(pattern),
+                EnterpriseIdentitySource.name.ilike(pattern),
+                EnterpriseDirectoryGroup.display_name.ilike(pattern),
+                AgentGroupAssignment.identity_domain.ilike(pattern),
+                AgentGroupAssignment.provider.ilike(pattern),
+                AgentGroupAssignment.principal_id.ilike(pattern),
+            )
+        )
+    group_join = (EnterpriseDirectoryGroup.identity_source_id == AgentGroupAssignment.identity_source_id) & (
+        EnterpriseDirectoryGroup.external_group_id == AgentGroupAssignment.principal_id
+    )
+    query = (
+        select(AgentGroupAssignment)
+        .outerjoin(
+            Department,
+            Department.id == AgentGroupAssignment.department_id,
+        )
+        .outerjoin(
+            EnterpriseIdentitySource,
+            EnterpriseIdentitySource.id == AgentGroupAssignment.identity_source_id,
+        )
+        .outerjoin(EnterpriseDirectoryGroup, group_join)
+        .where(*filters)
+    )
+    total = int(await session.scalar(select(func.count()).select_from(query.subquery())) or 0)
     rows = list(
         (
             await session.execute(
-                select(AgentGroupAssignment)
-                .options(selectinload(AgentGroupAssignment.department))
-                .where(AgentGroupAssignment.agent_id == agent_id)
+                query.options(selectinload(AgentGroupAssignment.department))
                 .order_by(
                     AgentGroupAssignment.group_kind,
                     AgentGroupAssignment.group_key,
                 )
+                .offset(offset)
+                .limit(limit)
             )
         ).scalars()
     )
-    return [await _group_assignment_response(session, row) for row in rows]
+    return GroupAssignmentListResponse(
+        items=[await _group_assignment_response(session, row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post(
@@ -927,6 +992,11 @@ async def delete_group_assignment(
             "agent_group_assignment",
             row.id,
         )
+        await session.execute(
+            delete(AgentKnowledgeScopeBinding).where(
+                AgentKnowledgeScopeBinding.group_assignment_id == row.id
+            )
+        )
         await session.delete(row)
         await session.commit()
     except Exception as exc:
@@ -934,253 +1004,338 @@ async def delete_group_assignment(
         raise HTTPException(status_code=503, detail="Audit unavailable") from exc
 
 
-@router.get(
-    "/{agent_id}/polarrag-bindings",
-    response_model=list[PolarRAGBindingResponse],
-)
-async def list_polarrag_bindings(
-    agent_id: str,
-    _admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    await _require_agent(session, agent_id)
-    rows = (
-        await session.execute(
-            select(AgentPolarRAGInstanceBinding)
-            .options(selectinload(AgentPolarRAGInstanceBinding.instance))
-            .where(AgentPolarRAGInstanceBinding.agent_id == agent_id)
-            .order_by(AgentPolarRAGInstanceBinding.id)
-        )
-    ).scalars()
-    return [_binding_response(row) for row in rows]
 
 
-@router.post(
-    "/{agent_id}/polarrag-bindings",
-    response_model=PolarRAGBindingResponse,
-    status_code=201,
-)
-async def create_polarrag_binding(
-    agent_id: str,
-    body: PolarRAGBindingRequest,
-    admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    await _require_agent(session, agent_id)
-    instance = await session.get(PolarRAGInstance, body.polarrag_instance_id)
-    if instance is None:
-        raise HTTPException(status_code=404, detail="PolarRAG instance not found")
-    row = AgentPolarRAGInstanceBinding(
-        agent_id=agent_id,
-        polarrag_instance_id=instance.id,
-        created_by_user_id=admin.id,
-    )
-    row.instance = instance
-    session.add(row)
-    try:
-        await session.flush()
-        await _audit(
-            session, admin, "agent_polarrag_binding.create", "agent_polarrag_binding", row.id
-        )
-        await session.commit()
-    except IntegrityError as exc:
-        await session.rollback()
-        raise HTTPException(status_code=409, detail="PolarRAG instance already bound") from exc
-    except Exception as exc:
-        await session.rollback()
-        raise HTTPException(status_code=503, detail="Audit unavailable") from exc
-    return _binding_response(row)
 
 
-async def _require_polarrag_binding(
-    session: AsyncSession,
-    agent_id: str,
-    binding_id: str,
-) -> AgentPolarRAGInstanceBinding:
-    row = (
-        await session.execute(
-            select(AgentPolarRAGInstanceBinding)
-            .options(selectinload(AgentPolarRAGInstanceBinding.instance))
-            .where(
-                AgentPolarRAGInstanceBinding.id == binding_id,
-                AgentPolarRAGInstanceBinding.agent_id == agent_id,
-            )
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        raise HTTPException(status_code=404, detail="PolarRAG binding not found")
-    return row
 
 
-@router.get(
-    "/{agent_id}/polarrag-bindings/{binding_id}/public-resources",
-    response_model=list[PolarRAGPublicResourceResponse],
-)
-async def list_polarrag_binding_public_resources(
-    agent_id: str,
-    binding_id: str,
-    _admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    row = await _require_polarrag_binding(session, agent_id, binding_id)
-    resources = (
-        await session.execute(
-            select(KnowledgeResource)
-            .join(
-                PolarRAGSpace,
-                PolarRAGSpace.knowledge_space_id
-                == KnowledgeResource.knowledge_space_id,
-            )
-            .options(selectinload(KnowledgeResource.space))
-            .where(
-                KnowledgeResource.polarrag_instance_id
-                == row.polarrag_instance_id,
-                KnowledgeResource.kb_type == "PUBLIC",
-                KnowledgeResource.binding_mode == KnowledgeBindingMode.DOMAIN,
-                KnowledgeResource.sync_status
-                == KnowledgeResourceSyncStatus.ACTIVE,
-                KnowledgeResource.enabled.is_(True),
-                PolarRAGSpace.enabled.is_(True),
-            )
-            .order_by(KnowledgeResource.name, KnowledgeResource.id)
-        )
-    ).scalars()
-    return [
-        PolarRAGPublicResourceResponse(
-            knowledge_resource_id=resource.id,
-            name=resource.name,
-            knowledge_space_name=resource.space.name,
-        )
-        for resource in resources
-    ]
 
 
-@router.put(
-    "/{agent_id}/polarrag-bindings/{binding_id}/public-resources",
-    response_model=PolarRAGBindingResponse,
-)
-async def update_polarrag_binding_public_resources(
-    agent_id: str,
-    binding_id: str,
-    body: PolarRAGPublicScopeRequest,
-    admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    row = await _require_polarrag_binding(session, agent_id, binding_id)
-    requested = body.public_knowledge_resource_ids
-    if requested is not None:
-        try:
-            valid_shape = len(requested) == len(set(requested)) and all(
-                str(uuid.UUID(resource_id)) == resource_id
-                for resource_id in requested
-            )
-        except (TypeError, ValueError, AttributeError):
-            valid_shape = False
-        selected = set(
-            (
-                await session.execute(
-                    select(KnowledgeResource.id)
-                    .join(
-                        PolarRAGSpace,
-                        PolarRAGSpace.knowledge_space_id
-                        == KnowledgeResource.knowledge_space_id,
-                    )
-                    .where(
-                        KnowledgeResource.id.in_(requested),
-                        KnowledgeResource.polarrag_instance_id
-                        == row.polarrag_instance_id,
-                        KnowledgeResource.kb_type == "PUBLIC",
-                        KnowledgeResource.binding_mode
-                        == KnowledgeBindingMode.DOMAIN,
-                        KnowledgeResource.sync_status
-                        == KnowledgeResourceSyncStatus.ACTIVE,
-                        KnowledgeResource.enabled.is_(True),
-                        PolarRAGSpace.enabled.is_(True),
-                    )
-                )
-            ).scalars()
-        )
-        if not valid_shape or selected != set(requested):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Selected resources must be synchronized ACTIVE PUBLIC "
-                    "knowledge resources on the bound instance"
-                ),
-            )
-        requested = sorted(requested)
-    row.public_knowledge_resource_ids_json = (
-        None
-        if requested is None
-        else json.dumps(requested, separators=(",", ":"))
-    )
-    scope = "all" if requested is None else "selected"
-    try:
-        await _audit(
-            session,
-            admin,
-            "agent_polarrag_binding.public_scope.update",
-            "agent_polarrag_binding",
-            row.id,
-            client_info=json.dumps(
-                {
-                    "public_scope": scope,
-                    "resource_count": len(requested or []),
-                },
-                separators=(",", ":"),
-            ),
-        )
-        await session.commit()
-    except Exception as exc:
-        await session.rollback()
-        raise HTTPException(status_code=503, detail="Audit unavailable") from exc
-    return _binding_response(row)
 
 
-@router.delete("/{agent_id}/polarrag-bindings/{binding_id}", status_code=204)
-async def delete_polarrag_binding(
-    agent_id: str,
-    binding_id: str,
-    admin: User = Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    row = await session.get(AgentPolarRAGInstanceBinding, binding_id)
-    if row is None or row.agent_id != agent_id:
-        raise HTTPException(status_code=404, detail="PolarRAG binding not found")
-    try:
-        await _audit(
-            session, admin, "agent_polarrag_binding.delete", "agent_polarrag_binding", row.id
-        )
-        await session.delete(row)
-        await session.commit()
-    except Exception as exc:
-        await session.rollback()
-        raise HTTPException(status_code=503, detail="Audit unavailable") from exc
 
 
 @router.get(
     "/{agent_id}/user-assignments",
-    response_model=list[UserAssignmentResponse],
+    response_model=UserAssignmentListResponse,
 )
 async def list_user_assignments(
     agent_id: str,
+    search: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     await _require_agent(session, agent_id)
+    filters = [
+        AgentUserAssignment.agent_id == agent_id,
+        AgentUserAssignment.is_direct.is_(True),
+    ]
+    normalized_search = (search or "").strip()
+    if normalized_search:
+        pattern = f"%{normalized_search}%"
+        filters.append(
+            or_(
+                User.display_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.external_id.ilike(pattern),
+            )
+        )
+    base_query = (
+        select(AgentUserAssignment)
+        .join(
+            User,
+            User.id == AgentUserAssignment.user_id,
+        )
+        .where(*filters)
+    )
+    total = int(await session.scalar(select(func.count()).select_from(base_query.subquery())) or 0)
     rows = (
         await session.execute(
-            select(AgentUserAssignment)
-            .options(
+            base_query.options(
                 selectinload(AgentUserAssignment.user),
                 selectinload(AgentUserAssignment.token),
             )
-            .where(AgentUserAssignment.agent_id == agent_id)
-            .where(AgentUserAssignment.is_direct.is_(True))
             .order_by(AgentUserAssignment.id)
+            .offset(offset)
+            .limit(limit)
         )
     ).scalars()
-    return [_assignment_response(row) for row in rows]
+    return UserAssignmentListResponse(
+        items=[_assignment_response(row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/{agent_id}/user-options",
+    response_model=UserOptionListResponse,
+)
+async def list_user_options(
+    agent_id: str,
+    search: str | None = None,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    await _require_agent(session, agent_id)
+    direct_assignment_exists = (
+        select(AgentUserAssignment.id)
+        .where(
+            AgentUserAssignment.agent_id == agent_id,
+            AgentUserAssignment.user_id == User.id,
+            AgentUserAssignment.is_direct.is_(True),
+        )
+        .exists()
+    )
+    filters = [~direct_assignment_exists]
+    normalized_search = (search or "").strip()
+    if normalized_search:
+        pattern = f"%{normalized_search}%"
+        filters.append(
+            or_(
+                User.display_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.external_id.ilike(pattern),
+            )
+        )
+    total = int(await session.scalar(select(func.count()).select_from(User).where(*filters)) or 0)
+    rows = (
+        await session.execute(
+            select(User.id, User.display_name, User.external_id, User.status)
+            .where(*filters)
+            .order_by(User.created_at.desc(), User.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return UserOptionListResponse(
+        items=[
+            UserOptionResponse(
+                id=row.id,
+                display_name=row.display_name,
+                external_id=row.external_id,
+                status=row.status.value,
+            )
+            for row in rows
+        ],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
+
+
+async def _assign_all_users_in_background(
+    session_factory: Any,
+    agent_id: str,
+    admin_id: str,
+    worker_id: str,
+) -> None:
+    try:
+        async with session_factory() as session:
+            agent = await session.get(Agent, agent_id)
+            admin = await session.get(User, admin_id)
+            if agent is None or admin is None:
+                failed = await session.execute(
+                    update(Agent)
+                    .where(
+                        Agent.id == agent_id,
+                        Agent.bulk_assignment_worker_id == worker_id,
+                    )
+                    .values(
+                        bulk_assignment_status="failed",
+                        bulk_assignment_error="Agent or administrator not found",
+                        bulk_assignment_worker_id=None,
+                        bulk_assignment_lease_until=None,
+                    )
+                    .execution_options(synchronize_session=False)
+                )
+                if failed.rowcount == 1:  # type: ignore[attr-defined]
+                    await session.commit()
+                else:
+                    await session.rollback()
+                return
+            existing = {
+                row.user_id: row
+                for row in (
+                    await session.execute(select(AgentUserAssignment).where(AgentUserAssignment.agent_id == agent_id))
+                ).scalars()
+            }
+            user_ids = list((await session.execute(select(User.id))).scalars())
+            created_count = 0
+            for user_id in user_ids:
+                assignment = existing.get(user_id)
+                if assignment is None:
+                    session.add(
+                        AgentUserAssignment(
+                            agent_id=agent_id,
+                            user_id=user_id,
+                            created_by_user_id=admin_id,
+                            is_direct=True,
+                        )
+                    )
+                    created_count += 1
+                elif not assignment.is_direct:
+                    assignment.is_direct = True
+                    assignment.created_by_user_id = admin_id
+                    created_count += 1
+            if created_count:
+                await session.flush()
+                await _audit(
+                    session,
+                    admin,
+                    "agent_user_assignment.bulk_create",
+                    "agent",
+                    agent_id,
+                    client_info=json.dumps({"created_count": created_count}),
+                )
+            completed = await session.execute(
+                update(Agent)
+                .where(
+                    Agent.id == agent_id,
+                    Agent.bulk_assignment_worker_id == worker_id,
+                )
+                .values(
+                    bulk_assignment_created_count=created_count,
+                    bulk_assignment_status="completed",
+                    bulk_assignment_error=None,
+                    bulk_assignment_worker_id=None,
+                    bulk_assignment_lease_until=None,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            if completed.rowcount != 1:  # type: ignore[attr-defined]
+                await session.rollback()
+                return
+            await session.commit()
+    except Exception:
+        logger.exception(
+            "agent_user_assignment.bulk_create_failed",
+            extra={"agent_id": agent_id},
+        )
+        async with session_factory() as session:
+            await session.execute(
+                update(Agent)
+                .where(
+                    Agent.id == agent_id,
+                    Agent.bulk_assignment_worker_id == worker_id,
+                )
+                .values(
+                    bulk_assignment_status="failed",
+                    bulk_assignment_error="Bulk user assignment failed",
+                    bulk_assignment_worker_id=None,
+                    bulk_assignment_lease_until=None,
+                )
+            )
+            await session.commit()
+
+
+async def _schedule_bulk_user_assignment(
+    session_factory: Any,
+    session: AsyncSession,
+    agent_id: str,
+    admin_id: str,
+    *,
+    background_tasks: set[asyncio.Task[None]] | None = None,
+) -> asyncio.Task[None] | None:
+    worker_id = str(uuid.uuid4())
+    now = datetime.now(UTC)
+    claimed = await session.execute(
+        update(Agent)
+        .where(
+            Agent.id == agent_id,
+            or_(
+                Agent.bulk_assignment_worker_id.is_(None),
+                Agent.bulk_assignment_lease_until.is_(None),
+                Agent.bulk_assignment_lease_until <= now,
+            ),
+        )
+        .values(
+            bulk_assignment_status="running",
+            bulk_assignment_created_count=0,
+            bulk_assignment_error=None,
+            bulk_assignment_worker_id=worker_id,
+            bulk_assignment_lease_until=now
+            + timedelta(seconds=_BULK_ASSIGNMENT_LEASE_SECONDS),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if claimed.rowcount != 1:  # type: ignore[attr-defined]
+        await session.rollback()
+        return None
+    await session.commit()
+    task = asyncio.create_task(
+        _assign_all_users_in_background(
+            session_factory, agent_id, admin_id, worker_id
+        )
+    )
+    if background_tasks is not None:
+        background_tasks.add(task)
+
+    def finished(completed: asyncio.Task[None]) -> None:
+        if background_tasks is not None:
+            background_tasks.discard(completed)
+
+    task.add_done_callback(finished)
+    return task
+
+
+@router.post(
+    "/{agent_id}/user-assignments/bulk",
+    response_model=BulkUserAssignmentResponse,
+)
+async def create_all_user_assignments(
+    agent_id: str,
+    request: Request,
+    response: Response,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    await _require_agent(session, agent_id)
+    session_factory = getattr(request.app.state, "session_factory", None)
+    if session_factory is None:
+        from server.db.engine import get_session_factory
+
+        session_factory = get_session_factory()
+    task = await _schedule_bulk_user_assignment(
+        session_factory,
+        session,
+        agent_id,
+        admin.id,
+        background_tasks=getattr(request.app.state, "background_tasks", None),
+    )
+    if task is None:
+        agent = await _require_agent(session, agent_id)
+        response.status_code = 202
+        return _bulk_user_assignment_response(agent)
+    try:
+        await asyncio.wait_for(
+            asyncio.shield(task),
+            timeout=USER_ASSIGNMENT_BULK_REQUEST_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        response.status_code = 202
+    agent = await _require_agent(session, agent_id)
+    await session.refresh(agent)
+    return _bulk_user_assignment_response(agent)
+
+
+@router.get(
+    "/{agent_id}/user-assignments/bulk/status",
+    response_model=BulkUserAssignmentResponse,
+)
+async def get_all_user_assignment_status(
+    agent_id: str,
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    agent = await _require_agent(session, agent_id)
+    return _bulk_user_assignment_response(agent)
 
 
 @router.post(
@@ -1223,9 +1378,7 @@ async def create_user_assignment(
     row.user = user
     try:
         await session.flush()
-        await _audit(
-            session, admin, "agent_user_assignment.create", "agent_user_assignment", row.id
-        )
+        await _audit(session, admin, "agent_user_assignment.create", "agent_user_assignment", row.id)
         await session.commit()
         row = await _load_assignment(session, row.id)
     except IntegrityError as exc:
@@ -1248,9 +1401,7 @@ async def delete_user_assignment(
     if row is None or row.agent_id != agent_id or not row.is_direct:
         raise HTTPException(status_code=404, detail="User assignment not found")
     try:
-        await _audit(
-            session, admin, "agent_user_assignment.delete", "agent_user_assignment", row.id
-        )
+        await _audit(session, admin, "agent_user_assignment.delete", "agent_user_assignment", row.id)
         row.is_direct = False
         await session.flush()
         if not await has_group_agent_access(
@@ -1280,9 +1431,7 @@ async def force_revoke_user_token(
         raise HTTPException(status_code=404, detail="User assignment not found")
     try:
         row = await agent_user_token_service.revoke_token(session, assignment_id)
-        await _audit(
-            session, admin, "agent_user_token.force_revoke", "agent_user_token", row.id
-        )
+        await _audit(session, admin, "agent_user_token.force_revoke", "agent_user_token", row.id)
         await session.commit()
         assignment = await _load_assignment(session, assignment_id)
     except LookupError as exc:

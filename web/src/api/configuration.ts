@@ -130,8 +130,17 @@ export interface ConfigCommand {
   expected_revision?: number
   idempotency_key?: string
   validation_id?: string
+  sso_test_id?: string
   confirm_impact?: boolean
   config?: Record<string, unknown>
+}
+
+export interface UserSSOTest {
+  id: string
+  status: 'pending' | 'exchanging' | 'passed' | 'failed' | 'consumed'
+  authorize_url?: string
+  error_code?: string | null
+  expires_at: string
 }
 
 export async function discoverSystemState(): Promise<'SETUP' | 'READY'> {
@@ -158,6 +167,18 @@ export async function executeConfig(
         : undefined,
       pasSkipAuthRedirect: true,
     },
+  )
+  return response.data
+}
+
+export async function startUserSSOTest(): Promise<UserSSOTest> {
+  const response = await api.post('/api/config/user-sso/tests')
+  return response.data
+}
+
+export async function getUserSSOTest(testId: string): Promise<UserSSOTest> {
+  const response = await api.get(
+    `/api/config/user-sso/tests/${encodeURIComponent(testId)}`,
   )
   return response.data
 }

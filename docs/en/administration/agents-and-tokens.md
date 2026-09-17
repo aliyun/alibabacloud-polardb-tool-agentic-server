@@ -2,6 +2,8 @@
 
 [简体中文](../../zh-cn/administration/agents-and-tokens.md)
 
+The console groups people under **Access management → Personal accounts** and Agents under **Service accounts**. Use **Resources** for database grants and **Connect MCP** for personal access without an Agent. Existing advanced controls and Agent connections described below remain supported. See [Accounts and resources](accounts-and-resources.md).
+
 An Agent is a non-human MCP identity with its own status, Token, direct
 instance bindings, provisioning bindings, and owned resources.
 
@@ -18,12 +20,17 @@ user or call PolarRAG tools.
 ## Create and connect
 
 Create an Agent with a descriptive name and purpose. The detail page displays
-the active Token, MCP service URL, and a JSON client configuration whose MCP
-server name defaults to the Agent name. Copy it only into the intended client.
+the active Token status, MCP service URL, and copy actions for the Token and a
+JSON client configuration whose MCP server name defaults to the Agent name.
+Copy it only into the intended client.
 
-The administrator view intentionally displays the active Token for operational
-setup. Treat access to that page as secret access; do not capture it in
-screenshots, tickets, or logs.
+The copy actions reveal the active Token under the current authenticated
+administrator session without asking for the PAS password again. Reveal remains
+audited and rate-limited. The console writes the secret directly to the
+clipboard, including through its private-HTTP fallback, and does not render it
+on the page. Treat access to the Agent detail page and an unlocked administrator
+session as secret access; do not capture the Token in screenshots, tickets, or
+logs.
 
 ## Token lifecycle
 
@@ -60,10 +67,12 @@ in the PolarRAG tab.
 
 ## PolarRAG user connections
 
-For normal setup, first bind the permitted PolarRAG instance and configure its
-PUBLIC scope, then select **Configure enterprise access** on the Agent detail
+For normal setup, select **Configure enterprise access** on the Agent detail
 page's **PolarRAG instances** tab. Choose one active identity source, specific
-groups or synchronized PAS users, and Spaces on the Agent's bound instances.
+groups or synchronized PAS users, active PolarRAG instances, and at least one
+enabled Space from each selected instance. Confirming the preview creates any
+missing Agent-instance bindings in the same transaction. Configure PUBLIC scope
+through the advanced controls only when the default scope must be narrowed.
 **All synchronized users** appears first but is never preselected; it requires
 an explicit administrator choice.
 
@@ -75,14 +84,34 @@ Agent-instance bindings, and shared PUBLIC scope remain. Existing instance,
 PUBLIC-scope, user, group, and removal controls remain available for advanced
 administration.
 
+Agent lists, assigned and unassigned user/group selectors, PolarRAG instance
+selectors, Spaces, and PUBLIC knowledge-resource selectors use backend search
+and pagination. Changing a search term resets the current page. This keeps the
+Agent detail and enterprise-access dialogs responsive when tenants contain many
+users, groups, Spaces, or knowledge bases.
+
 Administrators can see assignment and Token status and can force-revoke a user
 Token, but never receive its plaintext.
 
 After signing in, an assigned user opens **My Instances**, then issues, reveals,
 regenerates, or revokes their own Token in **MCP connections**. One assignment
-has at most one active Token. Its effective knowledge scope is the intersection
-of Agent-bound PolarRAG instances, resources visible to the PAS user, and the
+has at most one active Token. Copy uses the current authenticated built-in or
+SSO session without another password prompt; reveal remains owner-scoped,
+audited, and rate-limited. Its effective knowledge scope is the intersection of
+Agent-bound PolarRAG instances, resources visible to the PAS user, and the
 document READ decision made by PolarRAG.
+
+Agents start in `LEGACY_ALL` mode. In `SCOPED` mode, PAS unions every matching
+direct-user and group knowledge scope, then intersects that result with the
+Agent-wide PolarRAG ceiling and the user's visible resources. Manual and
+externally synchronized scopes can coexist; administrators can replace a scope
+to change arbitrary user, group, or knowledge-resource bindings without
+reissuing Tokens. PolarRAG document ACL remains the final authorization gate.
+The **Knowledge bindings** section on the Agent detail page lists these
+relationships. Administrators can bind multiple assigned users, Departments,
+or identity-source groups to multiple KBs in one operation, and can unbind any
+selected subset. Externally synchronized rows are visible but remain read-only
+in the Dashboard.
 
 By default, an Agent binding includes all PUBLIC knowledge resources across
 enabled Spaces on its PolarRAG instance. An administrator can use

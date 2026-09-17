@@ -167,6 +167,7 @@ class TestBuiltinLoginCallback:
         location = resp.headers["location"]
         assert "code=" in location
         assert "state=test-state-123" in location
+        assert "iss=" in location
         assert location.startswith("http://localhost/callback")
 
     async def test_invalid_credentials(self, client, pending_session):

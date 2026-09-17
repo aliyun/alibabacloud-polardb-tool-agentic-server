@@ -36,6 +36,7 @@ import {
   type CreatePolarRAGInstanceInput,
 } from '../../api/polarrag'
 import PageContainer from '../../components/PageContainer'
+import { useFeatures } from '../../hooks/useFeatures'
 import InstancesPanel from '../PolarRAG/InstancesPanel'
 
 const { Text } = Typography
@@ -81,6 +82,7 @@ function Provisioning({ instance }: { instance: InstanceSummary }) {
 }
 
 export default function Instances() {
+  const { knowledge } = useFeatures()
   const { t } = useTranslation()
   const [searchParams, setSearchParams] = useSearchParams()
   const [instances, setInstances] = useState<InstanceSummary[]>([])
@@ -100,7 +102,7 @@ export default function Instances() {
   const [form] = Form.useForm<RegisterFormInput>()
   const selectedEngine = Form.useWatch('engine', form) ?? 'polardb_mysql'
   const activeTab =
-    searchParams.get('type') === 'polarrag' ? 'polarrag' : 'database'
+    knowledge && searchParams.get('type') === 'polarrag' ? 'polarrag' : 'database'
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -408,7 +410,7 @@ export default function Instances() {
               />
             ),
           },
-        ]}
+        ].filter(item => knowledge || item.key !== 'polarrag')}
       />
 
       <Modal
@@ -516,7 +518,7 @@ export default function Instances() {
                 <Select
                   options={[
                     { value: 'polardb_mysql', label: 'PolarDB for MySQL' },
-                    { value: 'polarrag', label: 'PolarRAG' },
+                    ...(knowledge ? [{ value: 'polarrag', label: 'PolarRAG' }] : []),
                   ]}
                 />
               </Form.Item>

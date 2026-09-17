@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from collections.abc import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import func, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core import admin_binding_service
@@ -258,6 +258,7 @@ def _validate_backend_for_create(
             "Provisioning backend is not active and healthy"
         )
     assert backend is not None
+    assert backend.admin_credential is not None
     try:
         validate_backend_definition(
             backend, instance, backend.admin_credential
@@ -309,11 +310,14 @@ async def list_agent_instance_access(
             if provisioning is not None
             else await _backend(session, instance_id)
         )
-        instance = (
-            direct.instance
-            if direct is not None
-            else backend.instance
-        )
+        if direct is not None:
+            instance = direct.instance
+        else:
+            assert backend is not None
+            backend_instance = backend.instance
+            assert backend_instance is not None
+            instance = backend_instance
+        assert instance is not None
         views.append(
             _view(
                 agent_id=agent_id,
@@ -324,6 +328,104 @@ async def list_agent_instance_access(
             )
         )
     return views
+
+
+async def list_agent_instance_access_page(
+    session: AsyncSession,
+    agent_id: str,
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[AgentInstanceAccessView], int]:
+    await _require_agent(session, agent_id)
+    instance_ids_query = union(
+        select(AgentInstanceBinding.instance_id).where(
+            AgentInstanceBinding.agent_id == agent_id
+        ),
+        select(ProvisioningBackend.instance_id)
+        .join(
+            AgentProvisioningBinding,
+            AgentProvisioningBinding.backend_id == ProvisioningBackend.id,
+        )
+        .where(
+            AgentProvisioningBinding.agent_id == agent_id,
+            ProvisioningBackend.instance_id.is_not(None),
+        ),
+    ).subquery()
+    total = (
+        await session.scalar(
+            select(func.count()).select_from(instance_ids_query)
+        )
+        or 0
+    )
+    instance_ids = list(
+        (
+            await session.execute(
+                select(instance_ids_query.c.instance_id)
+                .order_by(instance_ids_query.c.instance_id)
+                .offset(offset)
+                .limit(limit)
+            )
+        ).scalars()
+    )
+    if not instance_ids:
+        return [], total
+    direct_rows = list(
+        (
+            await session.execute(
+                select(AgentInstanceBinding).where(
+                    AgentInstanceBinding.agent_id == agent_id,
+                    AgentInstanceBinding.instance_id.in_(instance_ids),
+                )
+            )
+        ).scalars()
+    )
+    provisioning_rows = list(
+        (
+            await session.execute(
+                select(AgentProvisioningBinding)
+                .join(
+                    ProvisioningBackend,
+                    AgentProvisioningBinding.backend_id == ProvisioningBackend.id,
+                )
+                .where(
+                    AgentProvisioningBinding.agent_id == agent_id,
+                    ProvisioningBackend.instance_id.in_(instance_ids),
+                )
+            )
+        ).scalars()
+    )
+    direct_by_instance = {row.instance_id: row for row in direct_rows}
+    provisioning_by_instance = {
+        row.backend.instance_id: row for row in provisioning_rows
+    }
+    views: list[AgentInstanceAccessView] = []
+    for instance_id in instance_ids:
+        direct = direct_by_instance.get(instance_id)
+        provisioning = provisioning_by_instance.get(instance_id)
+        backend = (
+            provisioning.backend
+            if provisioning is not None
+            else await _backend(session, instance_id)
+        )
+        if direct is not None:
+            instance = direct.instance
+        else:
+            assert backend is not None
+            backend_instance = backend.instance
+            assert backend_instance is not None
+            instance = backend_instance
+        assert instance is not None
+        views.append(
+            _view(
+                agent_id=agent_id,
+                instance=instance,
+                direct=direct,
+                backend=backend,
+                provisioning=provisioning,
+            )
+        )
+    return views, total
 
 
 async def upsert_agent_instance_access(

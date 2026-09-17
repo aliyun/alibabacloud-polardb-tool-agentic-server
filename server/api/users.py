@@ -2,14 +2,22 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.auth.credential_mutation import (
+    BuiltinPasswordRequired,
+    CredentialMutationMode,
+    mutate_builtin_password_in_session,
+)
 from server.auth.dependencies import require_admin
+from server.auth.password_policy import PasswordPolicyError, validate_password
 from server.core import user_manager
 from server.db.engine import get_session
 from server.enterprise_identity.service import identity_provider_key
 from server.models import (
+    AgentKnowledgeScopeBinding,
+    AuditLog,
     AuthProvider,
     EnterpriseDirectoryEntryStatus,
     EnterpriseDirectoryGroup,
@@ -19,8 +27,10 @@ from server.models import (
     EnterpriseIdentitySource,
     Instance,
     InstanceStatus,
+    PasswordState,
     User,
     UserExternalIdentity,
+    UserRefreshToken,
     UserRole,
     UserStatus,
 )
@@ -274,6 +284,11 @@ async def create_user(
     from server.auth.builtin import hash_password
     from server.models import AuthProvider
 
+    try:
+        validate_password(body.password)
+    except PasswordPolicyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
     existing = await session.execute(
         select(User).where(User.external_id == body.username)
     )
@@ -286,6 +301,7 @@ async def create_user(
         email=body.email,
         auth_provider=AuthProvider.BUILTIN,
         password_hash=hash_password(body.password),
+        password_state=PasswordState.ACTIVE,
         role=UserRole(body.role),
         status=UserStatus.ACTIVE,
     )
@@ -399,18 +415,24 @@ async def reset_password(
     session: AsyncSession = Depends(get_session),
 ):
     """Admin force-resets a builtin user's password."""
-    from server.auth.builtin import hash_password
-    from server.models import AuthProvider
-
     user = await session.get(User, user_id)
     if not user:
         raise HTTPException(404, "User not found")
-    if user.auth_provider != AuthProvider.BUILTIN:
-        raise HTTPException(400, "Password reset is only available for builtin auth users.")
-    if len(body.new_password) < 8:
-        raise HTTPException(400, "New password must be at least 8 characters.")
+    try:
+        await mutate_builtin_password_in_session(
+            session,
+            user=user,
+            mode=CredentialMutationMode.RESET,
+            new_password=body.new_password,
+        )
+    except BuiltinPasswordRequired as error:
+        raise HTTPException(
+            400,
+            "Password reset is only available for builtin auth users.",
+        ) from error
+    except PasswordPolicyError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
-    user.password_hash = hash_password(body.new_password)
     await session.commit()
     return {"message": "Password reset successfully"}
 
@@ -440,5 +462,24 @@ async def delete_user(
             "owned_count": owned,
         })
 
+    has_audit_history = await session.scalar(
+        select(AuditLog.id)
+        .where(AuditLog.actor_user_id == user.id)
+        .limit(1)
+    )
+    if has_audit_history is not None:
+        raise HTTPException(409, detail={
+            "error": "USER_HAS_AUDIT_HISTORY",
+            "message": "User has audit history. Disable the user instead.",
+        })
+
+    await session.execute(
+        delete(AgentKnowledgeScopeBinding).where(
+            AgentKnowledgeScopeBinding.user_id == user.id
+        )
+    )
+    await session.execute(
+        delete(UserRefreshToken).where(UserRefreshToken.user_id == user.id)
+    )
     await session.delete(user)
     await session.commit()

@@ -49,23 +49,39 @@ from server.mcp.tools import (
 )
 from server.mcp.tools.agent_sql_access import resolve_agent_sql_access
 from server.mcp.tools.identifier import validate_identifier_minimal
+from server.mcp.workspace_context import WorkspaceSQLActor
 
 logger = logging.getLogger(__name__)
 
-SQLActor = User | Agent
+SQLActor = User | Agent | WorkspaceSQLActor
 
 
 def _is_agent_actor(actor: SQLActor) -> bool:
-    return type(actor) is Agent
+    return type(actor) is Agent or isinstance(actor, WorkspaceSQLActor)
+
+
+def _resource_agent(actor: SQLActor) -> Agent:
+    if isinstance(actor, WorkspaceSQLActor):
+        return actor.agent
+    if type(actor) is Agent:
+        return actor
+    raise TypeError("SQL actor does not use Agent resources")
 
 
 def _actor_cache_key(actor: SQLActor) -> str:
+    if isinstance(actor, WorkspaceSQLActor):
+        return f"workspace-user:{actor.user.id}:agent:{actor.agent.id}"
     return f"agent:{actor.id}" if _is_agent_actor(actor) else actor.id
 
 
 def _actor_audit_fields(
     actor: SQLActor,
 ) -> dict[str, str | None]:
+    if isinstance(actor, WorkspaceSQLActor):
+        return {
+            "user_id": actor.user.id,
+            "user_name": actor.user.display_name,
+        }
     if _is_agent_actor(actor):
         return {"agent_id": actor.id, "user_name": actor.name}
     display_name = actor.display_name
@@ -424,7 +440,7 @@ async def handle_run_sql(
 
     if _is_agent_actor(user):
         credential_result = await resolve_agent_sql_access(
-            user,
+            _resource_agent(user),
             session,
             instance_id=instance_id,
             database=database,
@@ -687,7 +703,7 @@ async def handle_run_sql_transaction(
 
     if _is_agent_actor(user):
         credential_result = await resolve_agent_sql_access(
-            user,
+            _resource_agent(user),
             session,
             instance_id=instance_id,
             database=database,

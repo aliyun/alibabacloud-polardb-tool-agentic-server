@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.models import (
@@ -25,17 +25,15 @@ from server.models import (
     User,
     UserExternalIdentity,
 )
-from server.enterprise_identity.service import identity_provider_key
+from server.enterprise_identity.service import (
+    identity_provider_key,
+    identity_source_snapshot_is_usable,
+)
+from server.enterprise_identity.principals import resolve_external_user_principals
 
 
 class IdentityContextUnavailable(PermissionError):
     pass
-
-
-def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
 
 
 def principal_assignment_is_valid_for_user(
@@ -133,40 +131,52 @@ async def _resolve_source_context(
                 .where(
                     EnterpriseIdentitySourceSpaceBinding.knowledge_space_id
                     == knowledge_space_id,
-                    EnterpriseIdentitySource.status
-                    == EnterpriseIdentitySourceStatus.ACTIVE,
+                    or_(
+                        EnterpriseIdentitySource.status
+                        == EnterpriseIdentitySourceStatus.ACTIVE,
+                        and_(
+                            EnterpriseIdentitySource.status
+                            == EnterpriseIdentitySourceStatus.STALE,
+                            EnterpriseIdentitySource.last_synced_at.is_not(None),
+                        ),
+                    ),
                 )
             )
         ).scalars()
     )
     source_identities: list[tuple[EnterpriseIdentitySource, str]] = []
     for source in sources:
-        if (
-            source.last_synced_at is not None
-            and _as_utc(source.last_synced_at)
-            < current - timedelta(seconds=source.stale_after_seconds)
-        ):
+        if not identity_source_snapshot_is_usable(source):
             continue
         external_user_id = (
             await session.execute(
                 select(UserExternalIdentity.external_subject)
-                .join(User, User.id == UserExternalIdentity.user_id)
-                .join(
-                    EnterpriseDirectoryUser,
-                    EnterpriseDirectoryUser.external_user_id
-                    == UserExternalIdentity.external_subject,
-                )
                 .where(
                     UserExternalIdentity.user_id == user_id,
                     UserExternalIdentity.identity_provider
                     == identity_provider_key(source),
+                )
+            )
+        ).scalar_one_or_none()
+        if external_user_id is None:
+            continue
+        directory_user_exists = (
+            await session.execute(
+                select(EnterpriseDirectoryUser.id).where(
                     EnterpriseDirectoryUser.identity_source_id == source.id,
+                    EnterpriseDirectoryUser.external_user_id == external_user_id,
                     EnterpriseDirectoryUser.status
                     == EnterpriseDirectoryEntryStatus.ACTIVE,
                 )
             )
-        ).scalar_one_or_none()
-        if external_user_id is not None:
+        ).first() is not None
+        local_principals = await resolve_external_user_principals(
+            session,
+            source.id,
+            external_user_id,
+            now=current,
+        )
+        if directory_user_exists or local_principals:
             source_identities.append((source, external_user_id))
     source_keys = {
         identity_provider_key(source)
@@ -263,12 +273,19 @@ async def resolve_acl_context(
     for source, external_user_id in source_identities:
         provider = source.provider.value
         principals.add((provider, "user", external_user_id))
+        principals.update(
+            (provider, principal_type.value, principal_id)
+            for principal_type, principal_id in await resolve_external_user_principals(
+                session,
+                source.id,
+                external_user_id,
+                now=current,
+            )
+        )
         frontier = {external_user_id}
         member_type = EnterpriseDirectoryMembershipType.USER
         visited_groups: set[str] = set()
-        for _depth in range(8):
-            if not frontier:
-                break
+        while frontier:
             group_rows = (
                 await session.execute(
                     select(

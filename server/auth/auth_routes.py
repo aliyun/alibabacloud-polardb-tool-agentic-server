@@ -7,6 +7,7 @@ import logging
 import secrets
 from datetime import datetime, timezone, timedelta
 from typing import cast
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from starlette.requests import Request
@@ -15,12 +16,27 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from sqlalchemy import delete, select
 
 from server.auth.builtin import authenticate_builtin
+from server.auth.identity_federation import (
+    IdentityFederation,
+    OIDCAuthenticationError,
+)
 from server.auth.rate_limit import (
     AuthRateLimitExceeded,
     check_builtin_login,
 )
+from server.auth.oidc_login import (
+    OIDC_LOGIN_PURPOSE_CONSOLE,
+    OIDC_LOGIN_PURPOSE_CONFIG_TEST,
+    claim_oidc_login,
+    consume_console_oidc_login,
+    fail_oidc_login,
+    pass_config_test_oidc_login,
+)
+from server.auth.user_session import issue_browser_session
 from server.db.engine import get_session_factory
+from server.models import AuditStatus, UserStatus
 from server.models.oauth import OAuthPendingAuth, OAuthAuthorizationCode
+from server.core.audit_logger import log_audit
 
 __all__ = [
     "handle_login_page", "handle_login_callback",
@@ -48,6 +64,35 @@ def _oidc_callback_error(message: str, status_code: int) -> HTMLResponse:
         f"<h3>{message}</h3>",
         status_code=status_code,
         headers={"Cache-Control": "no-store"},
+    )
+
+
+def _oauth_client_redirect_url(
+    redirect_uri: str,
+    code: str,
+    state: str | None,
+) -> str:
+    from server.config import get_config
+
+    parsed = urlsplit(redirect_uri)
+    query = parse_qsl(parsed.query, keep_blank_values=True)
+    query.append(("code", code))
+    if state:
+        query.append(("state", state))
+    query.append(
+        (
+            "iss",
+            get_config().server.public_base_url.rstrip("/"),
+        )
+    )
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query),
+            parsed.fragment,
+        )
     )
 
 
@@ -169,10 +214,11 @@ async def handle_login_callback(request: Request) -> Response:
         await db_session.delete(pending)
         await db_session.commit()
 
-    separator = "&" if "?" in redirect_uri else "?"
-    redirect_url = f"{redirect_uri}{separator}code={code}"
-    if state:
-        redirect_url += f"&state={state}"
+    redirect_url = _oauth_client_redirect_url(
+        redirect_uri,
+        code,
+        state,
+    )
     return RedirectResponse(url=redirect_url, status_code=302)
 
 
@@ -240,6 +286,14 @@ async def handle_oidc_callback(request: Request) -> Response:
     if not code or not idp_state:
         return _oidc_callback_error("Missing code or state", 400)
 
+    durable_response = await _handle_durable_oidc_callback(
+        request,
+        code=code,
+        idp_state=idp_state,
+    )
+    if durable_response is not None:
+        return durable_response
+
     factory = get_session_factory()
     async with factory() as db_session:
         # Find pending auth by idp_state
@@ -255,7 +309,13 @@ async def handle_oidc_callback(request: Request) -> Response:
         # Check expiry
         if pending.expires_at < _utc_now_comparable(pending.expires_at):
             return _oidc_callback_error("Session expired", 410)
-        if not pending.idp_nonce:
+        from server.config import get_config
+
+        callback_config = get_config()
+        if (
+            callback_config.auth.oidc.protocol_mode == "oidc"
+            and not pending.idp_nonce
+        ):
             return _oidc_callback_error("Invalid authorization session", 400)
 
         redirect_uri = pending.redirect_uri
@@ -280,7 +340,6 @@ async def handle_oidc_callback(request: Request) -> Response:
             return _oidc_callback_error("Invalid or expired session", 404)
 
         # Exchange IdP code for tokens
-        from server.config import get_config
         from server.auth.identity_federation import IdentityFederation
         from server.core.crypto import decrypt as crypto_decrypt
 
@@ -313,7 +372,11 @@ async def handle_oidc_callback(request: Request) -> Response:
             )
             identity = await federation.extract_user_identity(
                 token_response,
-                expected_nonce=str(pending_values["idp_nonce"]),
+                expected_nonce=(
+                    str(pending_values["idp_nonce"])
+                    if config.auth.oidc.protocol_mode == "oidc"
+                    else None
+                ),
             )
         except (ValueError, httpx.HTTPError) as exc:
             logger.warning(
@@ -345,10 +408,11 @@ async def handle_oidc_callback(request: Request) -> Response:
         db_session.add(code_record)
         await db_session.commit()
 
-    separator = "&" if "?" in redirect_uri else "?"
-    redirect_url = f"{redirect_uri}{separator}code={mcp_code}"
-    if state:
-        redirect_url += f"&state={state}"
+    redirect_url = _oauth_client_redirect_url(
+        redirect_uri,
+        mcp_code,
+        state,
+    )
 
     safe_url_js = json.dumps(redirect_url)
     page = f"""<!DOCTYPE html>
@@ -378,3 +442,175 @@ setTimeout(function(){{ try {{ window.close(); }} catch(e){{}} }}, 2000);
 </body>
 </html>"""
     return HTMLResponse(content=page)
+
+
+async def _handle_durable_oidc_callback(
+    request: Request,
+    *,
+    code: str,
+    idp_state: str,
+) -> Response | None:
+    factory = get_session_factory()
+    async with factory() as db_session:
+        claimed = await claim_oidc_login(db_session, idp_state)
+        if claimed is None:
+            return None
+        if claimed.purpose == OIDC_LOGIN_PURPOSE_CONFIG_TEST:
+            service = getattr(request.app.state, "config_service", None)
+            if service is None:
+                await fail_oidc_login(
+                    db_session,
+                    claimed.id,
+                    "CONFIG_UNAVAILABLE",
+                )
+                return _oidc_callback_error("Authentication failed", 503)
+            try:
+                oidc_config, callback_url = (
+                    await service.user_sso_test_callback_config(
+                        config_revision=claimed.config_revision,
+                        config_digest=claimed.config_digest,
+                    )
+                )
+                federation = IdentityFederation(
+                    oidc_config,
+                    provider_name=oidc_config.provider_name,
+                )
+                await federation.discover_endpoints()
+                token_response = await federation.exchange_code(
+                    code,
+                    callback_url,
+                    code_verifier=claimed.code_verifier,
+                )
+                identity = await federation.extract_user_identity(
+                    token_response,
+                    expected_nonce=(
+                        claimed.nonce
+                        if oidc_config.protocol_mode == "oidc"
+                        else None
+                    ),
+                )
+                if not await pass_config_test_oidc_login(
+                    db_session,
+                    claimed.id,
+                    provider_name=oidc_config.provider_name,
+                    subject=identity.subject,
+                ):
+                    return _oidc_callback_error(
+                        "Invalid or expired session",
+                        404,
+                    )
+                return HTMLResponse(
+                    """
+<!doctype html>
+<html><head><title>SSO test successful</title></head>
+<body><main><h3>SSO test successful</h3>
+<p>You can close this window and return to PAS.</p></main>
+<script>
+if (window.opener) window.opener.postMessage(
+  {type: "pas-sso-test", status: "passed"},
+  window.location.origin
+);
+setTimeout(function () { window.close(); }, 500);
+</script></body></html>
+""",
+                    headers={"Cache-Control": "no-store"},
+                )
+            except Exception as exc:
+                await db_session.rollback()
+                await fail_oidc_login(
+                    db_session,
+                    claimed.id,
+                    "AUTHENTICATION_FAILED",
+                )
+                logger.warning(
+                    "OIDC configuration test callback failed (%s)",
+                    type(exc).__name__,
+                )
+                return _oidc_callback_error("Authentication failed", 400)
+
+        if claimed.purpose != OIDC_LOGIN_PURPOSE_CONSOLE:
+            await fail_oidc_login(
+                db_session,
+                claimed.id,
+                "UNSUPPORTED_PURPOSE",
+            )
+            return _oidc_callback_error("Authentication failed", 400)
+
+        from server.config import get_config
+
+        config = get_config()
+        callback_url = (
+            config.auth.oidc.redirect_uri
+            or f"{config.server.public_base_url.rstrip('/')}/auth/oidc/callback"
+        )
+        federation = IdentityFederation(
+            config.auth.oidc,
+            provider_name=config.auth.oidc.provider_name,
+        )
+        try:
+            await federation.discover_endpoints()
+            token_response = await federation.exchange_code(
+                code,
+                callback_url,
+                code_verifier=claimed.code_verifier,
+            )
+            identity = await federation.extract_user_identity(
+                token_response,
+                expected_nonce=(
+                    claimed.nonce
+                    if config.auth.oidc.protocol_mode == "oidc"
+                    else None
+                ),
+            )
+            user = await federation.find_or_create_user(db_session, identity)
+            if user.status != UserStatus.ACTIVE:
+                await fail_oidc_login(
+                    db_session,
+                    claimed.id,
+                    "USER_DISABLED",
+                )
+                return _oidc_callback_error("Authentication failed", 403)
+
+            if not await consume_console_oidc_login(
+                db_session,
+                claimed.id,
+            ):
+                await db_session.rollback()
+                return _oidc_callback_error(
+                    "Invalid or expired session",
+                    404,
+                )
+            response = RedirectResponse(
+                claimed.redirect_path,
+                status_code=303,
+                headers={"Cache-Control": "no-store"},
+            )
+            issue_browser_session(
+                request,
+                response,
+                db_session,
+                user,
+            )
+            await log_audit(
+                db_session,
+                user_id=user.id,
+                action="auth.oidc.login",
+                target_type="user",
+                target_id=user.id,
+                status=AuditStatus.SUCCESS,
+                required=True,
+                commit=False,
+            )
+            await db_session.commit()
+            return response
+        except (OIDCAuthenticationError, ValueError, httpx.HTTPError):
+            await db_session.rollback()
+            await fail_oidc_login(
+                db_session,
+                claimed.id,
+                "AUTHENTICATION_FAILED",
+            )
+            logger.warning(
+                "OIDC console callback authentication failed",
+            )
+            return _oidc_callback_error("Authentication failed", 400)

@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from markdown import markdown
 
-from server.api.router import router as api_router
+from server.api.router import core_router as api_router
 from server.auth.router import router as auth_router
 from server.config import get_config
 from server.config import TenantProvisioningConfig
@@ -27,6 +27,7 @@ from server.mcp.agent_openapi import router as agent_openapi_router
 from server.mcp.db_instance_rest import router as agent_db_instance_router
 from server.auth.cleanup import sweep_expired_oauth_rows
 from server.mcp.transport import LazyMCPApplication, mcp_lifespan
+from server.runtime import PasRuntime
 from server.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -393,7 +394,7 @@ async def provisioning_runtime_lifespan(
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def application_lifespan(app: FastAPI):
     setup_config = get_config()
     setup_logging(setup_config.server.log_level, setup_config.logging)
     logger.info("alibabacloud polardb tool agentic server starting", extra={"action": "startup"})
@@ -422,7 +423,20 @@ async def lifespan(app: FastAPI):
 
     repository = ConfigRepository(session_factory)
     crypto = ConfigCrypto(load_bootstrap_settings().encryption_key)
-    initialization = await initialize_configuration(repository, crypto)
+    local_sso_dev_mode = bool(
+        getattr(app.state, "local_sso_dev_mode", False)
+    )
+    if local_sso_dev_mode:
+        logger.warning(
+            "local SSO development mode is active; listeners and insecure "
+            "SSO endpoints are restricted to exact loopback addresses",
+            extra={"action": "local_sso_dev_mode"},
+        )
+    initialization = await initialize_configuration(
+        repository,
+        crypto,
+        managed=bool(getattr(app.state, "managed_mode", False)),
+    )
     if initialization.bootstrap_token is not None:
         print(
             "\n"
@@ -434,7 +448,11 @@ async def lifespan(app: FastAPI):
     config_service = ConfigService(
         repository,
         crypto,
-        external_validator=AlibabaCloudExternalValidator(),
+        managed=bool(getattr(app.state, "managed_mode", False)),
+        external_validator=AlibabaCloudExternalValidator(
+            allow_insecure_loopback_urls=local_sso_dev_mode,
+        ),
+        allow_insecure_loopback_urls=local_sso_dev_mode,
     )
     app.state.config_service = config_service
 
@@ -496,6 +514,18 @@ async def lifespan(app: FastAPI):
     install_runtime_config_store(runtime_store)
     app.state.runtime_config_store = runtime_store
     config = runtime_store.current()
+    from server.features.knowledge import KnowledgeRuntime, KnowledgeState, install_runtime
+    knowledge_runtime = KnowledgeRuntime(KnowledgeState(repository), managed=bool(getattr(app.state, "managed_mode", False)))
+    await knowledge_runtime.start()
+    install_runtime(knowledge_runtime)
+    app.state.knowledge_runtime = knowledge_runtime
+    if knowledge_runtime.loaded_enabled:
+        from server.api.router import build_knowledge_router
+        # Insert before the MCP root mount; keep the same authenticated routes.
+        knowledge_routes = build_knowledge_router().routes
+        app.router.routes[0:0] = knowledge_routes
+        app.openapi_schema = None
+    knowledge_heartbeat_task = asyncio.create_task(knowledge_runtime.poll())
     stop_config_poll = asyncio.Event()
     config_poll_task = asyncio.create_task(
         runtime_store.poll_forever(stop_config_poll)
@@ -529,8 +559,6 @@ async def lifespan(app: FastAPI):
     # Background loops
     from server.core.audit_retention import audit_retention_loop
     from server.enterprise_identity.sync import identity_source_sync_loop
-    from server.polarrag.catalog import catalog_sync_loop
-    from server.polarrag.upload_cleanup import upload_cleanup_loop
 
     async def _oauth_cleanup_loop():
         while True:
@@ -541,12 +569,14 @@ async def lifespan(app: FastAPI):
                 logger.exception("OAuth cleanup sweep failed")
 
     cleanup_task = asyncio.create_task(_oauth_cleanup_loop())
-    polarrag_catalog_task = asyncio.create_task(
-        catalog_sync_loop(session_factory)
-    )
-    polarrag_upload_cleanup_task = asyncio.create_task(
-        upload_cleanup_loop(session_factory)
-    )
+    knowledge_tasks = []
+    if knowledge_runtime.loaded_enabled:
+        from server.polarrag.catalog import catalog_sync_loop
+        from server.polarrag.upload_cleanup import upload_cleanup_loop
+        knowledge_tasks = [
+            asyncio.create_task(catalog_sync_loop(session_factory, feature=knowledge_runtime)),
+            asyncio.create_task(upload_cleanup_loop(session_factory, feature=knowledge_runtime)),
+        ]
     identity_source_sync_task = asyncio.create_task(
         identity_source_sync_loop(session_factory)
     )
@@ -555,19 +585,19 @@ async def lifespan(app: FastAPI):
             audit_retention_loop(
                 session_factory,
                 RuntimeSectionProxy(
-                    lambda: get_config().sql_security.audit
+                    lambda: get_config().audit
                 ),
             )
         )
-        if config.sql_security.audit.cleanup_interval_seconds > 0
+        if config.audit.cleanup_interval_seconds > 0
         else None
     )
 
     lifecycle_tasks = [
         config_poll_task,
         cleanup_task,
-        polarrag_catalog_task,
-        polarrag_upload_cleanup_task,
+        knowledge_heartbeat_task,
+        *knowledge_tasks,
         identity_source_sync_task,
     ]
     if audit_retention_task is not None:
@@ -589,7 +619,20 @@ async def lifespan(app: FastAPI):
     stop_config_poll.set()
     await asyncio.gather(*lifecycle_tasks, return_exceptions=True)
 
+    await knowledge_runtime.heartbeat(stopped=True)
+    install_runtime(None)
     logger.info("alibabacloud polardb tool agentic server shutting down", extra={"action": "shutdown"})
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    runtime = PasRuntime(application_lifespan)
+    app.state.pas_runtime = runtime
+    await runtime.start(app)
+    try:
+        yield
+    finally:
+        await runtime.stop()
 
 
 def _discover_static_dir() -> Path | None:
@@ -616,33 +659,41 @@ def _discover_static_dir() -> Path | None:
     return None
 
 
-def create_app() -> FastAPI:
+def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
     app = FastAPI(
         title="alibabacloud polardb tool agentic server",
         version=__version__,
-        lifespan=lifespan,
+        lifespan=lifespan if runtime is None else None,
     )
+    if runtime is not None:
+        app.state.pas_runtime = runtime
     from server.middleware.runtime_policy import (
         RuntimeAccessPolicy,
         RuntimePolicyMiddleware,
     )
 
+    from server.features.middleware import KnowledgeAdmissionMiddleware
+    app.add_middleware(KnowledgeAdmissionMiddleware, runtime_provider=lambda: getattr(app.state, "knowledge_runtime", None))
     app.state.runtime_access_policy = RuntimeAccessPolicy()
     app.add_middleware(
         RuntimePolicyMiddleware,
         snapshot_provider=lambda: app.state.runtime_access_policy,
     )
 
-    # SSO routes remain installed and consult the current runtime snapshot.
-    from server.auth.web_sso_guard import (
-        handle_web_sso_guard_callback,
-    )
-
     @app.get("/auth/web-sso-guard/callback")
     async def web_sso_guard_callback(request: Request):
         if not request.app.state.runtime_access_policy.sso_active:
             return Response(status_code=404)
-        return await handle_web_sso_guard_callback(request)
+        return JSONResponse(
+            status_code=410,
+            content={
+                "detail": (
+                    "The legacy Web SSO guard callback is retired. "
+                    "Start a new login at /auth/oidc/login."
+                )
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Request ID middleware
     @app.middleware("http")

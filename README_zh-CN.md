@@ -6,6 +6,8 @@
 管理的 Agent 提供经过身份认证、可审计的数据库发现、受控 SQL 操作、分支
 操作和持久逻辑数据库资源。
 
+在**访问管理**中统一管理个人与服务账号，数据库和知识库统称为**资源**。员工可直接使用**连接 MCP**，无需创建 Agent。统一控制台与兼容行为参见[账号与资源](docs/zh-cn/administration/accounts-and-resources.md)。
+
 ## 工作原理
 
 ![PAS 请求、策略与供应架构](docs/zh-cn/getting-started/images/pas-how-it-works.svg)
@@ -173,8 +175,10 @@ Agent 也可以通过仅接受 Bearer Token 的 `/mcp/rest/db-instances` REST �
 - [数据库实例访问与供应](docs/zh-cn/database-instances/access-and-provisioning.md)
 - [自动供给池（AgenticDB Dedicated）](docs/zh-cn/database-instances/dedicated-hot-pools.md)
 - [Agent REST 数据库供应](docs/zh-cn/database-instances/agent-rest-provisioning.md)
+- [启用与停用知识库](docs/zh-cn/knowledge/activation.md)
 - [PolarRAG 管理员接入](docs/zh-cn/knowledge/polarrag-onboarding.md)
 - [PolarRAG MCP 与企业身份](docs/zh-cn/knowledge/polarrag-mcp.md)
+- [PolarRAG 知识库平台 HTTP API](docs/zh-cn/knowledge/polarrag-platform-http-api.md)
 - [企业身份源](docs/zh-cn/administration/enterprise-identity-sources.md)
 - [企业身份源管理员 API](docs/zh-cn/reference/enterprise-identity-sources-api.md)
 - [Docker Compose 部署](docs/zh-cn/deployment/docker-compose.md)

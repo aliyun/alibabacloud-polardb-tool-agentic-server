@@ -40,12 +40,17 @@ class FakeCatalogClient:
     def __init__(self, records: list[PolarRAGKnowledgeBaseRecord]):
         self.records = records
 
-    async def list_knowledge_bases(
+    async def list_knowledge_bases_page(
         self,
         space_id: str,
-    ) -> list[PolarRAGKnowledgeBaseRecord]:
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
         assert space_id == "space-a"
-        return self.records
+        assert cursor is None
+        assert page_size == 100
+        return self.records, None
 
 
 class FailingCatalogClient:
@@ -56,9 +61,35 @@ class FailingCatalogClient:
             retryable=retryable,
         )
 
-    async def list_knowledge_bases(self, space_id: str):
+    async def list_knowledge_bases_page(
+        self,
+        space_id: str,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ):
         assert space_id == "space-a"
+        assert cursor is None
+        assert page_size == 100
         raise self.error
+
+
+class PagedCatalogClient:
+    def __init__(self, pages: dict[str | None, tuple[list[PolarRAGKnowledgeBaseRecord], str | None]]):
+        self.pages = pages
+        self.calls: list[str | None] = []
+
+    async def list_knowledge_bases_page(
+        self,
+        space_id: str,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
+        assert space_id == "space-a"
+        assert page_size == 100
+        self.calls.append(cursor)
+        return self.pages[cursor]
 
 
 async def _add_active_resource(session, space: PolarRAGSpace) -> None:
@@ -222,6 +253,166 @@ async def test_sync_space_catalog_hides_unresolved_personal_owner(
     assert resource.owner_pas_user_id is None
 
 
+async def test_sync_space_catalog_reads_pages_and_retires_missing_resources(
+    seeded,
+) -> None:
+    session, space, _owner = seeded
+    await _add_active_resource(session, space)
+    first = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="first",
+        name="First",
+        kb_type="PUBLIC",
+        identity_domain=space.identity_domain,
+        owner=None,
+    )
+    second = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="second",
+        name="Second",
+        kb_type="PUBLIC",
+        identity_domain=space.identity_domain,
+        owner=None,
+    )
+    client = PagedCatalogClient({None: ([first], "next"), "next": ([second], None)})
+
+    result = await sync_space_catalog(session, space, client)
+    resources = {
+        resource.kb_id: resource
+        for resource in (await session.execute(select(KnowledgeResource))).scalars()
+    }
+
+    assert client.calls == [None, "next"]
+    assert result == {
+        "knowledge_bases": 3,
+        "active": 2,
+        "disabled": 1,
+        "owner_unresolved": 0,
+    }
+    assert resources["public-kb"].enabled is False
+    assert resources["first"].enabled is True
+    assert resources["second"].enabled is True
+
+
+async def test_sync_space_catalog_rejects_repeated_cursor(
+    seeded,
+) -> None:
+    session, space, _owner = seeded
+    first = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="first",
+        name="First",
+        kb_type="PUBLIC",
+        identity_domain=space.identity_domain,
+        owner=None,
+    )
+    second = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="second",
+        name="Second",
+        kb_type="PUBLIC",
+        identity_domain=space.identity_domain,
+        owner=None,
+    )
+    client = PagedCatalogClient(
+        {None: ([first], "same"), "same": ([second], "same")}
+    )
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await sync_space_catalog(session, space, client)
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+    assert client.calls == [None, "same"]
+
+
+async def test_sync_space_catalog_limits_page_count(
+    seeded,
+    monkeypatch,
+) -> None:
+    session, space, _owner = seeded
+
+    class EndlessCatalogClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def list_knowledge_bases_page(
+            self,
+            space_id: str,
+            *,
+            cursor: str | None,
+            page_size: int,
+        ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
+            assert space_id == "space-a"
+            assert page_size == 100
+            self.calls += 1
+            if self.calls > 2:
+                raise AssertionError("catalog page limit was not enforced")
+            return [
+                PolarRAGKnowledgeBaseRecord(
+                    space_id=space_id,
+                    kb_id=f"kb-{self.calls}",
+                    name=f"KB {self.calls}",
+                    kb_type="PUBLIC",
+                    identity_domain=space.identity_domain,
+                    owner=None,
+                )
+            ], f"cursor-{self.calls}"
+
+    client = EndlessCatalogClient()
+    monkeypatch.setattr(
+        "server.polarrag.catalog._MAX_CATALOG_PAGES",
+        2,
+        raising=False,
+    )
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await sync_space_catalog(session, space, client)
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+    assert client.calls == 2
+
+
+async def test_sync_space_catalog_rolls_back_duplicate_kb_across_pages(
+    seeded,
+) -> None:
+    session, space, _owner = seeded
+    await _add_active_resource(session, space)
+    resource = (
+        await session.execute(
+            select(KnowledgeResource).where(KnowledgeResource.kb_id == "public-kb")
+        )
+    ).scalar_one()
+    resource.catalog_sync_token = "previous-token"
+    await session.commit()
+    first = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="public-kb",
+        name="Changed",
+        kb_type="PUBLIC",
+        identity_domain=space.identity_domain,
+        owner=None,
+    )
+    duplicate = PolarRAGKnowledgeBaseRecord(
+        space_id=space.space_id,
+        kb_id="public-kb",
+        name="Duplicate",
+        kb_type="PUBLIC",
+        identity_domain=space.identity_domain,
+        owner=None,
+    )
+    client = PagedCatalogClient(
+        {None: ([first], "next"), "next": ([duplicate], None)}
+    )
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await sync_space_catalog(session, space, client)
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+    await session.refresh(resource)
+    assert resource.name == "Public"
+    assert resource.catalog_sync_token == "previous-token"
+
+
 async def test_sync_space_catalog_resolves_trusted_polarrag_user_owner(
     seeded,
 ) -> None:
@@ -304,7 +495,7 @@ async def test_sync_space_catalog_resolves_native_owner_for_bound_source_user(
     assert resource.sync_status == KnowledgeResourceSyncStatus.ACTIVE
 
 
-async def test_sync_space_catalog_rejects_stale_source_owner(
+async def test_sync_space_catalog_resolves_stale_source_owner(
     seeded,
 ) -> None:
     session, space, _owner = seeded
@@ -343,8 +534,8 @@ async def test_sync_space_catalog_rejects_stale_source_owner(
     result = await sync_space_catalog(session, space, FakeCatalogClient([record]))
     resource = (await session.execute(select(KnowledgeResource))).scalar_one()
 
-    assert result["owner_unresolved"] == 1
-    assert resource.owner_pas_user_id is None
+    assert result["owner_unresolved"] == 0
+    assert resource.owner_pas_user_id is not None
 
 
 async def test_sync_space_catalog_rejects_internal_user_id_as_polarrag_owner(
@@ -387,9 +578,17 @@ async def test_periodic_sync_worker_visits_enabled_spaces(seeded) -> None:
     calls: list[str] = []
 
     class WorkerClient(FakeCatalogClient):
-        async def list_knowledge_bases(self, space_id):
+        async def list_knowledge_bases_page(
+            self,
+            space_id,
+            *,
+            cursor,
+            page_size,
+        ):
             calls.append(space_id)
-            return []
+            assert cursor is None
+            assert page_size == 100
+            return [], None
 
     await sync_enabled_spaces_once(
         factory,

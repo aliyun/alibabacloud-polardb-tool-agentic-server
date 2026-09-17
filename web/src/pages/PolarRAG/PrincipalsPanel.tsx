@@ -88,6 +88,8 @@ export default function PrincipalsPanel({
 }: PrincipalsPanelProps) {
   const { t } = useTranslation()
   const [identities, setIdentities] = useState<EnterpriseIdentity[]>([])
+  const [identityTotal, setIdentityTotal] = useState(0)
+  const [identityPage, setIdentityPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [candidates, setCandidates] = useState<DirectoryCandidate[]>([])
@@ -108,20 +110,23 @@ export default function PrincipalsPanel({
     alias: t('principals.nativeAlias'),
   }
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (page = identityPage) => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get<{ items: EnterpriseIdentity[] }>(
+      const response = await api.get<{ items: EnterpriseIdentity[]; total: number }>(
         `/api/identity-sources/users/${encodeURIComponent(userId)}/identities`,
+        { params: { offset: (page - 1) * 20, limit: 20 } },
       )
       setIdentities(response.data.items ?? [])
+      setIdentityTotal(response.data.total)
+      setIdentityPage(page)
     } catch (requestError) {
       setError(getAPIErrorMessage(requestError, t('principals.loadFailed')))
     } finally {
       setLoading(false)
     }
-  }, [t, userId])
+  }, [identityPage, t, userId])
 
   useEffect(() => {
     void load()
@@ -133,6 +138,7 @@ export default function PrincipalsPanel({
     try {
       const sourceResponse = await api.get<{ items: Array<{ id: string; name: string; provider: string }> }>(
         '/api/identity-sources',
+        { params: { offset: 0, limit: 100 } },
       )
       const params = new URLSearchParams({ limit: String(DIRECTORY_CANDIDATE_LIMIT) })
       if (search.trim()) params.set('search', search.trim())
@@ -265,7 +271,13 @@ export default function PrincipalsPanel({
             <Table
               rowKey="id"
               dataSource={identities}
-              pagination={false}
+              pagination={{
+                current: identityPage,
+                pageSize: 20,
+                total: identityTotal,
+                showSizeChanger: false,
+                onChange: (page) => void load(page),
+              }}
               columns={[
                 {
                   title: labels.source,
@@ -310,7 +322,7 @@ export default function PrincipalsPanel({
                 {
                   title: t('principals.actions'),
                   render: (_: unknown, record: EnterpriseIdentity) =>
-                    record.mapping_mode === 'pas_managed' ? (
+                    allowManualMapping && record.mapping_mode === 'pas_managed' ? (
                       <Space>
                         <Button size="small" icon={<EditOutlined />} onClick={() => void openMapping(record)}>
                           {t('principals.edit')}
@@ -373,6 +385,8 @@ function ManualPrincipalsPanel({
 }: ManualPrincipalsPanelProps) {
   const { t, i18n } = useTranslation()
   const [principals, setPrincipals] = useState<EnterprisePrincipal[]>([])
+  const [principalTotal, setPrincipalTotal] = useState(0)
+  const [principalPage, setPrincipalPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
@@ -382,18 +396,23 @@ function ManualPrincipalsPanel({
   const provider = Form.useWatch('provider', form)
   const nativePrincipal = provider === 'polarrag'
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (page = principalPage) => {
     setLoading(true)
     setError(null)
     try {
-      const response = await listEnterprisePrincipals(userId)
+      const response = await listEnterprisePrincipals(userId, {
+        offset: (page - 1) * 20,
+        limit: 20,
+      })
       setPrincipals(response.data.items)
+      setPrincipalTotal(response.data.total)
+      setPrincipalPage(page)
     } catch (requestError) {
       setError(getAPIErrorMessage(requestError, t('principals.loadFailed')))
     } finally {
       setLoading(false)
     }
-  }, [t, userId])
+  }, [principalPage, t, userId])
 
   useEffect(() => {
     void load()
@@ -479,7 +498,13 @@ function ManualPrincipalsPanel({
         <Table
           rowKey="id"
           dataSource={principals}
-          pagination={false}
+          pagination={{
+            current: principalPage,
+            pageSize: 20,
+            total: principalTotal,
+            showSizeChanger: false,
+            onChange: (page) => void load(page),
+          }}
           columns={[
             {
               title: t('principals.principal'),

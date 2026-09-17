@@ -6,6 +6,7 @@ Wait for readiness:
   kubectl rollout status deployment/{{ include "polardb-agentic-server.fullname" . }} \
     --namespace {{ .Release.Namespace }}
 
+{{- if not .Values.management.enabled }}
 For first ownership, select one exact Pod and write the one-time token to the
 Pod-local restricted volume. Copy the file without printing it to logs:
 
@@ -28,3 +29,9 @@ both the Pod-local and local copies:
   rm ./pas-bootstrap-token
 
 Treat both files as password-equivalent secrets.
+{{- else }}
+
+Managed initialization is enabled. PAS does not print or return a Bootstrap
+Token. Use the isolated management Service from the control plane, and keep it
+out of the business Ingress and Service.
+{{- end }}

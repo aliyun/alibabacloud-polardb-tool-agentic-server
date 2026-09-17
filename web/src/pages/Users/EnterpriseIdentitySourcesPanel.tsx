@@ -4,18 +4,21 @@ import {
   Button,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd'
-import { PlusOutlined } from '@ant-design/icons'
+import { CopyOutlined, PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 
 import api, { getAPIErrorMessage } from '../../api/client'
+import { copyText } from '../../utils/clipboard'
 
 const { Text } = Typography
 
@@ -30,6 +33,12 @@ interface IdentitySource {
   status: string
   last_synced_at: string | null
   last_error: string | null
+  sync_warning: {
+    code: string
+    skipped_count?: number
+    provider_errors?: Record<string, number>
+  } | null
+  stale_after_seconds: number
   sync_supported: boolean
   space_bindings: string[]
 }
@@ -49,6 +58,7 @@ interface FormValues {
   cloud?: 'global' | 'china'
   client_id?: string
   client_secret?: string
+  stale_after_seconds: number
 }
 
 interface DirectoryData {
@@ -63,6 +73,8 @@ const DIRECTORY_PAGE_SIZE = 20
 export default function EnterpriseIdentitySourcesPanel() {
   const { t, i18n } = useTranslation()
   const [sources, setSources] = useState<IdentitySource[]>([])
+  const [sourceTotal, setSourceTotal] = useState(0)
+  const [sourcePage, setSourcePage] = useState(1)
   const [spaces, setSpaces] = useState<SpaceOption[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
@@ -99,6 +111,11 @@ export default function EnterpriseIdentitySourcesPanel() {
         syncNow: '立即同步',
         syncSucceeded: '身份源同步完成。',
         syncFailed: '无法同步身份源。',
+        partialWarning: '最近一次同步跳过了 {{count}} 个成员关系不可用的用户，已保留其原有授权快照。',
+        identitySourceId: 'ID',
+        copyIdentitySourceId: '复制身份源 ID',
+        identitySourceIdCopied: '身份源 ID 已复制。',
+        identitySourceIdCopyFailed: '无法复制身份源 ID。',
         edit: '编辑', delete: '删除', directory: '已同步主体',
         directoryTitle: '已同步用户和组', directoryLoadFailed: '无法读取已同步主体。',
         deleteConfirm: '删除此身份源将撤销目录数据、Space 和 Agent 组绑定；已创建的 PAS 用户不会删除。是否继续？',
@@ -121,30 +138,49 @@ export default function EnterpriseIdentitySourcesPanel() {
         syncNow: 'Sync now',
         syncSucceeded: 'Identity source synchronized.',
         syncFailed: 'Could not synchronize identity source.',
+        partialWarning: 'The latest sync skipped {{count}} users with unavailable memberships and preserved their previous authorization snapshot.',
+        identitySourceId: 'ID',
+        copyIdentitySourceId: 'Copy identity source ID',
+        identitySourceIdCopied: 'Identity source ID copied.',
+        identitySourceIdCopyFailed: 'Could not copy identity source ID.',
         edit: 'Edit', delete: 'Delete', directory: 'Synced identities',
         directoryTitle: 'Synced users and groups', directoryLoadFailed: 'Could not load synced identities.',
         deleteConfirm: 'Deleting this source revokes directory data, Space bindings, and Agent group assignments. Existing PAS users are kept. Continue?',
       }
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (nextPage = sourcePage) => {
     setLoading(true)
     try {
       const [sourceResponse, spaceResponse] = await Promise.all([
-        api.get<{ items: IdentitySource[] }>('/api/identity-sources'),
-        api.get<{ items: SpaceOption[] }>('/api/identity-sources/spaces'),
+        api.get<{ items: IdentitySource[]; total: number }>('/api/identity-sources', {
+          params: { offset: (nextPage - 1) * 20, limit: 20 },
+        }),
+        api.get<{ items: SpaceOption[] }>('/api/identity-sources/spaces', {
+          params: { offset: 0, limit: 100 },
+        }),
       ])
       setSources(sourceResponse.data.items)
+      setSourceTotal(sourceResponse.data.total)
+      setSourcePage(nextPage)
       setSpaces(spaceResponse.data.items)
     } catch (error: unknown) {
       message.error(getAPIErrorMessage(error, t('users.identitySourcesLoadFailed')))
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [sourcePage, t])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  const loadSpaces = async (search = '') => {
+    const response = await api.get<{ items: SpaceOption[] }>(
+      '/api/identity-sources/spaces',
+      { params: { offset: 0, limit: 100, search: search || undefined } },
+    )
+    setSpaces(response.data.items)
+  }
 
   const close = () => {
     setOpen(false)
@@ -158,8 +194,18 @@ export default function EnterpriseIdentitySourcesPanel() {
       name: source.name,
       provider: source.provider,
       cloud: source.cloud ?? 'global',
+      stale_after_seconds: source.stale_after_seconds,
     })
     setOpen(true)
+  }
+
+  const copyIdentitySourceId = async (sourceId: string) => {
+    try {
+      await copyText(sourceId)
+      message.success(labels.identitySourceIdCopied)
+    } catch {
+      message.error(labels.identitySourceIdCopyFailed)
+    }
   }
 
   const startFeishuVerification = async (source: IdentitySource) => {
@@ -178,6 +224,7 @@ export default function EnterpriseIdentitySourcesPanel() {
     try {
       const payload = {
         name: values.name,
+        stale_after_seconds: values.stale_after_seconds,
         ...(values.provider === 'feishu'
           ? { app_id: values.app_id, app_secret: values.app_secret }
           : {
@@ -356,10 +403,38 @@ export default function EnterpriseIdentitySourcesPanel() {
       <Table
         rowKey="id"
         loading={loading}
-        pagination={false}
+        pagination={{
+          current: sourcePage,
+          pageSize: 20,
+          total: sourceTotal,
+          showSizeChanger: false,
+          onChange: (page) => void load(page),
+        }}
         dataSource={sources}
         columns={[
-          { title: t('users.identitySourceName'), dataIndex: 'name' },
+          {
+            title: t('users.identitySourceName'),
+            dataIndex: 'name',
+            render: (_value, source: IdentitySource) => (
+              <Space direction="vertical" size={0}>
+                <Text>{source.name}</Text>
+                <Space size={4}>
+                  <Text type="secondary" code>
+                    {`${labels.identitySourceId}: ${source.id}`}
+                  </Text>
+                  <Tooltip title={labels.copyIdentitySourceId}>
+                    <Button
+                      type="text"
+                      size="small"
+                      icon={<CopyOutlined />}
+                      aria-label={labels.copyIdentitySourceId}
+                      onClick={() => void copyIdentitySourceId(source.id)}
+                    />
+                  </Tooltip>
+                </Space>
+              </Space>
+            ),
+          },
           { title: t('users.identityProvider'), dataIndex: 'provider' },
           {
             title: t('users.identityTenant'),
@@ -375,6 +450,14 @@ export default function EnterpriseIdentitySourcesPanel() {
                 {!source.sync_supported && (
                   <Text type="secondary">
                     {t('users.identitySourcePendingSync')}
+                  </Text>
+                )}
+                {source.sync_warning?.code === 'MEMBERSHIPS_PARTIAL' && (
+                  <Text type="warning">
+                    {labels.partialWarning.replace(
+                      '{{count}}',
+                      String(source.sync_warning.skipped_count ?? 0),
+                    )}
                   </Text>
                 )}
               </Space>
@@ -430,7 +513,11 @@ export default function EnterpriseIdentitySourcesPanel() {
         <Form<FormValues>
           form={form}
           layout="vertical"
-          initialValues={{ provider: 'feishu', cloud: 'global' }}
+          initialValues={{
+            provider: 'feishu',
+            cloud: 'global',
+            stale_after_seconds: 7 * 24 * 60 * 60,
+          }}
           onFinish={save}
         >
           <Form.Item name="name" label={t('users.identitySourceName')} rules={[{ required: true, whitespace: true }]}>
@@ -441,6 +528,13 @@ export default function EnterpriseIdentitySourcesPanel() {
               { value: 'feishu', label: t('users.feishu') },
               { value: 'sharepoint', label: t('users.sharepoint') },
             ]} />
+          </Form.Item>
+          <Form.Item
+            name="stale_after_seconds"
+            label={i18n.language.startsWith('zh') ? 'STALE 宽限期（秒）' : 'STALE grace period (seconds)'}
+            rules={[{ required: true }]}
+          >
+            <InputNumber min={60} max={30 * 24 * 60 * 60} style={{ width: '100%' }} />
           </Form.Item>
           {provider === 'feishu' ? (
             <>
@@ -564,6 +658,9 @@ export default function EnterpriseIdentitySourcesPanel() {
         <Select
           style={{ width: '100%' }}
           mode="multiple"
+          showSearch
+          filterOption={false}
+          onSearch={(value) => void loadSpaces(value.trim())}
           value={bindingSpaceIds}
           placeholder={labels.selectSpace}
           onChange={setBindingSpaceIds}

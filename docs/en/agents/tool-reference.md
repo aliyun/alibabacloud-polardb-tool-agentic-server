@@ -41,7 +41,7 @@ Human-user sessions may also expose `set_default_instance`, `list_branches`,
 `create_branch`, and `delete_branch` when their runtime access supports those
 operations. Authenticated users with visible PolarRAG resources also receive
 `list_knowledge_resources`, `kb_search`, `kb_fetch_context`,
-`doc_find_by_name`, `doc_status`, `doc_recall`, `doc_get_original`,
+`doc_list_chunks`, `doc_find_by_name`, `doc_status`, `doc_recall`, `doc_get_original`,
 `doc_delete`, and `doc_rechunk`. When the selected Space is upload-ready, the
 catalog also includes `prepare_document_upload` and
 `complete_document_upload`. Machine `pas_agent_` Tokens never receive the

@@ -287,6 +287,7 @@ async def _describe_physical(
     session: AsyncSession,
     principal: Principal,
     db_instance_id: str,
+    *, personal: bool = False,
 ) -> dict[str, Any]:
     access = (
         await resolve_user_instance_access(
@@ -299,12 +300,13 @@ async def _describe_physical(
     )
     if (
         access is None
-        or BindingCapability.DB_INSTANCE_DESCRIBE
-        not in access.capabilities
+        or not (BindingCapability.DB_INSTANCE_DESCRIBE in access.capabilities
+                or (personal and access.permission is not None
+                    and BindingCapability.SQL_READ in access.capabilities))
     ):
         raise DBInstanceNotFound("Database instance not found")
     credential = _direct_credential(access)
-    if credential is None:
+    if credential is None and not personal:
         raise DBInstanceNotFound("Database instance not found")
     instance = access.instance
     payload: dict[str, Any] = {
@@ -326,7 +328,7 @@ async def _describe_physical(
     if instance.port is not None:
         payload["port"] = instance.port
     if (
-        BindingCapability.DB_INSTANCE_CREDENTIALS_READ
+        credential is not None and BindingCapability.DB_INSTANCE_CREDENTIALS_READ
         in access.capabilities
     ):
         username_ciphertext = credential.username_ciphertext
@@ -352,15 +354,18 @@ async def handle_list_db_instances(
     session: AsyncSession,
     principal: Principal,
     *,
+    audit_principal: Principal | None = None,
     cursor: str | None = None,
     limit: int = 50,
     db_type: str | None = None,
     source: str | None = None,
     status: str | None = None,
+    personal: bool = False,
 ) -> CallToolResult:
     started_at = time.perf_counter()
+    actor = audit_principal or principal
     try:
-        await check_list_rate_limit(principal)
+        await check_list_rate_limit(actor)
         page = await query_db_instances(
             session,
             principal,
@@ -369,11 +374,12 @@ async def handle_list_db_instances(
             db_type=db_type,
             source=source,
             status=status,
+            personal=personal,
         )
         result = db_instance_result(serialize_db_instance_page(page))
         await _best_effort_audit(
             session,
-            principal,
+            actor,
             action="db_instance.list",
             status=AuditStatus.SUCCESS,
             started_at=started_at,
@@ -387,7 +393,7 @@ async def handle_list_db_instances(
         )
         await _best_effort_audit(
             session,
-            principal,
+            actor,
             action="db_instance.list",
             status=AuditStatus.ERROR,
             error_code="RATE_LIMITED",
@@ -405,7 +411,7 @@ async def handle_list_db_instances(
         result = _error(error_code, str(error))
     await _best_effort_audit(
         session,
-        principal,
+        actor,
         action="db_instance.list",
         status=AuditStatus.ERROR,
         error_code=error_code,
@@ -418,16 +424,18 @@ async def handle_create_db_instance(
     session: AsyncSession,
     principal: Principal,
     *,
+    audit_principal: Principal | None = None,
     client_token: str,
     db_type: str,
     name: str | None,
     provisioning_mode: ProvisioningMode,
 ) -> CallToolResult:
     started_at = time.perf_counter()
+    actor = audit_principal or principal
     if principal.kind != PrincipalKind.AGENT:
         if not await _required_error_audit(
             session,
-            principal,
+            actor,
             action="db_instance.create",
             status=AuditStatus.ERROR,
             error_code="AUTH_REQUIRED",
@@ -455,7 +463,7 @@ async def handle_create_db_instance(
             try:
                 await _write_db_instance_audit(
                     audit_session,
-                    principal,
+                    actor,
                     action="db_instance.create",
                     target_id=resource.id,
                     status=AuditStatus.SUCCESS,
@@ -496,7 +504,7 @@ async def handle_create_db_instance(
         result = _error(error_code, str(error))
     if not await _required_error_audit(
         session,
-        principal,
+        actor,
         action="db_instance.create",
         target_id=audit_target_id,
         status=AuditStatus.ERROR,
@@ -511,11 +519,17 @@ async def handle_describe_db_instance(
     session: AsyncSession,
     principal: Principal,
     db_instance_id: str,
+    *,
+    audit_principal: Principal | None = None,
+    personal: bool = False,
 ) -> CallToolResult:
     started_at = time.perf_counter()
+    actor = audit_principal or principal
     try:
-        await check_describe_rate_limit(principal, db_instance_id)
+        await check_describe_rate_limit(actor, db_instance_id)
         resource = await session.get(DBInstanceResource, db_instance_id)
+        if resource is not None and principal.kind != PrincipalKind.AGENT:
+            raise DBInstanceNotFound("Database instance not found")
         payload = (
             (
                 await DBInstanceApplicationService(session).describe(
@@ -525,13 +539,13 @@ async def handle_describe_db_instance(
             ).describe_payload()
             if resource is not None
             else await _describe_physical(
-                session, principal, db_instance_id
+                session, principal, db_instance_id, personal=personal
             )
         )
         result = db_instance_result(payload)
         await _best_effort_audit(
             session,
-            principal,
+            actor,
             action="db_instance.describe",
             target_id=db_instance_id,
             instance_id=(
@@ -553,7 +567,7 @@ async def handle_describe_db_instance(
         result = _service_error(error)
     await _best_effort_audit(
         session,
-        principal,
+        actor,
         action="db_instance.describe",
         target_id=db_instance_id,
         status=AuditStatus.ERROR,
@@ -567,12 +581,15 @@ async def handle_delete_db_instance(
     session: AsyncSession,
     principal: Principal,
     db_instance_id: str,
+    *,
+    audit_principal: Principal | None = None,
 ) -> CallToolResult:
     started_at = time.perf_counter()
+    actor = audit_principal or principal
     if principal.kind != PrincipalKind.AGENT:
         if not await _required_error_audit(
             session,
-            principal,
+            actor,
             action="db_instance.delete",
             target_id=db_instance_id,
             status=AuditStatus.ERROR,
@@ -590,7 +607,7 @@ async def handle_delete_db_instance(
             try:
                 await _write_db_instance_audit(
                     audit_session,
-                    principal,
+                    actor,
                     action="db_instance.delete",
                     target_id=resource.id,
                     status=AuditStatus.SUCCESS,
@@ -617,7 +634,7 @@ async def handle_delete_db_instance(
     except DBInstanceServiceError as error:
         if not await _required_error_audit(
             session,
-            principal,
+            actor,
             action="db_instance.delete",
             target_id=db_instance_id,
             status=AuditStatus.ERROR,

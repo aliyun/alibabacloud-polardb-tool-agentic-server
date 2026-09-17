@@ -17,9 +17,16 @@ class TextVersion:
     label: str
     path: str
     pattern: re.Pattern[str]
+    optional: bool = False
 
 
 TEXT_VERSIONS = (
+    TextVersion(
+        "Internal Docker pipeline",
+        ".fw.yml",
+        re.compile(r"(?m)^  IMAGE_TAG: (\d+\.\d+\.\d+)$"),
+        optional=True,
+    ),
     TextVersion(
         "Canonical Docker deployment skill",
         ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
@@ -168,6 +175,7 @@ def read_versions(root: Path) -> dict[str, str]:
         {
             location.label: _one_match(root, location)
             for location in TEXT_VERSIONS
+            if not location.optional or (root / location.path).exists()
         }
     )
     return versions
@@ -234,6 +242,8 @@ def planned_replacements(
     )
     for location in simple_locations:
         path = root / location.path
+        if location.optional and not path.exists():
+            continue
         content = replacements.get(
             path,
             path.read_text(encoding="utf-8"),

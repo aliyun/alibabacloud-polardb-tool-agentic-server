@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 
 export interface PermissionTemplateRevision {
   id: string
@@ -41,8 +42,8 @@ export interface PermissionSyncJob {
   targets: PermissionSyncTarget[]
 }
 
-export const listPermissionTemplates = () =>
-  api.get<PermissionTemplate[]>('/api/permission-templates')
+export const listPermissionTemplates = (params: PageParams = {}) =>
+  api.get<Page<PermissionTemplate>>('/api/permission-templates', { params })
 
 export const createPermissionTemplateRevision = (
   templateId: string,

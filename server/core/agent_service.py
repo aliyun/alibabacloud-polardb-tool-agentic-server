@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.models import Agent, AgentStatus
@@ -12,6 +12,7 @@ async def create_agent(
     name: str,
     description: str | None,
     max_active_resources: int | None,
+    oauth_redirect_uri: str | None,
     admin_id: str,
 ) -> Agent:
     normalized_name = name.strip()
@@ -21,6 +22,7 @@ async def create_agent(
         name=normalized_name,
         description=description,
         max_active_resources=max_active_resources,
+        oauth_redirect_uri=oauth_redirect_uri,
         created_by=admin_id,
     )
     session.add(agent)
@@ -31,6 +33,30 @@ async def create_agent(
 async def list_agents(session: AsyncSession) -> list[Agent]:
     result = await session.execute(select(Agent).order_by(Agent.created_at.desc()))
     return list(result.scalars().all())
+
+
+async def list_agents_page(
+    session: AsyncSession,
+    *,
+    offset: int,
+    limit: int,
+    search: str | None = None,
+) -> tuple[list[Agent], int]:
+    filters = []
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(Agent.name.ilike(pattern), Agent.description.ilike(pattern))
+        )
+    total = await session.scalar(select(func.count(Agent.id)).where(*filters)) or 0
+    result = await session.execute(
+        select(Agent)
+        .where(*filters)
+        .order_by(Agent.created_at.desc(), Agent.id)
+        .offset(offset)
+        .limit(limit)
+    )
+    return list(result.scalars().all()), total
 
 
 async def get_agent(session: AsyncSession, agent_id: str) -> Agent:
@@ -50,6 +76,8 @@ async def update_agent(
     status: AgentStatus | None = None,
     max_active_resources: int | None = None,
     update_max_active_resources: bool = False,
+    oauth_redirect_uri: str | None = None,
+    update_oauth_redirect_uri: bool = False,
 ) -> Agent:
     agent = await get_agent(session, agent_id)
     if name is not None:
@@ -63,5 +91,7 @@ async def update_agent(
         agent.status = status
     if update_max_active_resources:
         agent.max_active_resources = max_active_resources
+    if update_oauth_redirect_uri:
+        agent.oauth_redirect_uri = oauth_redirect_uri
     await session.flush()
     return agent

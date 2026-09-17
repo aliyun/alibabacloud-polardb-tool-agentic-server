@@ -38,6 +38,17 @@ pas serve
 服务会在配置、JWT 密钥和后台 Worker 初始化前执行相同的只读 Schema 与根密钥
 兼容性检查。Schema 为空或落后时，必须显式执行 `pas database migrate`。
 
+仅限同一台机器上的 SSO 和外部 Token 测试，可以运行：
+
+```bash
+pas serve --local-sso-dev
+```
+
+该显式开发模式会把 PAS 所有已启用 Listener 绑定到 `127.0.0.1`。PAS 外部
+基础 HTTP Origin 必须使用 `localhost` 或 `127.0.0.1`；Provider HTTP 端点
+还可以使用 `::1`。此模式默认关闭，仍会拒绝局域网地址、`0.0.0.0`、其他
+`127/8` 地址、相似域名以及解析到非回环地址的 Host。
+
 ## 引导式配置
 
 ```bash

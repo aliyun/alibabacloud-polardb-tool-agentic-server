@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 
 export type DedicatedPoolStatus = 'active' | 'draining' | 'disabled'
 export type DedicatedMemberStatus =
@@ -168,8 +169,8 @@ export interface UpdateDedicatedPoolInput {
   available_health_stale_after_seconds?: number
 }
 
-export const listDedicatedPools = () =>
-  api.get<DedicatedPool[]>('/api/dedicated-pools')
+export const listDedicatedPools = (params: PageParams = {}) =>
+  api.get<Page<DedicatedPool>>('/api/dedicated-pools', { params })
 
 export const getDedicatedPool = (poolId: string) =>
   api.get<DedicatedPool>(

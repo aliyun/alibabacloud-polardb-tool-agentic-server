@@ -15,11 +15,79 @@ from server.auth.principal import (
     parse_subject,
 )
 from server.db.engine import get_session
-from server.models import User, UserRole, UserStatus
+from server.models import AuthProvider, User, UserRole, UserStatus
 
 logger = logging.getLogger(__name__)
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def validate_access_token_user(
+    token: str,
+    session: AsyncSession,
+) -> User:
+    """Validate an access token and resolve its active user."""
+    try:
+        payload = verify_token(token)
+    except PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "Invalid or expired token."},
+        ) from None
+
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "Invalid token type."},
+        )
+
+    subject = payload.get("sub")
+    if not isinstance(subject, str):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "Invalid token payload."},
+        )
+
+    try:
+        principal = parse_subject(subject)
+    except InvalidPrincipalSubject:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "Invalid token payload."},
+        ) from None
+    if principal.kind != PrincipalKind.USER:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "Invalid token payload."},
+        )
+
+    result = await session.execute(select(User).where(User.id == principal.id))
+    user = result.scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "User not found."},
+        )
+
+    if user.status == UserStatus.DISABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "USER_DISABLED", "message": "Your account has been disabled. Contact admin."},
+        )
+
+    token_credential_epoch = payload.get("credential_epoch")
+    if user.auth_provider == AuthProvider.BUILTIN and (
+        not isinstance(token_credential_epoch, int)
+        or isinstance(token_credential_epoch, bool)
+        or token_credential_epoch != user.credential_epoch
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "Authentication required. Please reconnect."},
+        )
+
+    return user
 
 
 async def get_current_user(
@@ -44,56 +112,7 @@ async def get_current_user(
             detail={"code": "AUTH_REQUIRED", "message": "Authentication required. Please reconnect."},
         )
 
-    try:
-        payload = verify_token(token)
-    except PyJWTError:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "AUTH_REQUIRED", "message": "Invalid or expired token."},
-        )
-
-    if payload.get("type") != "access":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "AUTH_REQUIRED", "message": "Invalid token type."},
-        )
-
-    subject = payload.get("sub")
-    if not isinstance(subject, str):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "AUTH_REQUIRED", "message": "Invalid token payload."},
-        )
-
-    try:
-        principal = parse_subject(subject)
-    except InvalidPrincipalSubject:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "AUTH_REQUIRED", "message": "Invalid token payload."},
-        )
-    if principal.kind != PrincipalKind.USER:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "AUTH_REQUIRED", "message": "Invalid token payload."},
-        )
-
-    result = await session.execute(select(User).where(User.id == principal.id))
-    user = result.scalar_one_or_none()
-
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "AUTH_REQUIRED", "message": "User not found."},
-        )
-
-    if user.status == UserStatus.DISABLED:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "USER_DISABLED", "message": "Your account has been disabled. Contact admin."},
-        )
-
-    return user
+    return await validate_access_token_user(token, session)
 
 
 async def require_admin(user: User = Depends(get_current_user)) -> User:

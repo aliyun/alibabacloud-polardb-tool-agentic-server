@@ -173,6 +173,13 @@ async def test_identity_source_group_grant_tracks_synced_membership(
         member_type=EnterpriseDirectoryMembershipType.USER,
         external_member_id="ou-member",
     )
+    source.status = EnterpriseIdentitySourceStatus.STALE
+    source.last_synced_at = datetime.now(UTC) - timedelta(
+        seconds=source.stale_after_seconds - 1
+    )
+    await session.commit()
+    assert await has_agent_access(session, agent.id, member.id)
+
     source.last_synced_at = datetime.now(UTC) - timedelta(
         seconds=source.stale_after_seconds + 1
     )
@@ -180,7 +187,76 @@ async def test_identity_source_group_grant_tracks_synced_membership(
     assert not await has_agent_access(session, agent.id, member.id)
 
 
-async def test_identity_source_all_users_grant_tracks_source_freshness(
+async def test_identity_source_parent_department_grant_includes_child_department_users(
+    access_rows,
+) -> None:
+    session, admin, _alice, agent, _department = access_rows
+    source = EnterpriseIdentitySource.create(
+        name="Feishu directory",
+        provider=IdentitySourceProvider.FEISHU,
+        tenant_id="tenant-001",
+    )
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    source.last_synced_at = datetime.now(UTC)
+    session.add(source)
+    await session.flush()
+    zhangsan = await upsert_external_user(
+        session,
+        source,
+        external_user_id="ou-zhangsan",
+        display_name="Zhang San",
+        email=None,
+    )
+    departments = [
+        await upsert_directory_group(
+            session,
+            source,
+            external_group_id=department_id,
+            display_name=department_id,
+        )
+        for department_id in (
+            "od-research",
+            "od-level-1",
+            "od-level-2",
+            "od-level-3",
+            "od-level-4",
+            "od-level-5",
+            "od-level-6",
+            "od-level-7",
+            "od-level-8",
+            "od-platform",
+        )
+    ]
+    await upsert_directory_membership(
+        session,
+        source,
+        external_group_id=departments[-1].external_group_id,
+        member_type=EnterpriseDirectoryMembershipType.USER,
+        external_member_id="ou-zhangsan",
+    )
+    for parent, child in zip(departments, departments[1:]):
+        await upsert_directory_membership(
+            session,
+            source,
+            external_group_id=parent.external_group_id,
+            member_type=EnterpriseDirectoryMembershipType.GROUP,
+            external_member_id=child.external_group_id,
+        )
+    session.add(
+        AgentGroupAssignment.for_identity_source_group(
+            agent_id=agent.id,
+            identity_source_id=source.id,
+            external_group_id=departments[0].external_group_id,
+            created_by_user_id=admin.id,
+        )
+    )
+    await session.commit()
+
+    assert await has_agent_access(session, agent.id, zhangsan.id)
+    assert await list_accessible_agent_ids(session, zhangsan.id) == {agent.id}
+
+
+async def test_identity_source_all_users_grant_uses_last_successful_snapshot(
     access_rows,
 ) -> None:
     session, admin, alice, agent, _department = access_rows
@@ -211,6 +287,13 @@ async def test_identity_source_all_users_grant_tracks_source_freshness(
 
     assert await has_agent_access(session, agent.id, member.id)
     assert not await has_agent_access(session, agent.id, alice.id)
+
+    source.status = EnterpriseIdentitySourceStatus.STALE
+    source.last_synced_at = datetime.now(UTC) - timedelta(
+        seconds=source.stale_after_seconds - 1
+    )
+    await session.commit()
+    assert await has_agent_access(session, agent.id, member.id)
 
     source.last_synced_at = datetime.now(UTC) - timedelta(
         seconds=source.stale_after_seconds + 1
