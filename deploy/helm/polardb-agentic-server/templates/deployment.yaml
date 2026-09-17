@@ -1,3 +1,17 @@
+{{- if .Values.management.enabled }}
+{{- $managementPort := required "management.port is required when management.enabled=true" .Values.management.port }}
+{{- if eq (int $managementPort) (int .Values.service.port) }}
+{{- fail "management.port and service.port must be distinct" }}
+{{- end }}
+{{- if not (has .Values.management.authMode (list "trusted-network" "bearer-token")) }}
+{{- fail "management.authMode must be trusted-network or bearer-token" }}
+{{- end }}
+{{- $_ := required "management.managedIdentity.instanceId is required" .Values.management.managedIdentity.instanceId }}
+{{- $_ := required "management.managedIdentity.generation is required" .Values.management.managedIdentity.generation }}
+{{- if eq .Values.management.authMode "bearer-token" }}
+{{- $_ := required "management.tokenSecret.name is required for bearer-token mode" .Values.management.tokenSecret.name }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,10 +63,32 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "polardb-agentic-server.secretName" . }}
+          env:
+            - name: PAS_SERVER_PORT
+              value: {{ .Values.service.port | quote }}
+            {{- if .Values.management.enabled }}
+            - name: PAS_MANAGEMENT_PORT
+              value: {{ .Values.management.port | quote }}
+            - name: PAS_MANAGEMENT_AUTH_MODE
+              value: {{ .Values.management.authMode | quote }}
+            - name: PAS_MANAGED_INSTANCE_ID
+              value: {{ .Values.management.managedIdentity.instanceId | quote }}
+            - name: PAS_MANAGED_INSTANCE_GENERATION
+              value: {{ .Values.management.managedIdentity.generation | quote }}
+            {{- if eq .Values.management.authMode "bearer-token" }}
+            - name: PAS_MANAGEMENT_TOKEN_FILE
+              value: /var/run/pas-management/token
+            {{- end }}
+            {{- end }}
           ports:
             - name: http
-              containerPort: 18760
+              containerPort: {{ .Values.service.port }}
               protocol: TCP
+            {{- if .Values.management.enabled }}
+            - name: management
+              containerPort: {{ .Values.management.port }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /livez
@@ -67,8 +103,22 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             {{- include "polardb-agentic-server.volumeMounts" . | nindent 12 }}
+            {{- if and .Values.management.enabled (eq .Values.management.authMode "bearer-token") }}
+            - name: management-token
+              mountPath: /var/run/pas-management
+              readOnly: true
+            {{- end }}
       volumes:
         {{- include "polardb-agentic-server.volumes" . | nindent 8 }}
+        {{- if and .Values.management.enabled (eq .Values.management.authMode "bearer-token") }}
+        - name: management-token
+          secret:
+            secretName: {{ .Values.management.tokenSecret.name }}
+            defaultMode: 0400
+            items:
+              - key: {{ .Values.management.tokenSecret.key }}
+                path: token
+        {{- end }}
       affinity:
         {{- if .Values.affinity }}
         {{- toYaml .Values.affinity | nindent 8 }}

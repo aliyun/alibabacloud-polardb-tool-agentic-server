@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -32,6 +33,14 @@ from server.enterprise_identity.service import (
 )
 
 pytest_plugins = ("tests._admin_api_fixtures",)
+
+
+def test_identity_source_model_leaves_the_database_stale_default_unchanged() -> None:
+    column = EnterpriseIdentitySource.__table__.c.stale_after_seconds
+
+    assert column.default is not None
+    assert column.default.arg == 7 * 24 * 60 * 60
+    assert column.server_default is None
 
 
 async def test_identity_source_directory_paginates_users_and_groups(client, setup) -> None:
@@ -102,6 +111,24 @@ async def test_identity_source_directory_paginates_users_and_groups(client, setu
         "group-203",
         "group-204",
     ]
+
+
+async def test_identity_source_uses_a_week_as_the_default_stale_ttl(client, setup) -> None:
+    http, admin_headers, _member_headers = client
+    created = await http.post(
+        "/api/identity-sources",
+        json={
+            "name": "Week stale threshold",
+            "provider": "sharepoint",
+            "tenant_id": "tenant-week-threshold",
+            "client_id": "client-week-threshold",
+            "client_secret": "secret-week-threshold",
+        },
+        headers=admin_headers,
+    )
+
+    assert created.status_code == 201
+    assert created.json()["stale_after_seconds"] == 7 * 24 * 60 * 60
 
 
 async def test_identity_source_directory_skips_identity_lookup_without_users(
@@ -349,6 +376,13 @@ async def test_admin_maps_a_pas_user_to_a_synced_enterprise_identity(client, set
     assert listed.status_code == 200
     assert listed.json()["items"] == [payload]
 
+    listed_synced = await http.get(
+        f"/api/identity-sources/users/{synced_alice.id}/identities",
+        headers=admin_headers,
+    )
+    assert listed_synced.status_code == 200
+    assert listed_synced.json()["items"] == [payload]
+
     updated = await http.put(
         f"/api/identity-sources/users/{member.id}/identities/{payload['id']}",
         json={"identity_source_id": source_id, "external_user_id": "ou_bob"},
@@ -368,6 +402,16 @@ async def test_admin_maps_a_pas_user_to_a_synced_enterprise_identity(client, set
         headers=admin_headers,
     )
     assert listed_after_delete.json()["items"] == []
+
+    listed_synced_after_delete = await http.get(
+        f"/api/identity-sources/users/{synced_alice.id}/identities",
+        headers=admin_headers,
+    )
+    assert listed_synced_after_delete.status_code == 200
+    synced_payload = listed_synced_after_delete.json()["items"]
+    assert len(synced_payload) == 1
+    assert synced_payload[0]["mapping_mode"] == "synced"
+    assert synced_payload[0]["native_principal_id"] == synced_alice.external_id
 
     users = await http.get("/api/users", headers=admin_headers)
     listed_member = next(item for item in users.json()["items"] if item["id"] == member.id)
@@ -560,7 +604,9 @@ async def test_admin_starts_feishu_tenant_verification(client, setup, monkeypatc
     assert states[0].state_hash != params["state"][0]
 
 
-async def test_feishu_user_login_creates_or_reuses_tenant_identity(client, setup, monkeypatch) -> None:
+async def test_feishu_user_login_creates_or_reuses_tenant_identity(
+    client, setup, monkeypatch
+) -> None:
     http, admin_headers, _member_headers = client
     factory, _admin, _member = setup
     monkeypatch.setattr(
@@ -902,6 +948,13 @@ async def test_admin_configures_encrypted_feishu_acl_membership_snapshot(client,
     assert saved.status_code == 200
     assert saved.json()["acl_membership_snapshot_configured"] is True
     assert "snapshot-secret" not in saved.text
+    conflict = await http.put(
+        f"/api/identity-sources/{created.json()['id']}/user-principal-memberships",
+        json={"users": [{"external_user_id": "ou-1", "principals": []}]},
+        headers=admin_headers,
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["code"] == "ACL_MEMBERSHIP_BACKEND_CONFLICT"
     async with factory() as session:
         source = await session.get(EnterpriseIdentitySource, created.json()["id"])
         assert source is not None and source.config_ciphertext is not None
@@ -1000,7 +1053,9 @@ async def test_admin_creates_encrypted_feishu_source_and_binds_enabled_space(cli
             "tenant_id": None,
             "status": "pending_tenant_verification",
             "last_synced_at": None,
+            "stale_after_seconds": 7 * 24 * 60 * 60,
             "last_error": None,
+            "sync_warning": None,
             "sync_supported": True,
             "acl_membership_snapshot_configured": False,
             "space_bindings": [knowledge_space_id],
@@ -1125,3 +1180,48 @@ async def test_force_sync_keeps_the_sanitized_failure_state(client, setup, monke
         assert source is not None
         assert source.status == EnterpriseIdentitySourceStatus.STALE
         assert source.last_error == "RuntimeError"
+
+
+async def test_force_sync_returns_before_timeout_and_continues_in_background(client, setup, monkeypatch) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, _member = setup
+    created = await http.post(
+        "/api/identity-sources",
+        json={
+            "name": "Feishu async directory",
+            "provider": "feishu",
+            "app_id": "cli_async",
+            "app_secret": "secret-async",
+        },
+        headers=admin_headers,
+    )
+    source_id = created.json()["id"]
+    async with factory() as session:
+        source = await session.get(EnterpriseIdentitySource, source_id)
+        assert source is not None
+        source.tenant_id = "tenant-async"
+        source.status = EnterpriseIdentitySourceStatus.PENDING_BINDING
+        await session.commit()
+
+    async def slow_sync(_session, source) -> None:
+        await asyncio.sleep(0.05)
+        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        source.last_error = None
+
+    monkeypatch.setattr("server.api.identity_sources.sync_identity_source", slow_sync)
+    monkeypatch.setattr("server.enterprise_identity.sync.sync_identity_source", slow_sync)
+    monkeypatch.setattr("server.api.identity_sources.SYNC_REQUEST_TIMEOUT_SECONDS", 0.001)
+
+    started = await http.post(
+        f"/api/identity-sources/{source_id}/sync",
+        headers=admin_headers,
+    )
+
+    assert started.status_code == 202
+    assert started.json()["last_error"] == "SYNC_IN_PROGRESS"
+    await asyncio.sleep(0.1)
+    async with factory() as session:
+        source = await session.get(EnterpriseIdentitySource, source_id)
+        assert source is not None
+        assert source.status == EnterpriseIdentitySourceStatus.ACTIVE
+        assert source.last_error is None

@@ -4,23 +4,29 @@ import {
   Button,
   Input,
   Modal,
+  Radio,
   Space,
   Table,
   Tag,
   Typography,
 } from 'antd'
 import { useTranslation } from 'react-i18next'
+import { useFeatures } from '../../hooks/useFeatures'
 
 import {
+  getMyWorkspace,
   issueMyAgentToken,
   listMyAgentConnections,
   regenerateMyAgentToken,
   revealMyAgentToken,
   revokeMyAgentToken,
+  selectMyDefaultAgent,
   type MyAgentConnection,
+  type UserWorkspace,
 } from '../../api/agentConnections'
 import { getAPIErrorMessage } from '../../api/client'
 import { buildMCPClientConfiguration } from '../AgentDetail/mcpConnection'
+import { copyText } from '../../utils/clipboard'
 
 const { Text, Title } = Typography
 
@@ -32,47 +38,20 @@ interface MCPConnectionsProps {
   onSelectKnowledgeBases?: (connection: MyAgentConnection) => void
 }
 
-async function copyText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-      return
-    } catch {
-      // Fall through for browsers that block Clipboard API on HTTP.
-    }
-  }
-
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.readOnly = true
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  textarea.style.pointerEvents = 'none'
-  document.body.appendChild(textarea)
-  textarea.select()
-  try {
-    if (!document.execCommand('copy')) throw new Error('Copy rejected')
-  } finally {
-    textarea.value = ''
-    textarea.remove()
-  }
-}
-
 export default function MCPConnections({
   onSelectKnowledgeBases,
 }: MCPConnectionsProps) {
   const { t } = useTranslation()
+  const { knowledge } = useFeatures()
   const [connections, setConnections] = useState<MyAgentConnection[]>([])
+  const [connectionTotal, setConnectionTotal] = useState(0)
+  const [connectionPage, setConnectionPage] = useState(1)
+  const [workspace, setWorkspace] = useState<UserWorkspace>()
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [password, setPassword] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
-  const [copyRequest, setCopyRequest] = useState<{
-    kind: CopyKind
-    connection: MyAgentConnection
-  } | null>(null)
   const [confirmation, setConfirmation] = useState<{
     action: ConfirmedAction
     connection: MyAgentConnection
@@ -86,11 +65,18 @@ export default function MCPConnections({
     token: string
   } | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (page = connectionPage) => {
     setLoading(true)
     setError(null)
     try {
-      setConnections((await listMyAgentConnections()).data)
+      const [connectionResponse, workspaceResponse] = await Promise.all([
+        listMyAgentConnections({ offset: (page - 1) * 20, limit: 20 }),
+        knowledge ? getMyWorkspace() : Promise.resolve({ data: undefined }),
+      ])
+      setConnections(connectionResponse.data.items)
+      setConnectionTotal(connectionResponse.data.total)
+      setConnectionPage(page)
+      setWorkspace(workspaceResponse.data)
     } catch (requestError) {
       setError(
         getAPIErrorMessage(requestError, t('mcpConnections.loadFailed')),
@@ -98,7 +84,23 @@ export default function MCPConnections({
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [connectionPage, t, knowledge])
+
+  const selectDefaultAgent = async (agentId: string) => {
+    setBusyId(agentId)
+    setError(null)
+    try {
+      setWorkspace((await selectMyDefaultAgent(agentId)).data)
+      setNotice(t('mcpConnections.defaultAgentUpdated'))
+    } catch (requestError) {
+      setError(getAPIErrorMessage(
+        requestError,
+        t('mcpConnections.defaultAgentUpdateFailed'),
+      ))
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   useEffect(() => {
     void load()
@@ -140,19 +142,12 @@ export default function MCPConnections({
     }
   }
 
-  const closeCopy = () => {
-    setCopyRequest(null)
-    setPassword('')
-  }
-
-  const copy = async () => {
-    if (!copyRequest || !password) return
-    const { connection, kind } = copyRequest
+  const copy = async (connection: MyAgentConnection, kind: CopyKind) => {
     setBusyId(connection.agent_id)
     setError(null)
     setNotice(null)
     try {
-      const response = await revealMyAgentToken(connection.agent_id, password)
+      const response = await revealMyAgentToken(connection.agent_id)
       const token = response.data.token
       if (!token) throw new Error(t('mcpConnections.tokenInactive'))
       try {
@@ -183,7 +178,6 @@ export default function MCPConnections({
       )
     } finally {
       setBusyId(null)
-      closeCopy()
     }
   }
 
@@ -222,16 +216,51 @@ export default function MCPConnections({
         </div>
         {error && <Alert type="error" showIcon role="alert" message={error} />}
         {notice && <Alert type="success" showIcon role="status" message={notice} />}
+        {workspace && workspace.status !== 'ready' && (
+          <Alert
+            type={workspace.status === 'selection_required' ? 'warning' : 'error'}
+            showIcon
+            message={t(`mcpConnections.workspaceStates.${workspace.status}`)}
+          />
+        )}
         <Table
           rowKey="agent_id"
           loading={loading}
           dataSource={connections}
-          pagination={false}
+          pagination={{
+            current: connectionPage,
+            pageSize: 20,
+            total: connectionTotal,
+            showSizeChanger: false,
+            onChange: (page) => void load(page),
+          }}
           locale={{ emptyText: t('mcpConnections.empty') }}
           columns={[
+            {
+              title: t('mcpConnections.defaultAgent'),
+              hidden: !knowledge,
+              width: 96,
+              align: 'center',
+              render: (_value, row: MyAgentConnection) => {
+                const available = workspace?.available_agents?.some(
+                  (agent) => agent.id === row.agent_id,
+                ) ?? false
+                return (
+                  <Radio
+                    checked={workspace?.default_agent?.id === row.agent_id}
+                    disabled={!available || busyId !== null}
+                    aria-label={t('mcpConnections.selectDefaultAgent', {
+                      agent: row.agent_name,
+                    })}
+                    onChange={() => void selectDefaultAgent(row.agent_id)}
+                  />
+                )
+              },
+            },
             { title: t('mcpConnections.agent'), dataIndex: 'agent_name' },
             {
               title: t('mcpConnections.polarragInstances'),
+              hidden: !knowledge,
               render: (_value, row: MyAgentConnection) =>
                 row.polarrag_instances.length > 0
                   ? row.polarrag_instances.map((instance) => (
@@ -269,21 +298,19 @@ export default function MCPConnections({
               title: t('mcpConnections.actions'),
               render: (_value, row: MyAgentConnection) => {
                 const active = row.token?.status === 'active'
-                const usable =
-                  row.agent_status === 'active' &&
-                  row.polarrag_instances.length > 0
+                const usable = row.agent_status === 'active'
                 return (
                   <Space wrap>
-                    <Button
+                    {knowledge && <Button
                       size="small"
                       aria-label={t('mcpConnections.knowledgeBasesFor', {
                         agent: row.agent_name,
                       })}
-                      disabled={!usable}
+                      disabled={!usable || row.polarrag_instances.length === 0}
                       onClick={() => onSelectKnowledgeBases?.(row)}
                     >
                       {t('mcpConnections.knowledgeBases')}
-                    </Button>
+                    </Button>}
                     {!active && (
                       <Button
                         type="primary"
@@ -300,35 +327,26 @@ export default function MCPConnections({
                     )}
                     {active && (
                       <>
-                        {row.password_reveal_available ? (
-                          <>
-                            <Button
-                              size="small"
-                              disabled={row.agent_status !== 'active'}
-                              onClick={() =>
-                                setCopyRequest({ kind: 'token', connection: row })
-                              }
-                            >
-                              {t('mcpConnections.copyToken')}
-                            </Button>
-                            <Button
-                              size="small"
-                              disabled={row.agent_status !== 'active'}
-                              onClick={() =>
-                                setCopyRequest({
-                                  kind: 'configuration',
-                                  connection: row,
-                                })
-                              }
-                            >
-                              {t('mcpConnections.copyConfiguration')}
-                            </Button>
-                          </>
-                        ) : (
-                          <Text type="secondary">
-                            {t('mcpConnections.ssoOneTimeOnly')}
-                          </Text>
-                        )}
+                        <Button
+                          size="small"
+                          disabled={
+                            row.agent_status !== 'active' || busyId !== null
+                          }
+                          loading={busyId === row.agent_id}
+                          onClick={() => void copy(row, 'token')}
+                        >
+                          {t('mcpConnections.copyToken')}
+                        </Button>
+                        <Button
+                          size="small"
+                          disabled={
+                            row.agent_status !== 'active' || busyId !== null
+                          }
+                          loading={busyId === row.agent_id}
+                          onClick={() => void copy(row, 'configuration')}
+                        >
+                          {t('mcpConnections.copyConfiguration')}
+                        </Button>
                         <Button
                           size="small"
                           disabled={!usable}
@@ -360,35 +378,6 @@ export default function MCPConnections({
           ]}
         />
       </Space>
-
-      <Modal
-        title={
-          copyRequest?.kind === 'token'
-            ? t('mcpConnections.copyTokenTitle')
-            : t('mcpConnections.copyConfigurationTitle')
-        }
-        open={copyRequest !== null}
-        okText={t('mcpConnections.copy')}
-        confirmLoading={
-          copyRequest !== null && busyId === copyRequest.connection.agent_id
-        }
-        okButtonProps={{ disabled: password.length === 0 }}
-        onCancel={closeCopy}
-        onOk={() => void copy()}
-        destroyOnHidden
-      >
-        <Text type="secondary">
-          {t('mcpConnections.passwordPrompt')}
-        </Text>
-        <Input.Password
-          aria-label={t('mcpConnections.currentPassword')}
-          autoComplete="current-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          onPressEnter={() => void copy()}
-          style={{ marginTop: 16 }}
-        />
-      </Modal>
 
       <Modal
         title={

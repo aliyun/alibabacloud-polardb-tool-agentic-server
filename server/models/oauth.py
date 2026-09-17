@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 from datetime import datetime
 
 from sqlalchemy import (
@@ -14,6 +15,17 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from server.models.base import Base, TimestampMixin, generate_uuid, utc_now
+
+
+class OAuthExternalApplicationStatus(str, enum.Enum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class OAuthExternalApplicationAgentPolicy(str, enum.Enum):
+    WORKSPACE_DEFAULT = "workspace_default"
+    FIXED = "fixed"
+    CALLER_SELECTABLE = "caller_selectable"
 
 
 class OAuthRegisteredClient(TimestampMixin, Base):
@@ -31,6 +43,29 @@ class OAuthRegisteredClient(TimestampMixin, Base):
     )
     scope: Mapped[str | None] = mapped_column(String(500), nullable=True)
     client_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+
+class OAuthExternalApplication(TimestampMixin, Base):
+    __tablename__ = "oauth_external_applications"
+
+    client_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    created_by: Mapped[str] = mapped_column(String(36), index=True)
+    provider_type: Mapped[str] = mapped_column(String(32))
+    targets: Mapped[str] = mapped_column(Text)
+    agent_policy: Mapped[str] = mapped_column(String(32))
+    fixed_agent_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    secret_created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    disabled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class OAuthAuthorizationCode(TimestampMixin, Base):
@@ -70,6 +105,31 @@ class OAuthRefreshToken(TimestampMixin, Base):
     expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ExternalTokenSession(TimestampMixin, Base):
+    __tablename__ = "external_token_sessions"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    token_family: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), index=True)
+    provider_type: Mapped[str] = mapped_column(String(32))
+    provider_key: Mapped[str] = mapped_column(String(255))
+    provider_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    external_subject: Mapped[str] = mapped_column(String(255))
+    subject_token_ciphertext: Mapped[str] = mapped_column(Text)
+    external_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_validated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True)
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

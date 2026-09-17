@@ -1,0 +1,3767 @@
+{
+  "baseline_head": "fb1c2d3e4f5a",
+  "compatible_manifest_digests": [
+    "814a368a1693949232057c975373f5af969e343f5278b7a0e4d18ba996eec456"
+  ],
+  "generation": 1,
+  "head": "9c1d2e3f4a5b",
+  "protocol_version": 1,
+  "release_classification": "EXPAND",
+  "required_sequence": 1,
+  "tables": {
+    "agent_api_tokens": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "last_used_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "revoked_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "token_ciphertext": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "token_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "token_prefix": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "agent_group_assignments": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "department_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "group_key": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "group_kind": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_domain": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "principal_id": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "provider": {
+        "length": 32,
+        "nullable": true,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "agent_instance_binding_capabilities": {
+      "binding_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "capability": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "agent_instance_bindings": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "credential_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "enabled": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "permission": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "agent_knowledge_scope_bindings": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "group_assignment_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "scope_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      }
+    },
+    "agent_knowledge_scopes": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "external_scope_id": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "knowledge_resource_ids_json": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "origin": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "agent_polarrag_instance_bindings": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "polarrag_instance_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "public_knowledge_resource_ids_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "agent_provisioning_bindings": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "backend_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "enabled": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "routing_order": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "agent_token_reveal_limits": {
+      "admin_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "request_count": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "window_started_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      }
+    },
+    "agent_user_assignments": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "is_direct": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "agent_user_tokens": {
+      "assignment_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "last_used_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "revoked_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "token_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "token_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "token_prefix": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "agents": {
+      "bulk_assignment_created_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "bulk_assignment_error": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "bulk_assignment_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "bulk_assignment_status": {
+        "default": "completed",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "bulk_assignment_worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "description": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "knowledge_scope_mode": {
+        "default": "LEGACY_ALL",
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "max_active_resources": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "oauth_redirect_uri": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "audit_logs": {
+      "action": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "actor_agent_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "actor_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "duration_ms": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "error_code": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "metadata_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "request_id": {
+        "length": 128,
+        "nullable": true,
+        "type": "string"
+      },
+      "status": {
+        "length": 7,
+        "nullable": false,
+        "type": "string"
+      },
+      "target_id": {
+        "length": 128,
+        "nullable": true,
+        "type": "string"
+      },
+      "target_type": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      }
+    },
+    "config_bootstrap_claim": {
+      "consumed_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "failed_attempts": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "row_version": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "singleton_key": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "token_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "config_operation_receipts": {
+      "action": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "actor_scope": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "idempotency_key_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_generation": {
+        "length": null,
+        "nullable": true,
+        "type": "bigint"
+      },
+      "instance_id": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "lease_expires_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "lease_owner": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "module": {
+        "length": 100,
+        "nullable": true,
+        "type": "string"
+      },
+      "request_digest": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "response_json": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "db_instance_resources": {
+      "allocated_instance_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "backend_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "capacity_released_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "cleanup_required": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "cleanup_step": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "client_token": {
+        "length": 128,
+        "nullable": false,
+        "type": "string"
+      },
+      "cooldown_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "database_name": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "delete_requested_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "delete_step": {
+        "default": "PENDING",
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "disconnected_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "effective_delete_cooldown_duration_hours": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "engine": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "failure_reason": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "fingerprint_version": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "name": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "next_retry_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "owner_agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "permission_snapshot_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "permission_template_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "permission_template_revision_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "provisioning_mode": {
+        "default": "MULTITENANT",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "provisioning_step": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "reclaim_policy": {
+        "length": 32,
+        "nullable": true,
+        "type": "string"
+      },
+      "request_fingerprint": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "resource_config_name": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "restore_failure_reason": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "restore_source_status": {
+        "length": 32,
+        "nullable": true,
+        "type": "string"
+      },
+      "retry_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "tenant_name": {
+        "length": 32,
+        "nullable": true,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "worker_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "dedicated_pool_members": {
+      "agentic_db_cluster_id": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "allocated_resource_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "cloud_request_id": {
+        "length": 128,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "database_name": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "delete_cooldown_duration_hours": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "failure_reason": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "host": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "last_ready_verified_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "lifecycle_password_ciphertext": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "lifecycle_username_ciphertext": {
+        "length": 1024,
+        "nullable": true,
+        "type": "string"
+      },
+      "next_retry_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "permission_snapshot_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "permission_template_revision_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "pool_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "port": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "preparation_step": {
+        "default": "PENDING",
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "purchase_token": {
+        "length": 128,
+        "nullable": true,
+        "type": "string"
+      },
+      "readiness_status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "retry_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "sandbox_password_ciphertext": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "sandbox_username_ciphertext": {
+        "length": 1024,
+        "nullable": true,
+        "type": "string"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "worker_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "dedicated_pools": {
+      "account_name_template": {
+        "default": "agentic",
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "available_health_check_interval_seconds": {
+        "default": "300",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "available_health_stale_after_seconds": {
+        "default": "600",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "config_revision": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "database_name_template": {
+        "default": "agentic",
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "delete_cooldown_duration_hours": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "endpoint_net_type": {
+        "default": "Private",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "lifecycle_admin_policy": {
+        "default": "PAS_MANAGED",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "max_create_requests_per_agent_per_hour": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "max_delete_requests_per_agent_per_hour": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "max_member_purchases_per_hour": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "max_total_members": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "permission_template_revision_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "purchase_config_json": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "purchase_profile_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "purchase_profile_revision": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "reclaim_policy": {
+        "default": "DESTROY",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "region_id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "security_ip_list": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "storage_type": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "target_size": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "vpc_id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "vswitch_id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "zone_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      }
+    },
+    "dedicated_worker_heartbeats": {
+      "config_revision": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "last_heartbeat_at": {
+        "default": "current_timestamp",
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "started_at": {
+        "default": "current_timestamp",
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "worker_id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "department_instance_bindings": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "default_permission": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "department_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "tenant_name": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "departments": {
+      "agentic_db_cluster_description": {
+        "length": 512,
+        "nullable": true,
+        "type": "string"
+      },
+      "agentic_db_cluster_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "description": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "max_instances": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "enterprise_directory_groups": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "display_name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "external_group_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "principal_type": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "status": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "enterprise_directory_memberships": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "external_group_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "external_member_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "member_type": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "enterprise_directory_users": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "display_name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "email": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "external_user_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "status": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "enterprise_identity_source_space_bindings": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "knowledge_space_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "enterprise_identity_sources": {
+      "config_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "last_error": {
+        "length": 512,
+        "nullable": true,
+        "type": "string"
+      },
+      "last_synced_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "provider": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "stale_after_seconds": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "sync_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "sync_next_retry_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "sync_retry_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "sync_warning_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "sync_worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "tenant_id": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "enterprise_principal_assignments": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_domain": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "pas_user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "principal_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "principal_type": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "provider": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "source": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "status": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_principal_key": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "valid_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "external_token_sessions": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "external_expires_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "external_subject": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "last_validated_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "provider_fingerprint": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "provider_key": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "provider_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "revoked_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "subject_token_ciphertext": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "token_family": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "feishu_tenant_verification_states": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "state_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "feishu_user_login_states": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "state_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "identity_source_user_principal_snapshot_entries": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "external_user_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "principal_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "principal_type": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "instance_credentials": {
+      "capability": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "database_name": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "password_ciphertext": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "purpose": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "resource_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "username_ciphertext": {
+        "length": 1024,
+        "nullable": true,
+        "type": "string"
+      },
+      "version": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      }
+    },
+    "instances": {
+      "allocation_mode": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "cluster_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "engine": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "host": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "owner_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "port": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "provisioning_step": {
+        "length": 17,
+        "nullable": true,
+        "type": "string"
+      },
+      "quota_held": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "region": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "topology": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "usage": {
+        "length": 1024,
+        "nullable": true,
+        "type": "string"
+      }
+    },
+    "knowledge_resources": {
+      "binding_mode": {
+        "length": 16,
+        "nullable": true,
+        "type": "string"
+      },
+      "catalog_sync_token": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "enabled": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_domain": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "kb_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "kb_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "knowledge_space_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "management_mode": {
+        "default": "NATIVE",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "owner_pas_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "polarrag_instance_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "space_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "sync_status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "upstream_updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "usage": {
+        "length": 1024,
+        "nullable": true,
+        "type": "string"
+      }
+    },
+    "managed_instance_bindings": {
+      "bound_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "instance_generation": {
+        "length": null,
+        "nullable": false,
+        "type": "bigint"
+      },
+      "instance_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "oauth_authorization_codes": {
+      "client_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "code_challenge": {
+        "length": 128,
+        "nullable": false,
+        "type": "string"
+      },
+      "code_challenge_method": {
+        "length": 10,
+        "nullable": false,
+        "type": "string"
+      },
+      "code_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "consumed_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "redirect_uri": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "redirect_uri_provided_explicitly": {
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "resource": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "scopes": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "oauth_denied_jtis": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "jti": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "oauth_external_applications": {
+      "agent_policy": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "client_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "disabled_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "fixed_agent_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "last_used_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "provider_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "secret_created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "targets": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "oauth_pending_auths": {
+      "client_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "code_challenge": {
+        "length": 128,
+        "nullable": false,
+        "type": "string"
+      },
+      "code_challenge_method": {
+        "length": 10,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "idp_authorize_url": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "idp_code_verifier_enc": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "idp_nonce": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "idp_state": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "redirect_uri": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "resource": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "scopes": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "session_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "state": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "oauth_refresh_tokens": {
+      "client_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "code_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "resource": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "revoked_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "scopes": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "token_family": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "token_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "oauth_registered_clients": {
+      "client_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "client_id_issued_at": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "client_name": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "client_secret_enc": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "client_secret_expires_at": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "grant_types": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "redirect_uris": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "response_types": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "scope": {
+        "length": 500,
+        "nullable": true,
+        "type": "string"
+      },
+      "token_endpoint_auth_method": {
+        "length": 50,
+        "nullable": true,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "oidc_login_states": {
+      "code_verifier_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "config_digest": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "config_revision": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "consumed_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "error_code": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_snapshot_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "initiator_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "nonce_ciphertext": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "purpose": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "redirect_path": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "state_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "permission_sync_jobs": {
+      "completed_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "confirmed_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "failed_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "failure_reason": {
+        "length": 2048,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "mode": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "next_retry_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "target_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "target_scope": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "template_revision_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "total_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "worker_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "permission_sync_targets": {
+      "change_required": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "failure_reason": {
+        "length": 128,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "job_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "member_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "next_retry_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "previous_revision_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "resource_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "retry_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "worker_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "permission_template_revisions": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "grant_option": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "privileges_json": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "revision": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "template_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "permission_templates": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "description": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "polarrag_instances": {
+      "ca_bundle_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "capabilities_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "host": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "last_checked_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "last_error_code": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "password_ciphertext": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "plugin_version": {
+        "length": 128,
+        "nullable": true,
+        "type": "string"
+      },
+      "port": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "scheme": {
+        "length": 8,
+        "nullable": false,
+        "type": "string"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "tls_verify": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "username_ciphertext": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      }
+    },
+    "polarrag_spaces": {
+      "acl_mode": {
+        "default": "ENFORCED",
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "catalog_sync_error": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "catalog_sync_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "catalog_sync_result_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "catalog_sync_status": {
+        "default": "idle",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "catalog_sync_worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "enabled": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "identity_domain": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "knowledge_space_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "last_synced_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_access_key_id_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "oss_access_key_secret_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "oss_bucket": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "oss_config_validated": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "oss_endpoint": {
+        "length": 512,
+        "nullable": true,
+        "type": "string"
+      },
+      "oss_last_error_code": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "oss_object_prefix": {
+        "length": 512,
+        "nullable": true,
+        "type": "string"
+      },
+      "oss_validated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "polarrag_instance_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "space_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "polarrag_upload_cleanups": {
+      "cleanup_after": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "cleanup_attempts": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "cleanup_error_code": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "cleanup_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "knowledge_space_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "object_state": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "operation_kind": {
+        "length": 16,
+        "nullable": true,
+        "type": "string"
+      },
+      "operation_token": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "oss_access_key_id_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "oss_access_key_secret_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "oss_bucket": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_endpoint": {
+        "length": 512,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_multipart_upload_id": {
+        "length": 512,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_object_key": {
+        "length": 1024,
+        "nullable": false,
+        "type": "string"
+      },
+      "polarrag_instance_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "reconcile_required": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "submission_payload_ciphertext": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "upload_session_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "polarrag_upload_sessions": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "completed_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "content_type": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "doc_id": {
+        "length": 512,
+        "nullable": true,
+        "type": "string"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "file_md5": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "file_sha256": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "file_size_bytes": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "file_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "filename": {
+        "length": 512,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "knowledge_resource_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_bucket": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_endpoint": {
+        "length": 512,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_multipart_upload_id": {
+        "length": 512,
+        "nullable": false,
+        "type": "string"
+      },
+      "oss_object_key": {
+        "length": 1024,
+        "nullable": false,
+        "type": "string"
+      },
+      "part_count": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "part_size_bytes": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "pas_user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "status": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "upstream_status": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      }
+    },
+    "provisioning_backend_health": {
+      "backend_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "checked_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "consecutive_failures": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "error_code": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "healthy": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "provisioning_backends": {
+      "admin_credential_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "backend_type": {
+        "default": "MULTITENANT",
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "config_revision": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "ddl_concurrency": {
+        "default": "4",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "dedicated_pool_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "delete_cooldown_duration_hours": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "max_active_resources": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "permission_template_revision_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "priority": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "resource_max_cpu": {
+        "default": "2",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "resource_min_cpu": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "provisioning_capacities": {
+      "active_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "scope_id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "scope_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "provisioning_operation_budgets": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "operation": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "request_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "scope_id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "scope_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "window_started_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      }
+    },
+    "quota_counters": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "current_count": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "max_limit": {
+        "length": null,
+        "nullable": true,
+        "type": "integer"
+      },
+      "scope": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "secret_reveal_limits": {
+      "admin_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "request_count": {
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "target_id": {
+        "length": 128,
+        "nullable": false,
+        "type": "string"
+      },
+      "target_kind": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "window_started_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      }
+    },
+    "sharepoint_user_login_states": {
+      "code_verifier_ciphertext": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "nonce_ciphertext": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "state_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "system_config": {
+      "config_key": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "config_value": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "config_version": {
+        "length": null,
+        "nullable": false,
+        "type": "bigint"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "user_departments": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "department_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "is_primary": {
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "user_external_identities": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "external_subject": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_provider": {
+        "length": 100,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "user_instance_binding_capabilities": {
+      "binding_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "capability": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "user_instance_bindings": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "credential_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "enabled": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "instance_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "origin": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "permission": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "provisioning_step": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "tenant_name": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "user_refresh_tokens": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "revoked_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "token_family": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "token_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "user_workspaces": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "default_agent_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "user_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      }
+    },
+    "users": {
+      "auth_provider": {
+        "length": 7,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "credential_epoch": {
+        "default": "1",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "default_instance_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "display_name": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "email": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "external_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "password_hash": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "password_state": {
+        "length": 32,
+        "nullable": true,
+        "type": "string"
+      },
+      "provisioning_mode": {
+        "length": 11,
+        "nullable": true,
+        "type": "string"
+      },
+      "role": {
+        "length": 6,
+        "nullable": false,
+        "type": "string"
+      },
+      "status": {
+        "length": 8,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    }
+  }
+}

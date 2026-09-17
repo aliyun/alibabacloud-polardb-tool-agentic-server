@@ -169,7 +169,7 @@ async def tool_setup():
             "other_token": other_token,
             "backend_id": backend.id,
             "rest_token": create_access_token(
-                {"sub": admin.id, "role": "admin"}
+                {"sub": admin.id, "role": "admin", "credential_epoch": admin.credential_epoch}
             ),
         }
     yield result

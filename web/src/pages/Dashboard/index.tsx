@@ -1,3 +1,4 @@
+import { useFeatures } from '../../hooks/useFeatures'
 import { useEffect, useState } from 'react'
 import { Alert, Spin } from 'antd'
 import {
@@ -27,6 +28,7 @@ interface DashboardProps {
 }
 
 export default function Dashboard({ isAdmin }: DashboardProps) {
+  const { knowledge } = useFeatures()
   const [stats, setStats] = useState<DashboardViewStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -34,11 +36,12 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
   const { t } = useTranslation()
 
   useEffect(() => {
-    getDashboardStats(isAdmin)
+    setError(null)
+    getDashboardStats(isAdmin, knowledge)
       .then(setStats)
       .catch(() => setError(t('dashboard.loadFailed')))
       .finally(() => setLoading(false))
-  }, [isAdmin, t])
+  }, [isAdmin, t, knowledge])
 
   if (loading) {
     return (
@@ -64,7 +67,7 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
       ]
     : [
         { icon: <DatabaseOutlined />, color: 'purple', value: memberStats?.database_instances ?? 0, label: t('dashboard.databaseInstances') },
-        { icon: <FileTextOutlined />, color: 'cyan', value: memberStats?.knowledge_resources ?? 0, label: t('dashboard.knowledgeResources') },
+        ...(knowledge ? [{ icon: <FileTextOutlined />, color: 'cyan', value: memberStats?.knowledge_resources ?? 0, label: t('dashboard.knowledgeResources') }] : []),
       ]
 
   const quickActions = isAdmin
@@ -75,15 +78,15 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
           iconColor: '#0071e3',
           title: t('dashboard.registerInstance'),
           desc: t('dashboard.registerInstanceDescription'),
-          path: '/instances',
+          path: '/resources',
         },
         {
           icon: <UserAddOutlined />,
           iconBg: 'rgba(52, 199, 89, 0.1)',
           iconColor: '#34c759',
-          title: t('dashboard.manageUsers'),
+          title: t('access.accounts'),
           desc: t('dashboard.manageUsersDescription'),
-          path: '/users',
+          path: '/access',
         },
         {
           icon: <SearchOutlined />,
@@ -107,9 +110,9 @@ export default function Dashboard({ isAdmin }: DashboardProps) {
           icon: <DatabaseOutlined />,
           iconBg: 'rgba(0, 113, 227, 0.1)',
           iconColor: '#0071e3',
-          title: t('dashboard.viewMyInstances'),
+          title: t('access.myResources'),
           desc: t('dashboard.viewMyInstancesDescription'),
-          path: '/my-instances',
+          path: '/my-resources',
         },
       ]
 

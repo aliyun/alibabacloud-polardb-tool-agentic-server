@@ -199,7 +199,7 @@ async def test_admin_reorders_complete_dedicated_route_list(client, setup):
         headers=admin_headers,
     )
     dedicated = [
-        item for item in listed.json()
+        item for item in listed.json()["items"]
         if item["backend_type"] == "dedicated_pool"
     ]
     assert [item["id"] for item in dedicated] == [
@@ -219,7 +219,9 @@ async def test_admin_reorders_complete_dedicated_route_list(client, setup):
         headers=admin_headers,
     )
     remaining = next(
-        item for item in listed.json() if item["id"] == first.json()["id"]
+        item
+        for item in listed.json()["items"]
+        if item["id"] == first.json()["id"]
     )
     assert remaining["routing_order"] == 0
 
@@ -258,7 +260,7 @@ async def test_instance_access_list_ignores_dedicated_pool_routes(
         headers=admin_headers,
     )
     assert instance_access.status_code == 200
-    assert instance_access.json() == []
+    assert instance_access.json()["items"] == []
 
 
 async def test_instance_access_allows_provisioning_only_without_credential(
@@ -378,10 +380,10 @@ async def test_direct_binding_expands_dependencies_and_is_audited(client, setup)
         headers=admin_headers,
     )
     assert listed.status_code == 200
-    assert [row["instance_id"] for row in listed.json()] == [
+    assert [row["instance_id"] for row in listed.json()["items"]] == [
         created.json()["instance_id"]
     ]
-    assert listed.json()[0]["capabilities"] == created.json()["capabilities"]
+    assert listed.json()["items"][0]["capabilities"] == created.json()["capabilities"]
     async with factory() as session:
         audit = await session.scalar(
             select(AuditLog).where(
@@ -618,7 +620,7 @@ async def test_provisioning_binding_requires_active_backend_and_guards_delete(cl
         f"/api/agents/{agent.id}/provisioning-bindings",
         headers=admin_headers,
     )
-    assert [row["id"] for row in listed.json()] == [binding_id]
+    assert [row["id"] for row in listed.json()["items"]] == [binding_id]
 
     async with factory() as session:
         resource = DBInstanceResource(
@@ -711,7 +713,7 @@ async def test_agent_resources_exclude_deleted_and_are_scoped(client, setup):
 
     response = await http.get(f"/api/agents/{agent.id}/resources", headers=admin_headers)
     assert response.status_code == 200
-    assert [item["client_token"] for item in response.json()] == ["ready"]
+    assert [item["client_token"] for item in response.json()["items"]] == ["ready"]
 
 
 async def test_binding_routes_are_admin_only(client, setup):

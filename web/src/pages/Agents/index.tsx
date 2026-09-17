@@ -27,6 +27,7 @@ import PageContainer from '../../components/PageContainer'
 import { formatDateTime } from '../../i18n/format'
 
 const { Text, Title } = Typography
+const PAGE_SIZE = 20
 
 interface CreateAgentForm {
   name: string
@@ -37,6 +38,9 @@ interface CreateAgentForm {
 export default function Agents() {
   const { t, i18n } = useTranslation()
   const [agents, setAgents] = useState<Agent[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -46,18 +50,24 @@ export default function Agents() {
   const [reconnectNotice, setReconnectNotice] = useState(false)
   const [form] = Form.useForm<CreateAgentForm>()
 
-  const loadAgents = useCallback(async () => {
+  const loadAgents = useCallback(async (nextPage = page, nextSearch = search) => {
     setLoading(true)
     setError(null)
     try {
-      const response = await listAgents()
-      setAgents(response.data)
+      const response = await listAgents({
+        offset: (nextPage - 1) * PAGE_SIZE,
+        limit: PAGE_SIZE,
+        ...(nextSearch ? { search: nextSearch } : {}),
+      })
+      setAgents(response.data.items)
+      setTotal(response.data.total)
+      setPage(nextPage)
     } catch (requestError) {
       setError(getAPIErrorMessage(requestError, t('agents.loadFailed')))
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [page, search, t])
 
   useEffect(() => {
     void loadAgents()
@@ -119,6 +129,15 @@ export default function Agents() {
       }
     >
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
+        <Input.Search
+          allowClear
+          placeholder={t('common.search')}
+          onSearch={(value) => {
+            const nextSearch = value.trim()
+            setSearch(nextSearch)
+            void loadAgents(1, nextSearch)
+          }}
+        />
         {error && (
           <Alert
             type="error"
@@ -237,7 +256,13 @@ export default function Agents() {
           <Table
             rowKey="id"
             dataSource={agents}
-            pagination={false}
+            pagination={{
+              current: page,
+              pageSize: PAGE_SIZE,
+              total,
+              showSizeChanger: false,
+              onChange: (nextPage) => void loadAgents(nextPage),
+            }}
             scroll={{ x: 760 }}
             columns={[
               {

@@ -36,3 +36,9 @@ case "$MODE" in
     exit 2
     ;;
 esac
+
+if [ "${PAS_TEST_SCALABILITY_DATABASE_OK:-0}" = "1" ]; then
+  PAS_TEST_SCALABILITY_DATABASE_URL=$PAS_DATABASE_URL
+  export PAS_TEST_SCALABILITY_DATABASE_URL
+  uv run pytest tests/integration/test_pas_scalability_backends.py -q
+fi

@@ -55,7 +55,9 @@ describe('PolarRAG admin API client', () => {
     await syncPolarRAGSpace('instance/a', 'space/a')
     await disablePolarRAGSpace('instance/a', 'space/a')
 
-    expect(api.get).toHaveBeenNthCalledWith(1, '/api/polarrag/instances')
+    expect(api.get).toHaveBeenNthCalledWith(1, '/api/polarrag/instances', {
+      params: {},
+    })
     expect(api.post).toHaveBeenNthCalledWith(
       1,
       '/api/polarrag/instances',
@@ -75,6 +77,7 @@ describe('PolarRAG admin API client', () => {
     expect(api.get).toHaveBeenNthCalledWith(
       2,
       '/api/polarrag/instances/instance%2Fa/spaces',
+      { params: {} },
     )
     expect(api.post).toHaveBeenNthCalledWith(
       3,
@@ -110,6 +113,7 @@ describe('PolarRAG admin API client', () => {
 
     expect(api.get).toHaveBeenCalledWith(
       '/api/polarrag/users/user%2Fa/principals',
+      { params: {} },
     )
     expect(api.post).toHaveBeenCalledWith(
       '/api/polarrag/users/user%2Fa/principals',

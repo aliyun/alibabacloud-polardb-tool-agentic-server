@@ -99,6 +99,17 @@ def test_backend_ci_fetches_frozen_contract_history() -> None:
     assert checkout["with"]["fetch-depth"] == 0
 
 
+def test_migration_ci_fetches_schema_policy_base_history() -> None:
+    workflow = _workflow("ci.yml")
+    checkout = next(
+        step
+        for step in workflow["jobs"]["migrations"]["steps"]
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
+
+    assert checkout["with"]["fetch-depth"] == 0
+
+
 def test_public_commit_policy_validates_only_the_pushed_main_head() -> None:
     workflow = _workflow("ci.yml")
     steps = workflow["jobs"]["public-boundary"]["steps"]

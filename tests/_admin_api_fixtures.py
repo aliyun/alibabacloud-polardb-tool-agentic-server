@@ -68,17 +68,18 @@ async def setup():
 @pytest.fixture
 async def client(setup):
     _, admin, member = setup
-    app = create_app()
+    from tests._knowledge_helpers import enable_knowledge_routes
+    app = enable_knowledge_routes(create_app())
     admin_headers = {
         "Authorization": (
             "Bearer "
-            + create_access_token({"sub": admin.id, "role": "admin"})
+            + create_access_token({"sub": admin.id, "role": "admin", "credential_epoch": admin.credential_epoch})
         )
     }
     member_headers = {
         "Authorization": (
             "Bearer "
-            + create_access_token({"sub": member.id, "role": "member"})
+            + create_access_token({"sub": member.id, "role": "member", "credential_epoch": member.credential_epoch})
         )
     }
     async with AsyncClient(

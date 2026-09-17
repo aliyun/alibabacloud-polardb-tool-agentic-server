@@ -33,12 +33,23 @@ server container.
 SQLite is supported for local development and tests, not production
 multi-replica deployment.
 
+MySQL 8.0 releases before 8.0.16 do not store or enforce the CHECK constraints
+used by newer PAS schemas. The migration command omits only unsupported CHECK
+DDL on those servers and still applies tables, columns, indexes, and column
+width changes. PAS enforces the same invariants on its supported write paths;
+do not write metadata tables directly.
+
 ## Upgrade compatibility
 
 Database compatibility is determined by the Alembic revision, not the
-application version string. Run the release's migration Job or
-`pas database migrate` once before rolling out its application Pods. Startup
-fails closed for empty, older, newer, unavailable, or ambiguous schema state.
+application version string. Compose and Helm run the release's migration Job
+or `pas database migrate` before replacing the application. A managed rolling
+upgrade runs or replays one deterministic CoreV1 one-shot migration Pod after
+the first application Pod has switched to the target image but before that
+drained Pod returns to traffic.
+Startup fails closed for empty, older, newer, unavailable, ambiguous, or
+recognized same-revision physical drift. A current Alembic revision alone is
+not sufficient evidence that the physical schema is complete.
 
 Downgrading application code after a forward migration is not generally safe.
 Restore a compatible backup instead of attempting an automatic downgrade.

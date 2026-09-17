@@ -2,6 +2,8 @@
 
 **English** | [简体中文](../../zh-cn/getting-started/agents-and-mcp.md)
 
+The console groups people under **Access management → Personal accounts** and Agents under **Service accounts**. Use **Resources** for database grants and **Connect MCP** for personal access without an Agent. Existing advanced controls and Agent connections described below remain supported. See [Accounts and resources](../administration/accounts-and-resources.md).
+
 This page creates an Agent, issues a Token, grants it instance access, and
 connects an MCP client to call the database instance tools.
 

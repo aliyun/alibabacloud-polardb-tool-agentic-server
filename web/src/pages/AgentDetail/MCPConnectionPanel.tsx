@@ -1,19 +1,11 @@
 import { useEffect, useState } from 'react'
-import {
-  Alert,
-  Button,
-  Descriptions,
-  Input,
-  Modal,
-  Space,
-  Tag,
-  Typography,
-} from 'antd'
+import { Alert, Button, Descriptions, Space, Tag, Typography } from 'antd'
 import { useTranslation } from 'react-i18next'
 
 import type { AgentTokenStatus } from '../../api/agents'
 import { buildMCPClientConfiguration } from './mcpConnection'
 import { formatDateTime } from '../../i18n/format'
+import { copyText } from '../../utils/clipboard'
 
 const { Text, Title } = Typography
 
@@ -28,7 +20,7 @@ export interface MCPConnectionPanelProps {
   tokenStatus: AgentTokenStatus | null
   expiresAt: string | null
   lastUsedAt: string | null
-  revealToken: (password: string) => Promise<string>
+  revealToken: () => Promise<string>
   onRegenerate: () => void
   onRevoke: () => void
 }
@@ -51,51 +43,41 @@ export default function MCPConnectionPanel({
   onRevoke,
 }: MCPConnectionPanelProps) {
   const { t, i18n } = useTranslation()
-  const [copyKind, setCopyKind] = useState<CopyKind | null>(null)
-  const [password, setPassword] = useState('')
-  const [copying, setCopying] = useState(false)
+  const [copying, setCopying] = useState<CopyKind | null>(null)
   const [copyResult, setCopyResult] = useState<CopyResult>(null)
   const copyDisabled = tokenStatus !== 'active' || tokenPrefix === null
   const masked = maskedToken(tokenPrefix)
 
   useEffect(() => {
-    setCopyKind(null)
-    setPassword('')
+    setCopying(null)
     setCopyResult(null)
   }, [agentName, mcpUrl, tokenPrefix])
 
-  const closeCopy = () => {
-    setCopyKind(null)
-    setPassword('')
-  }
-
-  const copy = async () => {
-    if (!copyKind || !password || copyDisabled) return
-    setCopying(true)
+  const copy = async (copyKind: CopyKind) => {
+    if (copying !== null || copyDisabled) return
+    setCopying(copyKind)
     setCopyResult(null)
     try {
-      if (!navigator.clipboard) throw new Error('Clipboard unavailable')
-      const token = await revealToken(password)
+      const token = await revealToken()
       const content =
         copyKind === 'token'
           ? token
           : buildMCPClientConfiguration(agentName, mcpUrl, token)
-      await navigator.clipboard.writeText(content)
+      await copyText(content)
       setCopyResult({
         status: 'success',
         message:
           copyKind === 'token'
-            ? 'Agent Token copied'
-            : 'JSON configuration copied',
+            ? t('components.mcpConnection.tokenCopied')
+            : t('components.mcpConnection.configurationCopied'),
       })
     } catch {
       setCopyResult({
         status: 'error',
-        message: 'Password verification failed or Token unavailable.',
+        message: t('components.mcpConnection.copyFailed'),
       })
     } finally {
-      setCopying(false)
-      closeCopy()
+      setCopying(null)
     }
   }
 
@@ -146,15 +128,17 @@ export default function MCPConnectionPanel({
 
       <Space wrap style={{ marginTop: 16 }}>
         <Button
-          disabled={copyDisabled}
-          onClick={() => setCopyKind('token')}
+          disabled={copyDisabled || copying !== null}
+          loading={copying === 'token'}
+          onClick={() => void copy('token')}
         >
           {t('components.mcpConnection.copyToken')}
         </Button>
         <Button
           type="primary"
-          disabled={copyDisabled}
-          onClick={() => setCopyKind('configuration')}
+          disabled={copyDisabled || copying !== null}
+          loading={copying === 'configuration'}
+          onClick={() => void copy('configuration')}
         >
           {t('components.mcpConnection.copyConfiguration')}
         </Button>
@@ -176,30 +160,6 @@ export default function MCPConnectionPanel({
         />
       )}
 
-      <Modal
-        title={copyKind === 'token'
-          ? t('components.mcpConnection.copyTokenTitle')
-          : t('components.mcpConnection.copyConfigurationTitle')}
-        open={copyKind !== null}
-        okText={t('components.mcpConnection.copy')}
-        confirmLoading={copying}
-        okButtonProps={{ disabled: password.length === 0 }}
-        onCancel={closeCopy}
-        onOk={() => void copy()}
-        destroyOnHidden
-      >
-        <Text type="secondary">
-          {t('components.mcpConnection.passwordPrompt')}
-        </Text>
-        <Input.Password
-          aria-label={t('components.mcpConnection.currentPassword')}
-          autoComplete="current-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-          onPressEnter={() => void copy()}
-          style={{ marginTop: 16 }}
-        />
-      </Modal>
     </>
   )
 }

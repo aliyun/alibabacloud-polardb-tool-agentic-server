@@ -29,12 +29,46 @@ const bindings = [
   },
 ]
 
+const instances = [
+  {
+    id: 'rag-1',
+    name: 'Primary RAG',
+    scheme: 'https' as const,
+    host: 'primary-rag.example.test',
+    port: 443,
+    tls_verify: true,
+    status: 'active' as const,
+    plugin_version: '1.0.0',
+    capabilities: null,
+    last_checked_at: '2026-08-24T00:00:00Z',
+    last_error_code: null,
+    created_at: '2026-08-24T00:00:00Z',
+    updated_at: null,
+  },
+  {
+    id: 'rag-2',
+    name: 'Secondary RAG',
+    scheme: 'https' as const,
+    host: 'secondary-rag.example.test',
+    port: 443,
+    tls_verify: true,
+    status: 'active' as const,
+    plugin_version: '1.0.0',
+    capabilities: null,
+    last_checked_at: '2026-08-24T00:00:00Z',
+    last_error_code: null,
+    created_at: '2026-08-24T00:00:00Z',
+    updated_at: null,
+  },
+]
+
 const initialPreview = {
   selection: {
     identity_source_id: 'source-1',
     all_synced_users: false,
     directory_group_ids: ['directory-group-1'],
     pas_user_ids: ['pas-user-1'],
+    polarrag_instance_ids: ['rag-1'],
     knowledge_space_ids: ['space-1'],
   },
   creates: [
@@ -76,7 +110,17 @@ async function selectSource(user: ReturnType<typeof userEvent.setup>) {
       name: 'Enterprise identity source',
     }),
   )
-  await user.click(await screen.findByText('SharePoint directory'))
+  await user.click(await screen.findByText('SharePoint directory (active)'))
+}
+
+async function selectInstance(
+  user: ReturnType<typeof userEvent.setup>,
+  name = 'Primary RAG',
+) {
+  await user.click(
+    screen.getByRole('combobox', { name: 'PolarRAG instances' }),
+  )
+  await user.click(await screen.findByText(name))
 }
 
 async function selectSourceByName(
@@ -88,7 +132,7 @@ async function selectSourceByName(
       name: 'Enterprise identity source',
     }),
   )
-  await user.click(await screen.findByText(name))
+  await user.click(await screen.findByText(`${name} (active)`))
 }
 
 function deferred<T>() {
@@ -150,6 +194,13 @@ describe('Agent enterprise access drawer', () => {
                     principal_type: 'group',
                     status: 'active',
                   },
+                  {
+                    id: 'directory-department-1',
+                    external_group_id: 'external-department-1',
+                    display_name: 'Research',
+                    principal_type: 'department',
+                    status: 'active',
+                  },
                 ],
                 total: 1,
               },
@@ -203,6 +254,7 @@ describe('Agent enterprise access drawer', () => {
       <EnterpriseAccessDrawer
         agentId="agent-1"
         bindings={bindings}
+        instances={instances}
         open
         onClose={vi.fn()}
         onApplied={vi.fn()}
@@ -256,7 +308,7 @@ describe('Agent enterprise access drawer', () => {
     ).not.toBeChecked()
   })
 
-  it('shows only Spaces on instances already bound to the Agent', async () => {
+  it('shows active departments alongside enterprise groups', async () => {
     const user = userEvent.setup()
     render(
       <EnterpriseAccessDrawer
@@ -267,12 +319,66 @@ describe('Agent enterprise access drawer', () => {
         onApplied={vi.fn()}
       />,
     )
+
+    await selectSource(user)
+    await user.click(screen.getByRole('combobox', { name: 'Enterprise groups' }))
+
+    expect(await screen.findByText('Research (department)')).toBeInTheDocument()
+  })
+
+  it('shows a stale source instead of hiding its persisted directory', async () => {
+    vi.mocked(listEnterpriseIdentitySources).mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: 'source-stale',
+            name: 'Feishu directory',
+            provider: 'feishu',
+            status: 'stale',
+            last_synced_at: '2026-08-24T00:00:00Z',
+          },
+        ],
+      },
+    } as never)
+    const user = userEvent.setup()
+    render(
+      <EnterpriseAccessDrawer
+        agentId="agent-1"
+        bindings={bindings}
+        open
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+
+    await user.click(
+      await screen.findByRole('combobox', {
+        name: 'Enterprise identity source',
+      }),
+    )
+
+    expect(await screen.findByText('Feishu directory (stale)')).toBeInTheDocument()
+  })
+
+  it('shows Spaces from any selected active instance', async () => {
+    const user = userEvent.setup()
+    render(
+      <EnterpriseAccessDrawer
+        agentId="agent-1"
+        bindings={bindings}
+        instances={instances}
+        open
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
     await selectSource(user)
 
+    await selectInstance(user, 'Secondary RAG')
     await user.click(screen.getByRole('combobox', { name: 'PolarRAG Spaces' }))
 
-    expect(await screen.findByText('Bound Space')).toBeInTheDocument()
-    expect(screen.queryByText('Unbound Space')).not.toBeInTheDocument()
+    expect(await screen.findByText('Unbound Space')).toBeInTheDocument()
+    expect(screen.queryByText('Bound Space')).not.toBeInTheDocument()
   })
 
   it('selects and clears all eligible Spaces from the dropdown', async () => {
@@ -281,6 +387,7 @@ describe('Agent enterprise access drawer', () => {
       <EnterpriseAccessDrawer
         agentId="agent-1"
         bindings={bindings}
+        instances={instances}
         open
         onClose={vi.fn()}
         onApplied={vi.fn()}
@@ -292,6 +399,7 @@ describe('Agent enterprise access drawer', () => {
       screen.getByRole('combobox', { name: 'Enterprise groups' }),
     )
     await user.click(await screen.findByText('Engineering'))
+    await selectInstance(user)
     await user.click(screen.getByRole('combobox', { name: 'PolarRAG Spaces' }))
     await user.click(await screen.findByRole('button', { name: 'Select all' }))
 
@@ -385,6 +493,125 @@ describe('Agent enterprise access drawer', () => {
         .mocked(listEnterpriseIdentitySourceDirectory)
         .mock.calls.filter(([, entryType]) => entryType === 'groups'),
     ).toHaveLength(2)
+  })
+
+  it('pages enterprise group candidates inside the dropdown', async () => {
+    vi.mocked(listEnterpriseIdentitySourceDirectory).mockImplementation(
+      async (_sourceId, entryType, options) => {
+        if (entryType === 'users') {
+          return {
+            data: {
+              users: [],
+              groups: [],
+              total: 0,
+            },
+          } as never
+        }
+        const secondPage = options?.offset === 100
+        return {
+          data: {
+            users: [],
+            groups: [
+              {
+                id: secondPage ? 'directory-group-2' : 'directory-group-1',
+                external_group_id: secondPage ? 'external-group-2' : 'external-group-1',
+                display_name: secondPage ? 'Second page group' : 'First page group',
+                principal_type: 'group',
+                status: 'active',
+              },
+            ],
+            total: 200,
+          },
+        } as never
+      },
+    )
+    const user = userEvent.setup()
+    render(
+      <EnterpriseAccessDrawer
+        agentId="agent-1"
+        bindings={bindings}
+        open
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+
+    await selectSource(user)
+    await user.click(screen.getByRole('combobox', { name: 'Enterprise groups' }))
+    expect(await screen.findByText('First page group')).toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Next enterprise group page' }),
+    )
+    await waitFor(() =>
+      expect(listEnterpriseIdentitySourceDirectory).toHaveBeenCalledWith(
+        'source-1',
+        'groups',
+        { offset: 100, limit: 100 },
+      ),
+    )
+    expect(await screen.findByText('Second page group')).toBeInTheDocument()
+  })
+
+  it('pages synchronized PAS user candidates inside the dropdown', async () => {
+    vi.mocked(listEnterpriseIdentitySourceDirectory).mockImplementation(
+      async (_sourceId, entryType, options) => {
+        if (entryType === 'groups') {
+          return {
+            data: {
+              users: [],
+              groups: [],
+              total: 0,
+            },
+          } as never
+        }
+        const secondPage = options?.offset === 100
+        return {
+          data: {
+            users: [
+              {
+                id: secondPage ? 'directory-user-2' : 'directory-user-1',
+                pas_user_id: secondPage ? 'pas-user-2' : 'pas-user-1',
+                external_user_id: secondPage ? 'external-user-2' : 'external-user-1',
+                display_name: secondPage ? 'Second page user' : 'First page user',
+                email: null,
+                status: 'active',
+              },
+            ],
+            groups: [],
+            total: 200,
+          },
+        } as never
+      },
+    )
+    const user = userEvent.setup()
+    render(
+      <EnterpriseAccessDrawer
+        agentId="agent-1"
+        bindings={bindings}
+        open
+        onClose={vi.fn()}
+        onApplied={vi.fn()}
+      />,
+    )
+
+    await selectSource(user)
+    await user.click(
+      screen.getByRole('combobox', { name: 'Synchronized PAS users' }),
+    )
+    expect(await screen.findByText('First page user')).toBeInTheDocument()
+
+    await user.click(
+      screen.getByRole('button', { name: 'Next synchronized PAS user page' }),
+    )
+    await waitFor(() =>
+      expect(listEnterpriseIdentitySourceDirectory).toHaveBeenCalledWith(
+        'source-1',
+        'users',
+        { offset: 100, limit: 100 },
+      ),
+    )
+    expect(await screen.findByText('Second page user')).toBeInTheDocument()
   })
 
   it('keeps directory candidates from the most recently selected source', async () => {
@@ -597,6 +824,7 @@ describe('Agent enterprise access drawer', () => {
       <EnterpriseAccessDrawer
         agentId="agent-1"
         bindings={bindings}
+        instances={instances}
         open
         onClose={vi.fn()}
         onApplied={vi.fn()}
@@ -609,6 +837,7 @@ describe('Agent enterprise access drawer', () => {
     )
     await user.click(await screen.findByText('Alice'))
     expect(screen.queryByText('Alice duplicate identity')).not.toBeInTheDocument()
+    await selectInstance(user)
     await user.click(screen.getByRole('combobox', { name: 'PolarRAG Spaces' }))
     await user.click(await screen.findByText('Bound Space'))
     await user.click(screen.getByRole('button', { name: 'Preview changes' }))
@@ -618,6 +847,7 @@ describe('Agent enterprise access drawer', () => {
       all_synced_users: false,
       directory_group_ids: [],
       pas_user_ids: ['pas-user-1'],
+      polarrag_instance_ids: ['rag-1'],
       knowledge_space_ids: ['space-1'],
     })
   })
@@ -652,6 +882,7 @@ describe('Agent enterprise access drawer', () => {
       <EnterpriseAccessDrawer
         agentId="agent-1"
         bindings={bindings}
+        instances={instances}
         open
         onClose={vi.fn()}
         onApplied={vi.fn()}
@@ -692,6 +923,7 @@ describe('Agent enterprise access drawer', () => {
     })
 
     expect(screen.getAllByText('Engineering')).not.toHaveLength(0)
+    await selectInstance(user)
     await user.click(screen.getByRole('combobox', { name: 'PolarRAG Spaces' }))
     await user.click(await screen.findByText('Bound Space'))
     await user.click(screen.getByRole('button', { name: 'Preview changes' }))
@@ -700,6 +932,7 @@ describe('Agent enterprise access drawer', () => {
       all_synced_users: false,
       directory_group_ids: ['directory-group-1'],
       pas_user_ids: [],
+      polarrag_instance_ids: ['rag-1'],
       knowledge_space_ids: ['space-1'],
     })
   })
@@ -710,6 +943,7 @@ describe('Agent enterprise access drawer', () => {
       <EnterpriseAccessDrawer
         agentId="agent-1"
         bindings={bindings}
+        instances={instances}
         open
         onClose={vi.fn()}
         onApplied={vi.fn()}
@@ -721,6 +955,7 @@ describe('Agent enterprise access drawer', () => {
     await user.click(await screen.findByText('Engineering'))
     await user.click(screen.getByRole('combobox', { name: 'Synchronized PAS users' }))
     await user.click(await screen.findByText('Alice'))
+    await selectInstance(user)
     await user.click(screen.getByRole('combobox', { name: 'PolarRAG Spaces' }))
     await user.click(await screen.findByText('Bound Space'))
     await user.click(screen.getByRole('button', { name: 'Preview changes' }))
@@ -730,6 +965,7 @@ describe('Agent enterprise access drawer', () => {
       all_synced_users: false,
       directory_group_ids: ['directory-group-1'],
       pas_user_ids: ['pas-user-1'],
+      polarrag_instance_ids: ['rag-1'],
       knowledge_space_ids: ['space-1'],
     })
     const request = vi.mocked(previewAgentEnterpriseAccess).mock.calls[0][1]
@@ -778,6 +1014,7 @@ describe('Agent enterprise access drawer', () => {
       <EnterpriseAccessDrawer
         agentId="agent-1"
         bindings={bindings}
+        instances={instances}
         open
         onClose={vi.fn()}
         onApplied={onApplied}
@@ -787,6 +1024,7 @@ describe('Agent enterprise access drawer', () => {
     await user.click(
       screen.getByRole('checkbox', { name: 'All synchronized users' }),
     )
+    await selectInstance(user)
     await user.click(screen.getByRole('combobox', { name: 'PolarRAG Spaces' }))
     await user.click(await screen.findByText('Bound Space'))
     await user.click(screen.getByRole('button', { name: 'Preview changes' }))

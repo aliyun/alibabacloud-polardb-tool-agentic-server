@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.provisioning_adapter import HealthResult
@@ -180,6 +180,37 @@ async def list_backends(
         .scalars()
         .all()
     )
+
+
+async def list_backends_page(
+    session: AsyncSession,
+    *,
+    offset: int,
+    limit: int,
+    search: str | None = None,
+) -> tuple[list[ProvisioningBackend], int]:
+    filters = []
+    if search and search.strip():
+        filters.append(ProvisioningBackend.id.ilike(f"%{search.strip()}%"))
+    total = (
+        await session.scalar(
+            select(func.count(ProvisioningBackend.id)).where(*filters)
+        )
+        or 0
+    )
+    rows = (
+        await session.execute(
+            select(ProvisioningBackend)
+            .where(*filters)
+            .order_by(
+                ProvisioningBackend.priority.desc(),
+                ProvisioningBackend.id,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    return list(rows), total
 
 
 async def create_backend(

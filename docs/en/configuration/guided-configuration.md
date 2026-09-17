@@ -5,6 +5,8 @@
 This guide covers optional modules and safe configuration changes after the
 service has started.
 
+Knowledge uses a separate [Features activation workflow](../knowledge/activation.md) and requires a restart.
+
 ## Before you begin
 
 Complete [initial setup](../setup/initial-setup.md) first. That guide defines
@@ -70,6 +72,57 @@ Each edit creates a draft. Validation checks syntax, dependencies, and external
 connectivity without changing the effective runtime configuration. Activation
 requires a fresh validation proof and an expected revision, so concurrent
 administrators cannot silently overwrite one another.
+
+## Configure enterprise SSO
+
+Open **Service Configuration > User single sign-on**. Before entering IdP
+details, configure `runtime_policy.external_base_url` as the trusted,
+externally reachable HTTPS origin. The page displays the one callback URL to
+register with the IdP:
+
+```text
+EXTERNAL_BASE_URL/auth/oidc/callback
+```
+
+For a same-machine mock provider, start PAS with
+`pas serve --local-sso-dev` and use an exact loopback HTTP origin such as
+`http://127.0.0.1:18760`. The flag binds every PAS listener to `127.0.0.1`
+so the external base origin must use `localhost` or `127.0.0.1`. Provider
+HTTP URLs may additionally use `::1`. It is not a private-network or
+production HTTP mode.
+
+Use **Discovery URL** mode when the provider publishes OIDC discovery
+metadata. Manual `issuer`, authorization endpoint, and token endpoint fields
+are available under the advanced mode. UserInfo, JWKS, claim names, accepted
+ID Token algorithms, IdP PKCE, and UserInfo token transport are also advanced
+settings.
+
+Activation is intentionally a three-stage operation:
+
+1. Save the draft and validate discovery, issuer, endpoints, and JWKS.
+2. Start **Test browser login** and complete the IdP login as the current
+   administrator.
+3. Activate with the successful test proof.
+
+The proof is bound to the administrator, configuration revision and digest,
+and a short expiry. Editing the draft invalidates it. Activation atomically
+consumes the proof and binds the tested provider subject to the current
+administrator; PAS rejects activation if that identity already belongs to a
+different user.
+
+For server-to-server Token Exchange without browser login, turn off **Enable
+browser SSO login**. Configure only the external Token validation Provider,
+then save, validate, and activate. This path does not require a callback URL,
+browser endpoints, browser Client credentials, or a browser login test. It
+still requires an HTTPS External Base URL for the Token Exchange resources;
+ordinary console login remains built-in.
+For the Feishu provider, the caller supplies the verified identity source ID,
+Feishu user ID, and union ID with every Token Exchange request; the form does
+not require a fixed identity source.
+
+When editing an existing configuration, leave **Client secret** blank to keep
+the encrypted value already stored by PAS. Responses and logs never return the
+secret.
 
 ## Declarative workflow and dry run
 
@@ -195,6 +248,9 @@ after restart, but interactive MCP OAuth metadata is intentionally not
 advertised at that insecure origin. Configure a trusted, externally reachable
 HTTPS origin before enabling OAuth or OIDC. The service does not infer the
 origin from untrusted proxy headers.
+
+The only HTTP exception for interactive OAuth or OIDC is the explicit
+`pas serve --local-sso-dev` same-machine mode described above.
 
 Active configuration is projected into immutable in-process snapshots. Every
 replica polls the global version every 5 seconds by default (allowed range

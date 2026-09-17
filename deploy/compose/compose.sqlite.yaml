@@ -1,0 +1,47 @@
+name: polardb-agentic
+
+x-pas-image: &pas-image
+  image: ${PAS_IMAGE:?set PAS_IMAGE}
+  environment: &pas-environment
+    PAS_DATABASE_URL: sqlite+aiosqlite:////var/lib/pas/pas.db
+    PAS_ENCRYPTION_KEY: file:/var/lib/pas/pas_encryption_key
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+services:
+  migrate:
+    <<: *pas-image
+    command:
+      - database
+      - migrate
+    restart: "no"
+    volumes:
+      - pas-data:/var/lib/pas
+
+  server:
+    <<: *pas-image
+    command:
+      - serve
+    restart: unless-stopped
+    init: true
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - ${PAS_PORT:-18760}:18760
+    volumes:
+      - pas-data:/var/lib/pas
+      - pas-log:/app/log
+      - pas-run:/var/run/pas
+
+volumes:
+  pas-data:
+    name: ${PAS_SQLITE_VOLUME:?set PAS_SQLITE_VOLUME}
+    external: true
+  pas-log:
+  pas-run:

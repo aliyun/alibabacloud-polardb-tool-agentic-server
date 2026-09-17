@@ -21,12 +21,13 @@ export type DashboardViewStats = DashboardStats | MemberDashboardStats
 
 export async function getDashboardStats(
   isAdmin = true,
+  knowledge = true,
 ): Promise<DashboardViewStats> {
   if (!isAdmin) {
     const response = await api.get('/api/me/resources')
     return {
       database_instances: response.data.database_instances.length,
-      knowledge_resources: response.data.knowledge_resources.length,
+      knowledge_resources: response.data.knowledge_resource_total ?? 0,
     }
   }
 
@@ -44,7 +45,7 @@ export async function getDashboardStats(
     await Promise.all([
       api.get('/api/users', { params: { limit: 1 } }),
       listAllAdminInstances(),
-      listPolarRAGInstances(),
+      knowledge ? listPolarRAGInstances() : Promise.resolve({ data: { items: [] } }),
       listDedicatedPools(),
       api.get('/api/departments'),
       api.get('/api/audit-logs', {
@@ -74,11 +75,11 @@ export async function getDashboardStats(
     ).length + polarRAGInstances.filter(
       (instance) => instance.status === 'active',
     ).length,
-    dedicated_allocatable: poolsResp.data.reduce(
+    dedicated_allocatable: poolsResp.data.items.reduce(
       (total, pool) => total + pool.allocatable,
       0,
     ),
-    departments: deptsResp.data.length,
+    departments: deptsResp.data.total,
     queries_today: sqlAuditResp.data.total + polarRAGAuditResp.data.total,
   }
 }

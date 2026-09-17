@@ -26,11 +26,19 @@ Schema head 不变，但替换 server 容器前仍必须执行发布版本的迁
 
 SQLite 只支持本地开发和测试，不支持生产多副本部署。
 
+MySQL 8.0.16 之前的版本不会存储或强制执行新版 PAS Schema 使用的 CHECK
+约束。迁移命令在这些数据库上只跳过不受支持的 CHECK DDL，表、列、索引和列
+宽变更仍会执行。PAS 会在受支持的写入路径中执行同等约束校验；不要绕过应用
+直接写入元数据表。
+
 ## 升级兼容性
 
-数据库兼容性由 Alembic revision 决定，而不是应用版本字符串。应用 Pod 滚动
-发布前，只执行一次发布版本的迁移 Job 或 `pas database migrate`。Schema
-为空、落后、超前、不可用或存在歧义时，启动会 fail closed。
+数据库兼容性由 Alembic revision 决定，而不是应用版本字符串。Compose 和
+Helm 在替换应用前执行发布版本的迁移 Job 或 `pas database migrate`。托管滚动
+升级在第一个应用 Pod 切换到目标镜像后、该 Pod 仍保持摘流时，执行或重放一个
+确定性的 CoreV1 one-shot 迁移 Pod。Schema 为空、落后、超前、不可用、存在
+歧义，或识别到同 Revision 的物理 Schema 漂移时，启动会 fail closed。仅有
+当前 Alembic revision 不能证明物理 Schema 完整。
 
 正向迁移后通常不能安全降级应用代码。应恢复兼容备份，而不是尝试自动降级。
 

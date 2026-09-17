@@ -48,6 +48,44 @@ Secret。迁移失败时 Helm 不会更新 Deployment。应用启动还会独立
 按照 NOTES 输出的流程，从一个明确选定的 Pod 复制 token，不要将其打印出来。
 token claim 位于共享元数据库，`/var/run/pas` 仅属于单个 Pod。
 
+## 可选托管生命周期监听器
+
+Chart 默认关闭管理监听器。管控系统必须分配业务与管理端口，并在渲染工作负载
+时以环境变量注入；PAS 命令仍为 `serve`，不通过参数传递端口。在隔离的管控
+网络中，可用如下 values 启用独立管理 Service：
+
+```bash
+helm upgrade --install pas deploy/helm/polardb-agentic-server \
+  --namespace pas-system \
+  --set existingSecret=pas-bootstrap \
+  --set service.port=28080 \
+  --set management.enabled=true \
+  --set management.port=28081 \
+  --set management.authMode=trusted-network \
+  --set management.managedIdentity.instanceId=pmcp-example \
+  --set management.managedIdentity.generation=1 \
+  --set management.service.enabled=true
+```
+
+Chart 会拒绝相同的业务端口与管理端口。管理 Service 与业务 Service 分离，但
+Chart 不创建 NetworkPolicy；必须增加默认拒绝策略，只允许管控命名空间和工作
+负载身份访问。绝不能把该 Service 接入业务 Ingress 或负载均衡。
+
+无法保证网络隔离时必须使用 `bearer-token`。从权限受限的文件创建 Secret，
+不要把 token 放在命令行参数中，然后设置
+`management.authMode=bearer-token` 与
+`management.tokenSecret.name=pas-management-token`：
+
+```bash
+kubectl create secret generic pas-management-token \
+  --namespace pas-system \
+  --from-file=token=./management-token
+```
+
+托管初始化绝不会打印或返回 Bootstrap Token。管理员创建后的状态为
+`RESET_REQUIRED`；实例激活后，由客户通过 PolarDB 客户 OpenAPI 设置首次密码。
+PAS 内部接口只供生命周期管控面调用。
+
 ## 渲染清单与 `kubectl apply`
 
 把 Helm 渲染结果交给 `kubectl apply` 时不会执行 Helm Hook 顺序，必须显式、

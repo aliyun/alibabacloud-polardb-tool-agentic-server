@@ -53,15 +53,26 @@ def test_database_migrate_handler_runs_upgrade(
 ) -> None:
     called = False
 
-    def migrate() -> None:
+    def migrate(*, reporter=None) -> None:
         nonlocal called
         called = True
+        assert reporter is not None
+        reporter(
+            "PAS database migration: "
+            'stage="manifest-validation" status="succeeded"'
+        )
 
     monkeypatch.setattr("server.db.schema.migrate_database", migrate)
 
     assert main(["database", "migrate"]) == 0
     assert called is True
-    assert capsys.readouterr().out == "Database migration completed.\n"
+    captured = capsys.readouterr()
+    assert captured.out == "Database migration completed.\n"
+    assert captured.err == (
+        "PAS database migration: status=\"starting\"\n"
+        "PAS database migration: "
+        "stage=\"manifest-validation\" status=\"succeeded\"\n"
+    )
 
 
 def test_database_create_env_handler_passes_safe_sources(

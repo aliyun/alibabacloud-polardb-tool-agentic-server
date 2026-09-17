@@ -35,7 +35,13 @@ from server.middleware.runtime_policy import (
     RuntimeAccessPolicy,
     RuntimePolicyMiddleware,
 )
-from server.models import ConfigBootstrapClaim, ConfigOperationReceipt, User
+from server.models import (
+    AuthProvider,
+    ConfigBootstrapClaim,
+    ConfigOperationReceipt,
+    User,
+    UserRole,
+)
 from tests._configuration_helpers import create_config_context
 from tests._helpers import init_test_jwt_keys
 
@@ -48,30 +54,20 @@ async def test_bootstrap_expiry_replay_and_brute_force_lockout() -> None:
     try:
         token = await rotate_bootstrap_token(context.repository)
         for _ in range(10):
-            assert not await verify_bootstrap_token(
-                context.repository, "wrong-token"
-            )
-        assert not await verify_bootstrap_token(
-            context.repository, token
-        )
+            assert not await verify_bootstrap_token(context.repository, "wrong-token")
+        assert not await verify_bootstrap_token(context.repository, token)
 
         replacement = await rotate_bootstrap_token(context.repository)
         async with context.repository.session_factory() as session:
             claim = await session.get(ConfigBootstrapClaim, "bootstrap")
-            claim.expires_at = datetime.now(timezone.utc) - timedelta(
-                seconds=1
-            )
+            claim.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
             await session.commit()
-        assert not await verify_bootstrap_token(
-            context.repository, replacement
-        )
+        assert not await verify_bootstrap_token(context.repository, replacement)
 
         replay = await rotate_bootstrap_token(context.repository)
         assert await verify_bootstrap_token(context.repository, replay)
         await context.repository.consume_bootstrap_claim()
-        assert not await verify_bootstrap_token(
-            context.repository, replay
-        )
+        assert not await verify_bootstrap_token(context.repository, replay)
     finally:
         await context.close()
 
@@ -88,9 +84,7 @@ def test_secret_envelope_rejects_ciphertext_and_aad_tampering() -> None:
     )
     raw = bytearray(base64.b64decode(envelope.ciphertext))
     raw[0] ^= 1
-    tampered = envelope.model_copy(
-        update={"ciphertext": base64.b64encode(raw).decode("ascii")}
-    )
+    tampered = envelope.model_copy(update={"ciphertext": base64.b64encode(raw).decode("ascii")})
 
     with pytest.raises(InvalidTag):
         crypto.decrypt_field(
@@ -113,9 +107,7 @@ async def test_secret_is_absent_from_response_receipt_and_logs(
 ) -> None:
     context = await create_config_context()
     secret = "never-print-this-credential"
-    caplog.set_level(
-        logging.INFO, logger="server.configuration.audit"
-    )
+    caplog.set_level(logging.INFO, logger="server.configuration.audit")
     try:
         saved = await context.service.execute(
             ConfigCommand(
@@ -154,32 +146,20 @@ async def test_secret_is_absent_from_response_receipt_and_logs(
         assert secret not in public_output
         assert "ciphertext" not in public_output
         assert secret not in caplog.text
-        audit_records = [
-            record
-            for record in caplog.records
-            if record.name == "server.configuration.audit"
-        ]
+        audit_records = [record for record in caplog.records if record.name == "server.configuration.audit"]
         assert [record.config_action for record in audit_records] == [
             "save_draft",
             "validate",
             "activate",
         ]
         assert all(
-            record.config_module == "aliyun_access"
-            and record.config_result == "success"
-            for record in audit_records
+            record.config_module == "aliyun_access" and record.config_result == "success" for record in audit_records
         )
-        assert secret not in repr(
-            [record.__dict__ for record in audit_records]
-        )
-        assert "ciphertext" not in repr(
-            [record.__dict__ for record in audit_records]
-        )
+        assert secret not in repr([record.__dict__ for record in audit_records])
+        assert "ciphertext" not in repr([record.__dict__ for record in audit_records])
 
         async with context.repository.session_factory() as session:
-            receipts = (
-                await session.execute(select(ConfigOperationReceipt))
-            ).scalars().all()
+            receipts = (await session.execute(select(ConfigOperationReceipt))).scalars().all()
         assert len(receipts) == 1
         assert secret not in receipts[0].response_json
         assert "ciphertext" not in receipts[0].response_json
@@ -503,9 +483,7 @@ async def test_core_admin_plan_does_not_audit_transient_password(
 ) -> None:
     context = await create_config_context()
     password = "correct horse battery staple"
-    caplog.set_level(
-        logging.INFO, logger="server.configuration.audit"
-    )
+    caplog.set_level(logging.INFO, logger="server.configuration.audit")
     try:
         result = await context.service.execute(
             ConfigCommand(
@@ -517,11 +495,7 @@ async def test_core_admin_plan_does_not_audit_transient_password(
         )
 
         assert result.plan["valid"] is True
-        audit_record = next(
-            record
-            for record in caplog.records
-            if record.name == "server.configuration.audit"
-        )
+        audit_record = next(record for record in caplog.records if record.name == "server.configuration.audit")
         assert audit_record.config_changed_fields == ("username",)
         assert password not in caplog.text
         assert password not in repr(audit_record.__dict__)
@@ -540,9 +514,7 @@ async def test_setup_mode_blocks_non_setup_routes() -> None:
         RuntimePolicyMiddleware,
         snapshot_provider=lambda: RuntimeAccessPolicy(mode="SETUP"),
     )
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         blocked = await client.get("/private")
         live = await client.get("/livez")
     assert blocked.status_code == 503
@@ -560,9 +532,7 @@ async def test_cookie_configuration_requires_csrf_header() -> None:
         app.state.config_service = context.service
         app.include_router(router, prefix="/api")
         bootstrap = {"Authorization": f"Bootstrap {token}"}
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             saved = await client.post(
                 "/api/config",
                 headers=bootstrap,
@@ -581,9 +551,7 @@ async def test_cookie_configuration_requires_csrf_header() -> None:
                     "protocol_version": 1,
                     "action": "validate",
                     "module": "core_admin",
-                    "expected_revision": saved.json()["module"][
-                        "revision"
-                    ],
+                    "expected_revision": saved.json()["module"]["revision"],
                 },
             )
             activated = await client.post(
@@ -593,25 +561,25 @@ async def test_cookie_configuration_requires_csrf_header() -> None:
                     "protocol_version": 1,
                     "action": "activate",
                     "module": "core_admin",
-                    "expected_revision": validated.json()["module"][
-                        "revision"
-                    ],
-                    "validation_id": validated.json()["validation"][
-                        "validation_id"
-                    ],
+                    "expected_revision": validated.json()["module"]["revision"],
+                    "validation_id": validated.json()["validation"]["validation_id"],
                     "idempotency_key": "ready",
-                    "config": {
-                        "password": "correct horse battery staple"
-                    },
+                    "config": {"password": "correct horse battery staple"},
                 },
             )
             assert activated.status_code == 200
             async with context.repository.session_factory() as session:
-                admin = (
-                    await session.execute(select(User))
-                ).scalar_one()
+                admin = (await session.execute(select(User))).scalar_one()
+                oidc_user = User(
+                    external_id="oidc-config-admin",
+                    display_name="OIDC Config Admin",
+                    auth_provider=AuthProvider.OIDC,
+                    role=UserRole.ADMIN,
+                )
+                session.add(oidc_user)
+                await session.commit()
             session_token = create_access_token(
-                {"sub": admin.id, "role": "admin"}
+                {"sub": admin.id, "role": "admin", "credential_epoch": admin.credential_epoch}
             )
             client.cookies.set("session_token", session_token)
 
@@ -638,10 +606,37 @@ async def test_cookie_configuration_requires_csrf_header() -> None:
                     "action": "describe",
                 },
             )
+            missing_epoch = await client.post(
+                "/api/config",
+                headers={"Authorization": "Bearer " + create_access_token({"sub": admin.id, "role": "admin"})},
+                json={"protocol_version": 1, "action": "describe"},
+            )
+            stale_epoch = await client.post(
+                "/api/config",
+                headers={
+                    "Authorization": "Bearer "
+                    + create_access_token(
+                        {
+                            "sub": admin.id,
+                            "role": "admin",
+                            "credential_epoch": admin.credential_epoch - 1,
+                        }
+                    )
+                },
+                json={"protocol_version": 1, "action": "describe"},
+            )
+            oidc_without_epoch = await client.post(
+                "/api/config",
+                headers={"Authorization": "Bearer " + create_access_token({"sub": oidc_user.id, "role": "admin"})},
+                json={"protocol_version": 1, "action": "describe"},
+            )
         assert rejected.status_code == 403
         assert rejected.json()["detail"]["code"] == "CSRF_REQUIRED"
         assert accepted.status_code == 200
         assert bearer.status_code == 200
+        assert missing_epoch.status_code == 401
+        assert stale_epoch.status_code == 401
+        assert oidc_without_epoch.status_code == 200
     finally:
         reset_keys()
         await context.close()

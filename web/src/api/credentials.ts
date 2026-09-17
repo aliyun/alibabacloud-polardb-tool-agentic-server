@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 
 export type CredentialPurpose =
   | 'provisioning_admin'
@@ -60,9 +61,13 @@ export interface RevealedCredential {
   database_name: string | null
 }
 
-export const listInstanceCredentials = (instanceId: string) =>
-  api.get<InstanceCredential[]>(
+export const listInstanceCredentials = (
+  instanceId: string,
+  params: PageParams = {},
+) =>
+  api.get<Page<InstanceCredential>>(
     `/api/instances/${encodeURIComponent(instanceId)}/credentials`,
+    { params },
   )
 
 export const createInstanceCredential = (

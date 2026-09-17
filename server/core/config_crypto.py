@@ -33,6 +33,9 @@ class ConfigCrypto:
             root_key, b"pas/config/encryption/v1"
         )
         self._hmac_key = self._derive(root_key, b"pas/config/hmac/v1")
+        self._managed_hmac_key = self._derive(
+            root_key, b"pas/managed-command/hmac/v1"
+        )
         self.key_version = key_version
 
     @staticmethod
@@ -119,3 +122,18 @@ class ConfigCrypto:
             self._hmac_key, canonical, hashlib.sha256
         ).hexdigest()
 
+    def managed_digest(self, purpose: str, value: Any) -> str:
+        canonical = json.dumps(
+            {"purpose": purpose, "value": value},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return hmac.new(
+            self._managed_hmac_key,
+            # This keyed authenticator protects idempotency receipts; it is
+            # not used to store or verify a password.
+            # codeql[py/weak-sensitive-data-hashing]
+            canonical,
+            hashlib.sha256,
+        ).hexdigest()

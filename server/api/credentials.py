@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import (
     BaseModel,
@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
+from server.api.pagination import Page
 from server.core import credential_service
 from server.core import instance_connection
 from server.core.audit_logger import log_audit
@@ -156,19 +157,31 @@ async def _required_audit(
     )
 
 
-@instance_router.get("", response_model=list[CredentialResponse])
+@instance_router.get("", response_model=Page[CredentialResponse])
 async def list_instance_credentials(
     instance_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        rows = await credential_service.list_instance_credentials(
-            session, instance_id
+        rows, total = await credential_service.list_instance_credentials_page(
+            session,
+            instance_id,
+            offset=offset,
+            limit=limit,
+            search=search,
         )
     except credential_service.CredentialNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return [CredentialResponse.from_model(row) for row in rows]
+    return Page(
+        items=[CredentialResponse.from_model(row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @instance_router.post(

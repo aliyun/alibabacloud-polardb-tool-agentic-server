@@ -7,6 +7,13 @@ from importlib import import_module
 import pytest
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from sqlalchemy.dialects import mysql
+
+from server.db.mysql_check_compat import (
+    CompatibleMySQLImpl,
+    supports_check_constraints,
+)
+from server.models import Base
 
 
 class _Dialect:
@@ -19,7 +26,7 @@ class _Bind:
 
 class _Operations:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, ...]] = []
 
     @staticmethod
     def get_bind() -> _Bind:
@@ -39,6 +46,12 @@ class _Operations:
 
     def drop_index(self, name: str, *, table_name: str) -> None:
         self.calls.append(("drop", name, table_name))
+
+    def add_column(self, table_name: str, column) -> None:
+        self.calls.append(("add_column", table_name, column.name))
+
+    def drop_column(self, table_name: str, column_name: str) -> None:
+        self.calls.append(("drop_column", table_name, column_name))
 
 
 class _Inspector:
@@ -65,6 +78,89 @@ class _BatchOperations:
 
     def drop_constraint(self, name: str, *, type_: str) -> None:
         self.calls.append((name, type_))
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ((8, 0, 13), False),
+        ((8, 0, 15), False),
+        ((8, 0, 16), True),
+        ((8, 4, 0), True),
+    ],
+)
+def test_mysql_check_constraint_support_boundary(
+    version: tuple[int, ...],
+    supported: bool,
+) -> None:
+    dialect = mysql.dialect()
+    dialect.server_version_info = version
+
+    assert supports_check_constraints(dialect) is supported
+
+
+def _migration_sql(
+    module_name: str,
+    operation_name: str,
+    server_version: tuple[int, ...],
+    monkeypatch,
+) -> str:
+    migration = import_module(
+        f"server.db.migrations.versions.{module_name}"
+    )
+    output = StringIO()
+    dialect = mysql.dialect()
+    dialect.server_version_info = server_version
+    context = MigrationContext.configure(
+        dialect=dialect,
+        opts={"as_sql": True, "output_buffer": output},
+    )
+    assert isinstance(context.impl, CompatibleMySQLImpl)
+    monkeypatch.setattr(migration, "op", Operations(context))
+
+    getattr(migration, operation_name)()
+    return output.getvalue()
+
+
+def test_native_principal_migration_skips_checks_on_mysql_8_0_13(
+    monkeypatch,
+) -> None:
+    sql = _migration_sql(
+        "c1d2e3f4a5b6_add_native_polarrag_principals",
+        "upgrade",
+        (8, 0, 13),
+        monkeypatch,
+    )
+
+    assert "CHECK" not in sql.upper()
+
+
+def test_identity_source_all_migration_keeps_column_ddl_on_mysql_8_0_13(
+    monkeypatch,
+) -> None:
+    sql = _migration_sql(
+        "f5a6b7c8d9e0_add_identity_source_all_agent_access",
+        "upgrade",
+        (8, 0, 13),
+        monkeypatch,
+    )
+
+    assert "CHECK" not in sql.upper()
+    assert "VARCHAR(32)" in sql.upper()
+
+
+def test_native_principal_migration_keeps_checks_on_mysql_8_0_16(
+    monkeypatch,
+) -> None:
+    sql = _migration_sql(
+        "c1d2e3f4a5b6_add_native_polarrag_principals",
+        "upgrade",
+        (8, 0, 16),
+        monkeypatch,
+    )
+
+    assert "DROP CHECK" in sql.upper()
+    assert "CHECK" in sql.upper()
 
 
 def test_agent_access_migration_preserves_mysql_owner_fk_index(
@@ -181,3 +277,43 @@ def test_agent_group_migrations_use_native_mysql_alter(
     sql = output.getvalue()
     assert "_alembic_tmp_agent_group_assignments" not in sql
     assert "ALTER TABLE agent_group_assignments" in sql
+
+
+def test_managed_state_schema_compiles_for_mysql_without_foreign_keys() -> None:
+    from sqlalchemy.schema import CreateTable
+
+    table = Base.metadata.tables["managed_instance_bindings"]
+    ddl = str(CreateTable(table).compile(dialect=mysql.dialect())).upper()
+
+    assert "INSTANCE_GENERATION BIGINT NOT NULL" in ddl
+    assert "FOREIGN KEY" not in ddl
+
+
+def test_credential_epoch_migration_is_expand_only(monkeypatch) -> None:
+    migration = import_module(
+        "server.db.migrations.versions."
+        "f6a7b8c9d0e1_add_user_credential_epoch"
+    )
+    operations = _Operations()
+    monkeypatch.setattr(migration, "op", operations)
+
+    migration.upgrade()
+    migration.downgrade()
+
+    assert operations.calls == [
+        ("add_column", "users", "credential_epoch"),
+        ("drop_column", "users", "credential_epoch"),
+    ]
+
+
+def test_credential_epoch_schema_compiles_for_mysql_without_foreign_keys() -> None:
+    from sqlalchemy.schema import CreateTable
+
+    table = Base.metadata.tables["users"]
+    column = table.c.credential_epoch
+    ddl = str(CreateTable(table).compile(dialect=mysql.dialect())).upper()
+
+    assert column.nullable is False
+    assert str(column.server_default.arg) == "1"
+    assert not column.foreign_keys
+    assert "CREDENTIAL_EPOCH INTEGER NOT NULL" in ddl

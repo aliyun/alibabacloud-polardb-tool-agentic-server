@@ -19,13 +19,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import HTMLResponse, RedirectResponse
 
 from server.auth.builtin import authenticate_builtin
+from server.auth.credential_mutation import (
+    BuiltinPasswordRequired,
+    CredentialMutationMode,
+    OldPasswordIncorrect,
+    PasswordModificationNotAllowed,
+    mutate_builtin_password_in_session,
+)
 from server.auth.dependencies import get_current_user
 from server.auth.identity_federation import OIDCAuthenticationError
 from server.auth.jwt_manager import create_access_token
+from server.auth.password_policy import PasswordPolicyError
 from server.auth.rate_limit import (
     AuthRateLimitExceeded,
     check_builtin_login,
+    check_recovery_login,
 )
+from server.auth.oidc_login import (
+    OIDC_LOGIN_PURPOSE_CONSOLE,
+    create_oidc_login,
+    safe_login_redirect_path,
+)
+from server.auth.user_session import issue_browser_session
 from server.config import get_config
 from server.core.audit_logger import log_audit
 from server.core.crypto import decrypt, encrypt
@@ -47,6 +62,7 @@ from server.enterprise_identity.sharepoint_auth import (
 )
 from server.models import (
     AuditStatus,
+    AuthProvider,
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceStatus,
     FeishuTenantVerificationState,
@@ -54,6 +70,7 @@ from server.models import (
     IdentitySourceProvider,
     SharePointUserLoginState,
     User,
+    UserRole,
     UserStatus,
 )
 from server.models.user_refresh_token import UserRefreshToken
@@ -111,6 +128,49 @@ class UserInfoResponse(BaseModel):
     email: str | None
     role: str
     status: str
+
+
+@router.get("/oidc/login")
+async def start_oidc_login(
+    next: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    config = get_config()
+    if config.auth.mode != "oidc":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    callback_url = (
+        config.auth.oidc.redirect_uri
+        or f"{config.server.public_base_url.rstrip('/')}/auth/oidc/callback"
+    )
+    try:
+        _, authorize_url = await create_oidc_login(
+            session,
+            oidc_config=config.auth.oidc,
+            callback_url=callback_url,
+            purpose=OIDC_LOGIN_PURPOSE_CONSOLE,
+            redirect_path=safe_login_redirect_path(next),
+        )
+    except (OIDCAuthenticationError, ValueError, httpx.HTTPError) as exc:
+        logger.warning(
+            "Unable to start OIDC login (%s)",
+            type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Enterprise SSO is temporarily unavailable.",
+        ) from exc
+    return RedirectResponse(
+        authorize_url,
+        status_code=303,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/oidc/callback")
+async def oidc_login_callback(request: Request):
+    from server.auth.auth_routes import handle_oidc_callback
+
+    return await handle_oidc_callback(request)
 
 
 async def _active_login_sources(
@@ -554,8 +614,13 @@ async def login(
     response: Response,
     session: AsyncSession = Depends(get_session),
 ):
-    """Login with builtin credentials (works in all auth modes for builtin users)."""
+    """Login with builtin credentials when builtin authentication is active."""
     config = get_config()
+    if config.auth.mode == "oidc":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Enterprise SSO login is required.",
+        )
     try:
         await check_builtin_login(request, body.username)
     except AuthRateLimitExceeded as exc:
@@ -571,15 +636,19 @@ async def login(
             detail="Invalid username or password.",
         )
 
-    from server.models import UserStatus
-
     if user.status == UserStatus.DISABLED:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account has been disabled. Contact admin.",
         )
 
-    access_token = create_access_token({"sub": user.id, "role": user.role.value})
+    access_token = create_access_token(
+        {
+            "sub": user.id,
+            "role": user.role.value,
+            "credential_epoch": user.credential_epoch,
+        }
+    )
     refresh_token = _create_refresh_record(session, user.id)
     await session.commit()
 
@@ -603,6 +672,83 @@ async def login(
     return TokenResponse(access_token=access_token)
 
 
+@router.post("/recovery/login", response_model=TokenResponse)
+async def recovery_login(
+    body: LoginRequest,
+    request: Request,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+):
+    config = get_config()
+    if config.auth.mode != "oidc":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+    try:
+        await check_recovery_login(request, body.username)
+    except AuthRateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many recovery authentication requests.",
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from exc
+
+    user = await authenticate_builtin(
+        session,
+        body.username,
+        body.password,
+    )
+    if (
+        user is None
+        or user.role != UserRole.ADMIN
+        or user.status != UserStatus.ACTIVE
+    ):
+        attempted_user = user
+        if attempted_user is None:
+            attempted_user = await session.scalar(
+                select(User).where(
+                    User.external_id == body.username,
+                    User.auth_provider == AuthProvider.BUILTIN,
+                )
+            )
+        if attempted_user is not None:
+            await log_audit(
+                session,
+                user_id=attempted_user.id,
+                action="auth.recovery.login",
+                target_type="user",
+                target_id=attempted_user.id,
+                status=AuditStatus.ERROR,
+                error_code="INVALID_RECOVERY_CREDENTIALS",
+                required=True,
+            )
+        else:
+            logger.warning(
+                "Recovery login rejected for an unknown account",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid recovery credentials.",
+        )
+
+    access_token = issue_browser_session(
+        request,
+        response,
+        session,
+        user,
+    )
+    await log_audit(
+        session,
+        user_id=user.id,
+        action="auth.recovery.login",
+        target_type="user",
+        target_id=user.id,
+        status=AuditStatus.SUCCESS,
+        required=True,
+        commit=False,
+    )
+    await session.commit()
+    return TokenResponse(access_token=access_token)
+
+
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
     request: Request,
@@ -615,9 +761,19 @@ async def refresh(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="No refresh token.")
     token_hash = _hash_token(token)
 
-    # Lookup including already-revoked rows (so reuse is detectable).
-    result = await session.execute(select(UserRefreshToken).where(UserRefreshToken.token_hash == token_hash))
-    record = result.scalar_one_or_none()
+    # Resolve the owner without taking a token lock, then take every write lock
+    # in the shared user-first order used by password mutation.
+    user_id = await session.scalar(select(UserRefreshToken.user_id).where(UserRefreshToken.token_hash == token_hash))
+    if user_id is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
+
+    user = await session.scalar(select(User).where(User.id == user_id).with_for_update())
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found.")
+
+    record = await session.scalar(
+        select(UserRefreshToken).where(UserRefreshToken.token_hash == token_hash).with_for_update()
+    )
     if record is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token.")
 
@@ -641,31 +797,23 @@ async def refresh(
         logger.warning("Refresh token reuse/expiry detected, family revoked: %s", record.token_family)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token no longer valid.")
 
-    # CAS revoke the current token.
-    cas = await session.execute(
-        update(UserRefreshToken)
-        .where(
-            UserRefreshToken.id == record.id,
-            UserRefreshToken.revoked_at.is_(None),
+    if user.status == UserStatus.DISABLED:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been disabled. Contact admin.",
         )
-        .values(revoked_at=now)
-    )
-    if cas.rowcount == 0:  # type: ignore[attr-defined]
-        # Concurrent consumption: revoke family.
-        await session.execute(
-            update(UserRefreshToken)
-            .where(
-                UserRefreshToken.token_family == record.token_family,
-                UserRefreshToken.revoked_at.is_(None),
-            )
-            .values(revoked_at=now)
-        )
-        await session.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token no longer valid.")
+
+    record.revoked_at = now
 
     config = get_config()
-    access_token = create_access_token({"sub": record.user_id})
-    new_refresh = _create_refresh_record(session, record.user_id, family=record.token_family)
+    access_token = create_access_token(
+        {
+            "sub": user.id,
+            "role": user.role.value,
+            "credential_epoch": user.credential_epoch,
+        }
+    )
+    new_refresh = _create_refresh_record(session, user.id, family=record.token_family)
     await session.commit()
 
     response.set_cookie(
@@ -738,7 +886,24 @@ async def get_me(user: User = Depends(get_current_user)):
 async def get_auth_mode():
     """Return auth mode so frontend can conditionally show password UI."""
     config = get_config()
-    return {"mode": config.auth.mode}
+    return {
+        "mode": config.auth.mode,
+        "provider_name": (
+            config.auth.oidc.provider_name
+            if config.auth.mode == "oidc"
+            else None
+        ),
+        "sso_login_url": (
+            "/auth/oidc/login"
+            if config.auth.mode == "oidc"
+            else None
+        ),
+        "recovery_login_path": (
+            "/login/recovery"
+            if config.auth.mode == "oidc"
+            else None
+        ),
+    }
 
 
 class ChangePasswordRequest(BaseModel):
@@ -755,34 +920,35 @@ async def change_password(
     session: AsyncSession = Depends(get_session),
 ):
     """Change own password (builtin auth mode only)."""
-    from server.auth.builtin import verify_password, hash_password
-    from server.models import AuthProvider
-
-    if user.auth_provider != AuthProvider.BUILTIN:
+    try:
+        await mutate_builtin_password_in_session(
+            session,
+            user=user,
+            mode=CredentialMutationMode.MODIFY,
+            old_password=body.current_password,
+            new_password=body.new_password,
+        )
+    except BuiltinPasswordRequired as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Password change is only available for builtin auth users.",
-        )
-    if not user.password_hash or not verify_password(body.current_password, user.password_hash):
+        ) from error
+    except OldPasswordIncorrect as error:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Current password is incorrect.",
-        )
-    if len(body.new_password) < 8:
+        ) from error
+    except PasswordModificationNotAllowed as error:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be at least 8 characters.",
-        )
+            detail="Password change is unavailable for the current credential state.",
+        ) from error
+    except PasswordPolicyError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
 
-    user.password_hash = hash_password(body.new_password)
-    await session.execute(
-        update(UserRefreshToken)
-        .where(
-            UserRefreshToken.user_id == user.id,
-            UserRefreshToken.revoked_at.is_(None),
-        )
-        .values(revoked_at=datetime.now(timezone.utc))
-    )
     await session.commit()
 
     response.delete_cookie(

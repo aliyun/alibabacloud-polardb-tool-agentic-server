@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ServerConfig(BaseModel):
@@ -16,6 +16,7 @@ class ServerConfig(BaseModel):
 
 
 class OIDCConfig(BaseModel):
+    protocol_mode: Literal["oidc", "oauth2_userinfo"] = "oidc"
     preset: str | None = None
     discovery_url: str | None = None
     issuer: str | None = None
@@ -30,12 +31,41 @@ class OIDCConfig(BaseModel):
     userinfo_endpoint: str | None = None
     jwks_uri: str | None = None
     redirect_uri: str | None = None
-    userinfo_token_method: str = "bearer_header"
+    userinfo_token_method: Literal[
+        "bearer_header",
+        "form_post",
+        "query",
+    ] = "bearer_header"
     provider_name: str = "oidc"
     idp_pkce: bool = False
     id_token_algorithms: list[str] = Field(
         default_factory=lambda: ["RS256", "ES256"]
     )
+
+
+class ExternalTokenTrustRuntimeConfig(BaseModel):
+    enabled: bool = False
+    provider: Literal[
+        "oidc_jwt",
+        "oauth2_introspection",
+        "oauth2_userinfo",
+        "feishu",
+        "buc",
+    ] = "oidc_jwt"
+    direct_mcp_enabled: bool = False
+    identity_source_id: str | None = None
+    expected_audience: str | None = None
+    introspection_endpoint: str | None = None
+    userinfo_endpoint: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    introspection_auth_method: Literal[
+        "client_secret_basic",
+        "client_secret_post",
+    ] = "client_secret_basic"
+    access_token_ttl_seconds: int = 28800
+    config_revision: int = 0
+    config_digest: str = ""
 
 
 class BuiltinAuthConfig(BaseModel):
@@ -70,14 +100,15 @@ class AuthConfig(BaseModel):
     oauth_clients: dict[str, OAuthClientConfig] = Field(default_factory=dict)
     default_department: str = ""
     web_sso_guard: WebSSOGuardConfig = Field(default_factory=WebSSOGuardConfig)
+    external_token_trust: ExternalTokenTrustRuntimeConfig = Field(
+        default_factory=ExternalTokenTrustRuntimeConfig
+    )
 
 
 class AliyunConfig(BaseModel):
     """The one active Alibaba Cloud credential configuration for this process."""
 
-    credential_mode: Literal["direct_ak", "assume_role", "ecs_ram_role"] = (
-        "direct_ak"
-    )
+    credential_mode: Literal["direct_ak", "assume_role", "ecs_ram_role"] = "direct_ak"
     direct_ak: "RuntimeDirectAKConfig | None" = None
     assume_role: "RuntimeAssumeRoleConfig | None" = None
     ecs_ram_role: "RuntimeECSRamRoleConfig | None" = None
@@ -163,11 +194,7 @@ class AliyunConfig(BaseModel):
 
     @property
     def role_session_name(self) -> str:
-        return (
-            self.assume_role.role_session_name
-            if self.assume_role
-            else "polardb-agentic"
-        )
+        return self.assume_role.role_session_name if self.assume_role else "polardb-agentic"
 
     @property
     def sts_duration_seconds(self) -> int:
@@ -247,16 +274,9 @@ class TenantProvisioningConfig(BaseModel):
             30,
         )
         if self.dedicated_worker_heartbeat_stale_after_seconds < 30:
-            raise ValueError(
-                "worker heartbeat stale threshold must be at least 30 seconds"
-            )
-        if (
-            self.dedicated_worker_heartbeat_stale_after_seconds
-            < heartbeat_stale_floor
-        ):
-            raise ValueError(
-                "worker heartbeat stale threshold must be at least three heartbeat intervals"
-            )
+            raise ValueError("worker heartbeat stale threshold must be at least 30 seconds")
+        if self.dedicated_worker_heartbeat_stale_after_seconds < heartbeat_stale_floor:
+            raise ValueError("worker heartbeat stale threshold must be at least three heartbeat intervals")
         if self.worker_claim_renew_seconds >= self.worker_claim_ttl_seconds:
             raise ValueError("claim renew interval must be less than claim TTL")
         if self.health_check_interval_seconds >= self.health_stale_after_seconds:
@@ -306,6 +326,72 @@ class RateLimitConfig(BaseModel):
     burst: int = 10
 
 
+class PolarRAGToolLimitsConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = Field(
+        default=True,
+        description="Enable process-local governance for PolarRAG MCP Tools.",
+    )
+    user_requests_per_minute: int = Field(
+        default=60,
+        ge=1,
+        le=60_000,
+        description="Sustained PolarRAG Tool request rate per PAS user.",
+    )
+    user_burst: int = Field(
+        default=10,
+        ge=1,
+        le=10_000,
+        description="Maximum immediate PolarRAG Tool burst per PAS user.",
+    )
+    agent_requests_per_minute: int = Field(
+        default=120,
+        ge=1,
+        le=60_000,
+        description="Sustained request rate per Agent using an Agent User Token.",
+    )
+    agent_burst: int = Field(
+        default=20,
+        ge=1,
+        le=10_000,
+        description="Maximum immediate burst per Agent using an Agent User Token.",
+    )
+    instance_max_inflight: int = Field(
+        default=16,
+        ge=1,
+        le=10_000,
+        description="Maximum in-flight upstream requests per PolarRAG instance.",
+    )
+    max_fanout: int = Field(
+        default=8,
+        ge=1,
+        le=1_000,
+        description="Maximum upstream PolarRAG requests started by one Tool call.",
+    )
+    max_exhaustive_knowledge_resources: int = Field(
+        default=1_000,
+        ge=1,
+        le=10_000,
+        description=(
+            "Maximum knowledge resources accepted by one binding snapshot or "
+            "exhaustive search."
+        ),
+    )
+    retry_after_seconds: int = Field(
+        default=1,
+        ge=1,
+        le=3_600,
+        description="Retry-After value for concurrency and fanout rejections.",
+    )
+    upstream_request_timeout_ms: int = Field(
+        default=20_000,
+        ge=100,
+        le=300_000,
+        description="Timeout for each upstream PolarRAG HTTP request.",
+    )
+
+
 class AuditConfig(BaseModel):
     enabled: bool = True
     encrypt_sql_text: bool = False
@@ -324,7 +410,6 @@ class SQLSecurityConfig(BaseModel):
         default_factory=lambda: ["DROP", "TRUNCATE", "ALTER", "DELETE"]
     )
     rate_limit: RateLimitConfig = Field(default_factory=RateLimitConfig)
-    audit: AuditConfig = Field(default_factory=AuditConfig)
 
     @model_validator(mode="after")
     def _migrate_blocked_statement_types(self) -> "SQLSecurityConfig":
@@ -357,13 +442,33 @@ class LoggingConfig(BaseModel):
     timezone: str = "UTC+8"
 
 
+class EnterpriseIdentitySyncConfig(BaseModel):
+    interval_seconds: int = Field(default=1800, ge=60, le=86400)
+    initial_concurrency: int = Field(default=2, ge=1, le=32)
+    incremental_concurrency: int = Field(default=1, ge=1, le=32)
+
+
+class KnowledgeConfig(BaseModel):
+    """Restart-assembled capability. Legacy projections preserve enabled behavior."""
+
+    enabled: bool = True
+    validation_resource_id: str | None = None
+    validation_user_id: str | None = None
+
+
 class AppConfig(BaseModel):
+    knowledge: KnowledgeConfig = Field(default_factory=KnowledgeConfig)
     server: ServerConfig = Field(default_factory=ServerConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     aliyun: AliyunConfig = Field(default_factory=AliyunConfig)
     polardb: PolarDBConfig = Field(default_factory=PolarDBConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
     sql_security: SQLSecurityConfig = Field(default_factory=SQLSecurityConfig)
+    polarrag_tool_limits: PolarRAGToolLimitsConfig = Field(default_factory=PolarRAGToolLimitsConfig)
+    enterprise_identity_sync: EnterpriseIdentitySyncConfig = Field(
+        default_factory=EnterpriseIdentitySyncConfig
+    )
 
 
 _config: AppConfig | None = None

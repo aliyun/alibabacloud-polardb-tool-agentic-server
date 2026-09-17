@@ -2,6 +2,8 @@
 
 [English](../../en/getting-started/agents-and-mcp.md) | **简体中文**
 
+控制台将员工归入**访问管理 → 个人账号**，Agent 归入**服务账号**。通过**资源**管理数据库授权，通过**连接 MCP**直接以个人身份访问，无需 Agent。下文的既有高级配置和 Agent 连接继续支持。参见[账号与资源](../administration/accounts-and-resources.md)。
+
 本页创建一个 Agent、签发 Token、授权其访问实例，并连接 MCP 客户端调用
 数据库实例工具。
 

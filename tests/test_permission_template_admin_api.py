@@ -31,7 +31,7 @@ async def test_admin_creates_template_and_immutable_revision(client):
 
     listed = await http.get("/api/permission-templates", headers=admin_headers)
     assert listed.status_code == 200
-    assert listed.json()[0]["revisions"][0]["id"] == revision.json()["id"]
+    assert listed.json()["items"][0]["revisions"][0]["id"] == revision.json()["id"]
     assert "password" not in str(listed.json()).lower()
 
 

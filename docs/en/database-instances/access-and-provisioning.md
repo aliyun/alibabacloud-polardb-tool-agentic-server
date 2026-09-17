@@ -187,8 +187,9 @@ active-resource limit. Agent and Token have a one-to-one relationship; each
 Agent has exactly one Token record:
 
 - The creation response displays the new `pas_agent_...` Token.
-- The Agent detail page automatically displays the current active plaintext
-  Token to an authenticated administrator.
+- **Copy Token** reveals the current active plaintext under the authenticated
+  administrator session and writes it directly to the clipboard without a
+  second password prompt or rendering it on the page.
 - **MCP server URL** uses the active Runtime Policy `external_base_url` with
   `/mcp`. If that setting is empty or unavailable, it falls back to the
   console origin. Configure an address that the intended MCP client can
@@ -196,7 +197,8 @@ Agent has exactly one Token record:
   supported only for Agent Token-only use on a controlled private network;
   interactive OAuth and OIDC require HTTPS.
 - **Copy JSON configuration** copies the MCP URL and Token in a ready-to-paste
-  client configuration whose server name is the Agent name.
+  client configuration whose server name is the Agent name. Both copy actions
+  support controlled private HTTP pages through a legacy clipboard fallback.
 - **Regenerate Token** replaces it; the previous Token stops authenticating
   immediately.
 - **Revoke Token** stops authentication until a new Token is generated.
@@ -222,20 +224,20 @@ displayed after that time. The web console reports it as expired; an
 administrator must use **Regenerate Token** to issue a new active Token.
 
 The server stores a SHA-256 hash for authentication and encrypted ciphertext
-for administrator display. Loading the active plaintext is audited and
-rate-limited; secret responses use `Cache-Control: no-store`, and the console
-keeps the value only in React memory. Do not copy a Token into URLs, logs,
-analytics, browser storage, or source control. Store it in a secret manager
-and send it only as:
+for administrator copy. Loading the active plaintext requires an authenticated
+administrator session and is audited and rate-limited; secret responses use
+`Cache-Control: no-store`, and the console keeps the value only in transient
+memory. Do not copy a Token into URLs, logs, analytics, browser storage, or
+source control. Store it in a secret manager and send it only as:
 
 ```http
 Authorization: Bearer <agent-token>
 ```
 
 Audit records are retained for 180 days by default. The cleanup worker removes
-at most 500 oldest expired records once per hour. Operators can tune
-`sql_security.audit.retention_days`, `cleanup_interval_seconds`, and
-`cleanup_batch_size`; setting the interval to `0` disables scheduled cleanup.
+at most 500 oldest expired records once per hour. Operators can tune the global
+retention period with `observability.audit_retention_days` on the service
+configuration page.
 
 Disabling an Agent also denies authentication and effective instance access.
 

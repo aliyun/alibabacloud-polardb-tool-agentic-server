@@ -21,7 +21,7 @@ vi.mock('../../api/dedicatedPools', () => ({
 }))
 
 describe('PermissionTemplateDrawer', () => {
-  const templates = [
+const templates = [
     {
       id: 'template-1',
       name: 'Agent default',
@@ -37,12 +37,16 @@ describe('PermissionTemplateDrawer', () => {
         },
       ],
     },
-  ]
+]
+
+function pagedTemplates() {
+  return {
+    data: { items: templates, total: templates.length, offset: 0, limit: 20 },
+  } as never
+}
 
   it('previews targets before an explicitly confirmed apply', async () => {
-    vi.mocked(listPermissionTemplates).mockResolvedValue({
-      data: templates,
-    } as never)
+    vi.mocked(listPermissionTemplates).mockResolvedValue(pagedTemplates())
     vi.mocked(requestPermissionSync)
       .mockResolvedValueOnce({
         data: {
@@ -107,7 +111,7 @@ describe('PermissionTemplateDrawer', () => {
   })
 
   it('creates an immutable revision and saves it as the pool default', async () => {
-    vi.mocked(listPermissionTemplates).mockResolvedValue({ data: templates } as never)
+    vi.mocked(listPermissionTemplates).mockResolvedValue(pagedTemplates())
     vi.mocked(createPermissionTemplateRevision).mockResolvedValue({
       data: {
         id: 'revision-3',
@@ -153,7 +157,7 @@ describe('PermissionTemplateDrawer', () => {
   })
 
   it('explains when no existing Agent accounts can be synchronized', async () => {
-    vi.mocked(listPermissionTemplates).mockResolvedValue({ data: templates } as never)
+    vi.mocked(listPermissionTemplates).mockResolvedValue(pagedTemplates())
     vi.mocked(requestPermissionSync).mockResolvedValue({
       data: {
         id: 'preview-empty',

@@ -92,6 +92,11 @@ async def test_my_resources_returns_only_user_visible_knowledge_resources(
 
     assert response.status_code == 200
     assert response.json()["database_instances"] == []
+    admin_catalog = await http.get("/api/access/resources", params={"kind": "knowledge"}, headers=_admin_headers)
+    assert admin_catalog.status_code == 200
+    assert admin_catalog.json()["total"] == 2
+    assert {row["kind"] for row in admin_catalog.json()["items"]} == {"knowledge"}
+
     assert response.json()["knowledge_resources"] == [
         {
             "knowledge_resource_id": response.json()["knowledge_resources"][0][
@@ -226,3 +231,14 @@ async def test_my_resources_filters_public_kbs_for_selected_agent(
     )
 
     assert disabled_response.status_code == 404
+
+
+async def test_admin_knowledge_catalog_is_empty_when_feature_unavailable(client, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    http, admin_headers, _ = client
+    monkeypatch.setattr("server.features.knowledge.runtime", lambda: SimpleNamespace(available=AsyncMock(return_value=False)))
+    response = await http.get("/api/access/resources", params={"kind": "knowledge"}, headers=admin_headers)
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["total"] == 0

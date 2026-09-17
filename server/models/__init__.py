@@ -1,8 +1,11 @@
-from server.models.agent import Agent, AgentStatus
+from server.models.agent import Agent, AgentKnowledgeScopeMode, AgentStatus
 from server.models.agent_api_token import AgentAPIToken, AgentTokenRevealLimit
 from server.models.agent_polarrag_access import (
     AgentGroupAssignment,
     AgentGroupKind,
+    AgentKnowledgeScope,
+    AgentKnowledgeScopeBinding,
+    AgentKnowledgeScopeOrigin,
     AgentPolarRAGInstanceBinding,
     AgentUserAssignment,
     AgentUserToken,
@@ -56,13 +59,18 @@ from server.models.instance import (
     ProvisioningStep,
 )
 from server.models.oauth import (
+    ExternalTokenSession,
     OAuthAuthorizationCode,
     OAuthDeniedJTI,
+    OAuthExternalApplication,
+    OAuthExternalApplicationAgentPolicy,
+    OAuthExternalApplicationStatus,
     OAuthPendingAuth,
     OAuthRefreshToken,
     OAuthRegisteredClient,
     UserExternalIdentity,
 )
+from server.models.oidc_login_state import OIDCLoginState
 from server.models.identity_source import (
     EnterpriseDirectoryEntryStatus,
     EnterpriseDirectoryGroup,
@@ -73,9 +81,13 @@ from server.models.identity_source import (
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceSpaceBinding,
     EnterpriseIdentitySourceStatus,
+    ExternalUserPrincipalMembership,
     FeishuTenantVerificationState,
     FeishuUserLoginState,
     IdentitySourceProvider,
+    IdentitySourceGroupMembership,
+    IdentitySourceGroupMembershipType,
+    IdentitySourceUserPrincipalSnapshotEntry,
     SharePointUserLoginState,
 )
 from server.models.provisioning_backend import (
@@ -106,6 +118,7 @@ from server.models.polarrag import (
     EnterprisePrincipalType,
     KnowledgeBindingMode,
     KnowledgeResource,
+    KnowledgeResourceManagementMode,
     KnowledgeResourceSyncStatus,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
@@ -122,21 +135,26 @@ from server.models.secret_reveal_limit import SecretRevealLimit
 from server.models.system_config import (
     ConfigBootstrapClaim,
     ConfigOperationReceipt,
+    ConfigReceiptStatus,
+    ManagedInstanceBinding,
     SystemConfig,
 )
 from server.models.user import (
     AuthProvider,
+    PasswordState,
     ProvisioningMode,
     User,
     UserRole,
     UserStatus,
 )
 from server.models.user_refresh_token import UserRefreshToken
+from server.models.user_workspace import UserWorkspace
 
 __all__ = [
     "Base",
     "User",
     "AuthProvider",
+    "PasswordState",
     "UserRole",
     "UserStatus",
     "ProvisioningMode",
@@ -201,6 +219,11 @@ __all__ = [
     "AuditLog",
     "AuditStatus",
     "OAuthRegisteredClient",
+    "OAuthExternalApplication",
+    "OAuthExternalApplicationAgentPolicy",
+    "OAuthExternalApplicationStatus",
+    "ExternalTokenSession",
+    "OIDCLoginState",
     "OAuthAuthorizationCode",
     "OAuthRefreshToken",
     "OAuthDeniedJTI",
@@ -219,10 +242,17 @@ __all__ = [
     "EnterpriseDirectoryMembership",
     "EnterpriseDirectoryMembershipType",
     "EnterpriseDirectoryPrincipalType",
+    "ExternalUserPrincipalMembership",
+    "IdentitySourceGroupMembership",
+    "IdentitySourceGroupMembershipType",
+    "IdentitySourceUserPrincipalSnapshotEntry",
     "SystemConfig",
     "ConfigBootstrapClaim",
     "ConfigOperationReceipt",
+    "ConfigReceiptStatus",
+    "ManagedInstanceBinding",
     "UserRefreshToken",
+    "UserWorkspace",
     "QuotaCounter",
     "SecretRevealLimit",
     "ACL_CONTEXT_PRINCIPAL_PROVIDERS",
@@ -233,6 +263,7 @@ __all__ = [
     "EnterprisePrincipalType",
     "KnowledgeBindingMode",
     "KnowledgeResource",
+    "KnowledgeResourceManagementMode",
     "KnowledgeResourceSyncStatus",
     "PolarRAGInstance",
     "PolarRAGInstanceStatus",
@@ -241,4 +272,8 @@ __all__ = [
     "PolarRAGUploadSession",
     "PolarRAGUploadCleanup",
     "PolarRAGUploadStatus",
+    "AgentKnowledgeScopeMode",
+    "AgentKnowledgeScope",
+    "AgentKnowledgeScopeBinding",
+    "AgentKnowledgeScopeOrigin",
 ]

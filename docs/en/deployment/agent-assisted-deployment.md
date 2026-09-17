@@ -38,10 +38,21 @@ New and updated checkouts fetch `PAS_REF` and use detached HEAD. When
 match `PAS_REPO`. The scripts do not follow the repository's default branch.
 
 Do not put a database password, connection URL, encryption key, or bootstrap
-token in an agent conversation or command line. On the target, write the
-database password to an owner-readable file (`0600`) and pass its path through
-`POLARDB_PASSWORD_FILE`. The scripts store the bootstrap token in
-`$PAS_HOME/.secrets/bootstrap_token.txt`; read it only on the target.
+token in an agent conversation or command line. The default Docker path uses
+external MySQL: on the target, write its database password to an owner-readable
+file (`0600`) and pass its path through `POLARDB_PASSWORD_FILE`. The scripts
+store the bootstrap token in `$PAS_HOME/.secrets/bootstrap_token.txt`; read it
+only on the target.
+
+For a clean single-host Docker deployment without MySQL, explicitly set
+`PAS_DATABASE_ENGINE=sqlite`. It rejects all `POLARDB_*` inputs, needs no host
+SQLite installation, and persists `/var/lib/pas/pas.db` plus its root key in a
+Docker named volume. `PAS_SQLITE_VOLUME` defaults to
+`${PAS_COMPOSE_PROJECT}-sqlite-data`; it is external to Compose, so both
+`docker compose down` and `docker compose down -v` retain it. Deleting the
+named volume is a separate destructive operation. Initialization holds an
+exclusive volume lock and never replaces an existing root key. This option is
+not available in source mode.
 
 ## Validate the Linux target
 
@@ -61,6 +72,17 @@ Use `deploy-source.sh` instead only after selecting source mode. Validation
 checks Linux, inputs, database TCP reachability, target-directory safety,
 repository identity when present, and the mode-specific runtime path. It does
 not read a password or change packages, files, images, processes, or services.
+
+For SQLite Docker mode, omit all MySQL variables and validate explicitly. An
+alternate host port is optional:
+
+```bash
+SKILL_DIR=.agents/skills/deploy-polardb-agentic-server
+ssh user@linux-host \
+  "PAS_DATABASE_ENGINE=sqlite PAS_PORT=18782 \
+   PAS_HOME='/data/polar-mcp' bash -s -- --validate-only" \
+  < "$SKILL_DIR/scripts/deploy-docker.sh"
+```
 
 ## Run the selected mode
 
@@ -83,6 +105,11 @@ qualified mirror when needed. Source mode builds the matching immutable
 `PAS_REF` checkout with its frozen Python lock; use `SKIP_WEB=1` for
 backend-only deployment.
 
+When SQLite validation passes, run the same command without `--validate-only`.
+The script creates the named volume and its random root key only if absent,
+runs migration, then starts PAS. It does not create a MySQL database or write
+a host-side database/key environment file in this mode.
+
 ## Explicit expert overrides
 
 `PAS_UPDATE_REPO=0` preserves a deliberately pre-positioned PAS checkout and
@@ -92,11 +119,16 @@ then owns commit provenance and dependency compatibility.
 Docker mode builds locally only when `PAS_ALLOW_LOCAL_BUILD=1` is explicit. A
 local build uses the same verified checkout, but it is not equivalent to using
 the published image provenance. Do not enable the fallback merely to bypass a
-registry or architecture error.
+registry or architecture error. This path requires Docker Buildx; before the
+script creates or updates `PAS_HOME`, it checks `docker buildx version`. If it
+is unavailable, install a trusted Docker Buildx plugin, or use an approved
+`PAS_IMAGE` with `PAS_ALLOW_LOCAL_BUILD=0`. The script never downloads or
+installs a Buildx binary. When Docker is already available, `--validate-only`
+performs the same local-build prerequisite check without changing the host.
 
 ## Verification, rollback, and removal
 
-Verify `http://127.0.0.1:18760/readyz` after either mode. Docker operators
+Verify `http://127.0.0.1:${PAS_PORT:-18760}/readyz` after either mode. Docker operators
 should also inspect the Compose project; source operators should inspect
 `run/backend.out` and, when enabled, `run/web.out`. Restrict inbound access to
 the required sources.
@@ -114,6 +146,11 @@ docker compose -p polardb-agentic \
   --env-file .secrets/pas-compose.env \
   -f deploy/compose/compose.external-mysql.yaml down
 ```
+
+For SQLite mode, use `-f deploy/compose/compose.sqlite.yaml down` instead. Its
+external named volume is retained even when `-v` is present; it is the database
+and root-key recovery set and is deleted only by a separate Docker volume
+operation.
 
 For source mode, verify each recorded PID's `/proc/<pid>/cwd` and command line
 before stopping it; never use broad `pkill` patterns. Remove `$PAS_HOME` only

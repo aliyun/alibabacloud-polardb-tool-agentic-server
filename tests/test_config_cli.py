@@ -35,6 +35,16 @@ def test_parser_exposes_guided_configuration_commands() -> None:
         assert parser.parse_args(argv).handler
 
 
+def test_serve_parser_exposes_explicit_local_sso_dev_mode() -> None:
+    parser = build_parser()
+
+    normal = parser.parse_args(["serve"])
+    local = parser.parse_args(["serve", "--local-sso-dev"])
+
+    assert normal.local_sso_dev is False
+    assert local.local_sso_dev is True
+
+
 def test_plaintext_bootstrap_token_option_does_not_exist() -> None:
     parser = build_parser()
     with pytest.raises(SystemExit):

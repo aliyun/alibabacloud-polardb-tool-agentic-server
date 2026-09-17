@@ -10,6 +10,7 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 
+from server.config import get_config
 from server.core.crypto import decrypt
 from server.models import PolarRAGInstance
 from server.polarrag.contracts import (
@@ -17,6 +18,7 @@ from server.polarrag.contracts import (
     PolarRAGClient,
     PolarRAGErrorCode,
     PolarRAGKnowledgeBaseRecord,
+    PolarRAGSearchCapabilities,
     PolarRAGOperationNotSupported,
     PolarRAGSpaceRecord,
     PolarRAGUpstreamError,
@@ -264,11 +266,68 @@ class HttpPolarRAGClient(PolarRAGClient):
             knowledge_base_catalog=knowledge_base_catalog,
         )
 
+    async def get_search_capabilities(self) -> PolarRAGSearchCapabilities:
+        response = await self._request(
+            "GET",
+            f"{_PLUGIN_ROOT}/_search_capabilities",
+        )
+        schema_version = response.get("schema_version")
+        multi_kb_search = response.get("multi_kb_search")
+        max_kb_ids = response.get("max_kb_ids")
+        if (
+            schema_version != 1
+            or multi_kb_search is not True
+            or not isinstance(max_kb_ids, int)
+            or isinstance(max_kb_ids, bool)
+            or max_kb_ids < 1
+        ):
+            raise self._invalid_response()
+        return PolarRAGSearchCapabilities(max_kb_ids=max_kb_ids)
+
     async def list_spaces(self) -> list[PolarRAGSpaceRecord]:
         return await self._read_catalog(
             f"{_PLUGIN_ROOT}/spaces/_list",
             parse_item=self._parse_space,
         )
+
+    async def list_spaces_page(
+        self,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGSpaceRecord], str | None]:
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+        payload: dict[str, Any] = {
+            "size": page_size,
+            "statuses": ["ACTIVE"],
+        }
+        if cursor is not None:
+            payload["cursor"] = cursor
+        page = await self._request(
+            "POST",
+            f"{_PLUGIN_ROOT}/spaces/_list",
+            payload=payload,
+        )
+        items = page.get("items")
+        has_more = page.get("has_more")
+        next_cursor = page.get("next_cursor")
+        if (
+            not isinstance(items, list)
+            or not isinstance(has_more, bool)
+            or (
+                next_cursor is not None
+                and (not isinstance(next_cursor, str) or not next_cursor)
+            )
+            or has_more != (next_cursor is not None)
+        ):
+            raise self._invalid_response()
+        records = [
+            self._parse_space(item) for item in items if isinstance(item, dict)
+        ]
+        if len(records) != len(items) or (has_more and not records):
+            raise self._invalid_response()
+        return records, next_cursor
 
     async def list_knowledge_bases(
         self,
@@ -286,6 +345,20 @@ class HttpPolarRAGClient(PolarRAGClient):
                 space_id,
                 "ACTIVE",
             ),
+        )
+
+    async def list_knowledge_bases_page(
+        self,
+        space_id: str,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
+        return await self._list_knowledge_bases_page(
+            space_id,
+            cursor=cursor,
+            page_size=page_size,
+            status="ACTIVE",
         )
 
     async def list_unclaimed_knowledge_bases(
@@ -309,6 +382,68 @@ class HttpPolarRAGClient(PolarRAGClient):
         if any(record.kb_type != "PERSONAL" for record in records):
             raise self._invalid_response()
         return records
+
+    async def list_unclaimed_knowledge_bases_page(
+        self,
+        space_id: str,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
+        return await self._list_knowledge_bases_page(
+            space_id,
+            cursor=cursor,
+            page_size=page_size,
+            status="UNCLAIMED",
+        )
+
+    async def _list_knowledge_bases_page(
+        self,
+        space_id: str,
+        *,
+        cursor: str | None,
+        page_size: int,
+        status: str,
+    ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
+        if not space_id:
+            raise ValueError("space_id is required")
+        if page_size < 1:
+            raise ValueError("page_size must be positive")
+        path = (
+            f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
+            "/knowledge_bases/_list"
+        )
+        payload: dict[str, Any] = {
+            "size": page_size,
+            "statuses": [status],
+        }
+        if cursor is not None:
+            payload["cursor"] = cursor
+        page = await self._request("POST", path, payload=payload)
+        items = page.get("items")
+        has_more = page.get("has_more")
+        next_cursor = page.get("next_cursor")
+        if (
+            not isinstance(items, list)
+            or not isinstance(has_more, bool)
+            or (
+                next_cursor is not None
+                and (not isinstance(next_cursor, str) or not next_cursor)
+            )
+            or has_more != (next_cursor is not None)
+        ):
+            raise self._invalid_response()
+        records = [
+            self._parse_knowledge_base(item, space_id, status)
+            for item in items
+            if isinstance(item, dict)
+        ]
+        if len(records) != len(items) or (
+            status == "UNCLAIMED"
+            and any(record.kb_type != "PERSONAL" for record in records)
+        ) or (has_more and not records):
+            raise self._invalid_response()
+        return records, next_cursor
 
     async def claim_knowledge_base(
         self,
@@ -651,6 +786,38 @@ class HttpPolarRAGClient(PolarRAGClient):
             knowledge_resource_read=True,
         )
 
+    async def search_many(
+        self,
+        space_id: str,
+        kb_ids: list[str],
+        *,
+        query: str,
+        search_mode: str,
+        top_k: int,
+        min_score: float | None,
+        reranker: bool,
+        acl_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized_kb_ids = list(dict.fromkeys(kb_id.strip() for kb_id in kb_ids))
+        if not normalized_kb_ids or any(not kb_id for kb_id in normalized_kb_ids):
+            raise ValueError("kb_ids are required")
+        payload: dict[str, Any] = {
+            "query_text": query,
+            "kb_ids": normalized_kb_ids,
+            "search_mode": search_mode,
+            "size": top_k,
+            "reranker": reranker,
+            "acl_context": acl_context,
+        }
+        if min_score is not None:
+            payload["min_score"] = min_score
+        return await self._request(
+            "POST",
+            f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/search",
+            payload=payload,
+            knowledge_resource_read=True,
+        )
+
     async def fetch_context(
         self,
         space_id: str,
@@ -667,6 +834,26 @@ class HttpPolarRAGClient(PolarRAGClient):
             {
                 "chunk_index": chunk_index,
                 "window_size": window_size,
+                "acl_context": acl_context,
+            },
+        )
+
+    async def list_document_chunks(
+        self,
+        space_id: str,
+        doc_id: str,
+        *,
+        offset: int,
+        limit: int,
+        acl_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        return await self._protected_document_call(
+            space_id,
+            doc_id,
+            "chunks/_list",
+            {
+                "from": offset,
+                "size": limit,
                 "acl_context": acl_context,
             },
         )
@@ -811,4 +998,8 @@ def client_from_instance(
         password=password,
         tls_verify=verify,
         transport=transport,
+        timeout=(
+            get_config().polarrag_tool_limits.upstream_request_timeout_ms
+            / 1000
+        ),
     )

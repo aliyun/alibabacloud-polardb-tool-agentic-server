@@ -147,14 +147,16 @@ DDL 并发数。服务验证定义和连接后才会激活后端。
 记录：
 
 - 创建结果会显示新的 `pas_agent_...` Token。
-- Agent 详情页会自动向已认证管理员展示当前有效的明文 Token。
+- **Copy Token** 使用已认证管理员 Session 读取当前有效的明文，并直接写入
+  剪贴板；不会再次要求输入密码，也不会在页面中显示 Token。
 - **MCP server URL** 优先展示已激活 Runtime Policy 的
   `external_base_url` 加 `/mcp` 后的地址；该配置为空或无法读取时，回退到
   控制台 origin。请填写目标 MCP 客户端能够访问的地址；使用 VPC 地址时，
   客户端必须具备 VPC 网络连通性。HTTP 仅支持受控私网中的 Agent Token
   模式；交互式 OAuth 和 OIDC 必须使用 HTTPS。
 - **Copy JSON configuration** 会复制包含 MCP 地址和 Token 的客户端配置，
-  其中 server 名称默认为 Agent 名称。
+  其中 server 名称默认为 Agent 名称。两个复制操作都支持受控私网 HTTP 页面，
+  此时会使用兼容剪贴板降级。
 - **Regenerate Token** 会替换 Token，旧 Token 立即停止认证。
 - **Revoke Token** 会停止认证，直到重新生成 Token。
 
@@ -177,19 +179,18 @@ DDL 并发数。服务验证定义和连接后才会激活后端。
 过期时间，到期后 Token 不能用于认证，也不能再展示明文；Web 控制台会将其
 标记为已过期，管理员必须使用 **Regenerate Token** 签发新的有效 Token。
 
-服务使用 SHA-256 哈希完成认证，并为管理员展示保存加密密文。加载有效明文
-会被审计和限流；秘密响应使用 `Cache-Control: no-store`，控制台只在 React
-内存中保留该值。不要将 Token 写入 URL、日志、分析系统、浏览器存储或源码。
-应将其保存在密钥管理服务中，并且只通过以下请求头发送：
+服务使用 SHA-256 哈希完成认证，并为管理员复制保存加密密文。加载有效明文
+要求已认证管理员 Session，并受审计和限流保护；秘密响应使用
+`Cache-Control: no-store`，控制台只在瞬时内存中保留该值。不要将 Token 写入
+URL、日志、分析系统、浏览器存储或源码。应将其保存在密钥管理服务中，并且只
+通过以下请求头发送：
 
 ```http
 Authorization: Bearer <agent-token>
 ```
 
 审计记录默认保留 180 天。清理任务每小时最多删除 500 条最早过期的记录。运维
-人员可以调整 `sql_security.audit.retention_days`、
-`cleanup_interval_seconds` 和 `cleanup_batch_size`；将清理间隔设为 `0`
-可以禁用定时清理。
+人员可以在服务配置页通过 `observability.audit_retention_days` 调整全局保留天数。
 
 禁用 Agent 也会拒绝认证及其有效实例访问。
 

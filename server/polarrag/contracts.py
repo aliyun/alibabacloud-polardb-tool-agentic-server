@@ -18,6 +18,7 @@ class PolarRAGErrorCode(str, enum.Enum):
     KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE = (
         "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE"
     )
+    EXTERNAL_SYNC_RESOURCE_READ_ONLY = "EXTERNAL_SYNC_RESOURCE_READ_ONLY"
 
 
 class PolarRAGUpstreamError(RuntimeError):
@@ -62,6 +63,11 @@ class PolarRAGCapabilities:
 
 
 @dataclass(frozen=True)
+class PolarRAGSearchCapabilities:
+    max_kb_ids: int
+
+
+@dataclass(frozen=True)
 class PolarRAGSpaceRecord:
     space_id: str
     name: str
@@ -87,17 +93,42 @@ class PolarRAGKnowledgeBaseRecord:
 class PolarRAGClient(Protocol):
     async def check_capabilities(self) -> PolarRAGCapabilities: ...
 
+    async def get_search_capabilities(self) -> PolarRAGSearchCapabilities: ...
+
     async def list_spaces(self) -> list[PolarRAGSpaceRecord]: ...
+
+    async def list_spaces_page(
+        self,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGSpaceRecord], str | None]: ...
 
     async def list_knowledge_bases(
         self,
         space_id: str,
     ) -> list[PolarRAGKnowledgeBaseRecord]: ...
 
+    async def list_knowledge_bases_page(
+        self,
+        space_id: str,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]: ...
+
     async def list_unclaimed_knowledge_bases(
         self,
         space_id: str,
     ) -> list[PolarRAGKnowledgeBaseRecord]: ...
+
+    async def list_unclaimed_knowledge_bases_page(
+        self,
+        space_id: str,
+        *,
+        cursor: str | None,
+        page_size: int,
+    ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]: ...
 
     async def claim_knowledge_base(
         self,
@@ -152,6 +183,19 @@ class PolarRAGClient(Protocol):
         acl_context: dict[str, Any],
     ) -> dict[str, Any]: ...
 
+    async def search_many(
+        self,
+        space_id: str,
+        kb_ids: list[str],
+        *,
+        query: str,
+        search_mode: str,
+        top_k: int,
+        min_score: float | None,
+        reranker: bool,
+        acl_context: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
     async def fetch_context(
         self,
         space_id: str,
@@ -159,6 +203,16 @@ class PolarRAGClient(Protocol):
         *,
         chunk_index: int,
         window_size: int,
+        acl_context: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
+    async def list_document_chunks(
+        self,
+        space_id: str,
+        doc_id: str,
+        *,
+        offset: int,
+        limit: int,
         acl_context: dict[str, Any],
     ) -> dict[str, Any]: ...
 

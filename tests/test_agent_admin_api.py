@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -84,10 +83,10 @@ async def client(setup):
     _, admin, member = setup
     app = create_app()
     admin_headers = {
-        "Authorization": f"Bearer {create_access_token({'sub': admin.id, 'role': 'admin'})}"
+        "Authorization": f"Bearer {create_access_token({'sub': admin.id, 'role': 'admin', 'credential_epoch': admin.credential_epoch})}"
     }
     member_headers = {
-        "Authorization": f"Bearer {create_access_token({'sub': member.id, 'role': 'member'})}"
+        "Authorization": f"Bearer {create_access_token({'sub': member.id, 'role': 'member', 'credential_epoch': member.credential_epoch})}"
     }
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -113,7 +112,6 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
     assert created.headers["cache-control"] == "no-store"
     initial_reveal = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     initial_plaintext = initial_reveal.json()["token"]
@@ -132,7 +130,6 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
     assert first.headers["cache-control"] == "no-store"
     second_reveal = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     second_plaintext = second_reveal.json()["token"]
@@ -148,7 +145,6 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
 
     reveal = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     assert reveal.status_code == 200
@@ -161,7 +157,6 @@ async def test_admin_crud_and_regenerate_reveal_revoke(client, setup, caplog):
     assert revoked.status_code == 200
     denied = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     assert denied.status_code == 409
@@ -206,32 +201,33 @@ async def test_reveal_is_rate_limited_per_admin_and_agent(client):
         assert (
             await http.post(
                 f"/api/agents/{agent_id}/token/reveal",
-                json={"password": "password"},
                 headers=headers,
             )
         ).status_code == 200
     limited = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     assert limited.status_code == 429
 
 
-async def test_reveal_requires_current_admin_password(client) -> None:
+async def test_reveal_requires_authenticated_admin_not_password(client) -> None:
     http, headers, _ = client
     created = await http.post(
         "/api/agents",
-        json={"name": "password-protected"},
+        json={"name": "admin-session-protected"},
         headers=headers,
     )
 
+    revealed = await http.post(
+        f"/api/agents/{created.json()['id']}/token/reveal", headers=headers
+    )
     denied = await http.post(
-        f"/api/agents/{created.json()['id']}/token/reveal",
-        json={"password": "wrong-password"},
-        headers=headers,
+        f"/api/agents/{created.json()['id']}/token/reveal"
     )
 
+    assert revealed.status_code == 200
+    assert revealed.json()["token"].startswith("pas_agent_")
     assert denied.status_code == 401
     assert "pas_agent_" not in denied.text
 
@@ -239,7 +235,7 @@ async def test_reveal_requires_current_admin_password(client) -> None:
 async def test_reveal_limit_is_shared_in_database_across_app_instances(setup):
     factory, admin, _ = setup
     headers = {
-        "Authorization": f"Bearer {create_access_token({'sub': admin.id, 'role': 'admin'})}"
+        "Authorization": f"Bearer {create_access_token({'sub': admin.id, 'role': 'admin', 'credential_epoch': admin.credential_epoch})}"
     }
     first_app = create_app()
     second_app = create_app()
@@ -260,14 +256,12 @@ async def test_reveal_limit_is_shared_in_database_across_app_instances(setup):
             assert (
                 await client.post(
                     f"/api/agents/{agent_id}/token/reveal",
-                    json={"password": "password"},
                     headers=headers,
                 )
             ).status_code == 200
         assert (
             await second.post(
                 f"/api/agents/{agent_id}/token/reveal",
-                json={"password": "password"},
                 headers=headers,
             )
         ).status_code == 429
@@ -284,10 +278,10 @@ async def test_reveal_limit_is_shared_in_database_across_app_instances(setup):
         assert limiter.request_count == 5
 
 
-async def test_required_token_audit_ignores_optional_sql_audit_disable(client, setup):
+async def test_required_token_audit_ignores_optional_audit_disable(client, setup):
     http, headers, _ = client
     factory, _, _ = setup
-    get_config().sql_security.audit.enabled = False
+    get_config().audit.enabled = False
     created = await http.post(
         "/api/agents", json={"name": "required-audit"}, headers=headers
     )
@@ -295,7 +289,6 @@ async def test_required_token_audit_ignores_optional_sql_audit_disable(client, s
     assert "token" not in created.json()
     revealed = await http.post(
         f"/api/agents/{created.json()['id']}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     assert revealed.status_code == 200
@@ -320,7 +313,6 @@ async def test_audit_failure_rolls_back_regeneration_and_keeps_old_token_valid(
     old_plaintext = (
         await http.post(
             f"/api/agents/{agent_id}/token/reveal",
-            json={"password": "password"},
             headers=headers,
         )
     ).json()["token"]
@@ -340,7 +332,6 @@ async def test_audit_failure_rolls_back_regeneration_and_keeps_old_token_valid(
     assert await provider._load_agent_access_token(old_plaintext) is not None
     reveal_failed = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     assert reveal_failed.status_code == 503
@@ -426,6 +417,87 @@ async def test_update_can_clear_description_and_emits_stable_status_audits(
         actions = list((await session.execute(select(AuditLog.action))).scalars())
     assert "agent.disable" in actions
     assert "agent.enable" in actions
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    (
+        "http://platform.example.com/callback",
+        "https://user:password@platform.example.com/callback",
+        "https://platform.example.com/callback#fragment",
+        "https://*.example.com/callback",
+    ),
+)
+async def test_agent_create_rejects_unsafe_oauth_redirect_uri(
+    client, redirect_uri
+):
+    http, headers, _ = client
+    name_hash = hashlib.sha256(redirect_uri.encode()).hexdigest()[:8]
+    response = await http.post(
+        "/api/agents",
+        json={
+            "name": f"unsafe-{name_hash}",
+            "oauth_redirect_uri": redirect_uri,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    (
+        "http://platform.example.com/callback",
+        "https://user:password@platform.example.com/callback",
+        "https://platform.example.com/callback#fragment",
+        "https://*.example.com/callback",
+    ),
+)
+async def test_agent_update_rejects_unsafe_oauth_redirect_uri(
+    client, redirect_uri
+):
+    http, headers, _ = client
+    created = await http.post(
+        "/api/agents", json={"name": "redirect-update"}, headers=headers
+    )
+    response = await http.patch(
+        f"/api/agents/{created.json()['id']}",
+        json={"oauth_redirect_uri": redirect_uri},
+        headers=headers,
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "redirect_uri",
+    (
+        "https://platform.example.com/callback",
+        "http://localhost:8080/callback",
+        "http://127.0.0.1:8080/callback",
+        "http://[::1]:8080/callback",
+    ),
+)
+async def test_agent_preserves_safe_oauth_redirect_uri(client, redirect_uri):
+    http, headers, _ = client
+    name_hash = hashlib.sha256(redirect_uri.encode()).hexdigest()[:8]
+    created = await http.post(
+        "/api/agents",
+        json={
+            "name": f"safe-{name_hash}",
+            "oauth_redirect_uri": redirect_uri,
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["oauth_redirect_uri"] == redirect_uri
+
+    cleared = await http.patch(
+        f"/api/agents/{created.json()['id']}",
+        json={"oauth_redirect_uri": None},
+        headers=headers,
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["oauth_redirect_uri"] is None
 
 
 async def test_two_sessions_first_generation_is_linearizable(tmp_path):
@@ -540,7 +612,6 @@ async def test_agent_routes_require_admin_and_old_user_token_routes_are_gone(
     assert (
         await http.post(
             f"/api/agents/{agent_id}/token/reveal",
-            json={"password": "password"},
             headers=member_headers,
         )
     ).status_code == 403
@@ -566,63 +637,6 @@ async def test_duplicate_agent_name_is_conflict(client):
     assert duplicate.status_code == 409
 
 
-@pytest.mark.parametrize(
-    "body",
-    [
-        None,
-        {"password": ""},
-        {"password": "password", "unexpected": "field"},
-    ],
-)
-async def test_reveal_requires_strict_confirmation_before_sensitive_work(
-    client, setup, monkeypatch, body
-):
-    http, headers, _ = client
-    factory, _, _ = setup
-    created = await http.post(
-        "/api/agents", json={"name": f"strict-reveal-{body}"}, headers=headers
-    )
-    agent_id = created.json()["id"]
-    consume = AsyncMock()
-    decrypt = AsyncMock()
-    audit = AsyncMock()
-    monkeypatch.setattr(
-        "server.api.agents.agent_token_service.consume_reveal_budget", consume
-    )
-    monkeypatch.setattr(
-        "server.api.agents.agent_token_service.reveal_token", decrypt
-    )
-    monkeypatch.setattr("server.api.agents._audit_token_action", audit)
-
-    request_kwargs = {"headers": headers}
-    if body is not None:
-        request_kwargs["json"] = body
-    response = await http.post(
-        f"/api/agents/{agent_id}/token/reveal", **request_kwargs
-    )
-
-    assert response.status_code == 422
-    consume.assert_not_awaited()
-    decrypt.assert_not_awaited()
-    audit.assert_not_awaited()
-    async with factory() as session:
-        assert (
-            await session.execute(
-                select(AgentTokenRevealLimit).where(
-                    AgentTokenRevealLimit.agent_id == agent_id
-                )
-            )
-        ).scalar_one_or_none() is None
-        assert (
-            await session.execute(
-                select(AuditLog).where(
-                    AuditLog.action == "agent_token.reveal",
-                    AuditLog.target_id == created.json()["token_id"],
-                )
-            )
-        ).scalar_one_or_none() is None
-
-
 async def test_agent_detail_reports_token_lifecycle_independent_of_agent_status(
     client, setup
 ):
@@ -644,7 +658,6 @@ async def test_agent_detail_reports_token_lifecycle_independent_of_agent_status(
     assert disabled.json()["token_summary"]["status"] == "active"
     revealed = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     assert revealed.status_code == 200
@@ -661,7 +674,6 @@ async def test_agent_detail_reports_token_lifecycle_independent_of_agent_status(
 
     denied_expired = await http.post(
         f"/api/agents/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=headers,
     )
     assert denied_expired.status_code == 409
@@ -684,7 +696,9 @@ async def test_agent_detail_reports_token_lifecycle_independent_of_agent_status(
     assert detail_after_cleanup.json()["token_summary"]["status"] == "expired"
     listed_after_cleanup = await http.get("/api/agents", headers=headers)
     listed_agent = next(
-        item for item in listed_after_cleanup.json() if item["id"] == agent_id
+        item
+        for item in listed_after_cleanup.json()["items"]
+        if item["id"] == agent_id
     )
     assert listed_agent["token_summary"]["status"] == "expired"
 
@@ -699,3 +713,35 @@ async def test_agent_detail_reports_token_lifecycle_independent_of_agent_status(
         tokenless_id = tokenless.id
     missing = await http.get(f"/api/agents/{tokenless_id}", headers=headers)
     assert missing.json()["token_summary"] is None
+
+
+async def test_agent_list_uses_backend_pagination_and_search(client, setup):
+    http, headers, _ = client
+    factory, admin, _ = setup
+    async with factory() as session:
+        session.add_all(
+            [
+                Agent(name=f"bulk-agent-{index:02d}", created_by=admin.id)
+                for index in range(25)
+            ]
+        )
+        await session.commit()
+
+    page = await http.get(
+        "/api/agents",
+        params={"offset": 20, "limit": 10},
+        headers=headers,
+    )
+    assert page.status_code == 200
+    assert page.json()["total"] == 25
+    assert page.json()["offset"] == 20
+    assert len(page.json()["items"]) == 5
+
+    searched = await http.get(
+        "/api/agents",
+        params={"search": "bulk-agent-07", "limit": 10},
+        headers=headers,
+    )
+    assert searched.status_code == 200
+    assert searched.json()["total"] == 1
+    assert searched.json()["items"][0]["name"] == "bulk-agent-07"

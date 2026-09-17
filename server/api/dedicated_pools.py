@@ -5,14 +5,15 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.aliyun.diagnostics import safe_error_code, safe_error_detail
 from server.auth.dependencies import require_admin
+from server.api.pagination import Page
 from server.config import get_config
 from server.core.audit_logger import log_audit
 from server.core.dedicated_pool_service import (
@@ -495,15 +496,32 @@ async def _audit_pool(
     )
 
 
-@router.get("", response_model=list[DedicatedPoolResponse])
+@router.get("", response_model=Page[DedicatedPoolResponse])
 async def list_dedicated_pools(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    filters = []
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(DedicatedPool.name.ilike(pattern), DedicatedPool.id.ilike(pattern))
+        )
+    total = (
+        await session.scalar(select(func.count(DedicatedPool.id)).where(*filters))
+        or 0
+    )
     pools = list(
         (
             await session.scalars(
-                select(DedicatedPool).order_by(DedicatedPool.name)
+                select(DedicatedPool)
+                .where(*filters)
+                .order_by(DedicatedPool.name, DedicatedPool.id)
+                .offset(offset)
+                .limit(limit)
             )
         ).all()
     )
@@ -511,10 +529,15 @@ async def list_dedicated_pools(
         session,
         config=get_config(),
     )
-    return [
-        _pool_response(await dedicated_pool_view(session, pool), readiness)
-        for pool in pools
-    ]
+    return Page(
+        items=[
+            _pool_response(await dedicated_pool_view(session, pool), readiness)
+            for pool in pools
+        ],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/readiness")

@@ -15,8 +15,9 @@ keep backups, and pin the deployed image by digest.
 - A MySQL 8.0 or PostgreSQL metadata database reachable from every backend
   Pod. PolarDB for MySQL 8.0 is recommended for ACK production deployments.
 
-The container runs as UID and GID `10001`, listens on TCP `18760`, and needs
-writable mounts for `/tmp`, `/app/log`, and `/var/run/pas`. Its root
+The container runs as UID and GID `10001`. Its business listener defaults to
+TCP `18760`; set `PAS_SERVER_PORT` when the platform allocates another port.
+It needs writable mounts for `/tmp`, `/app/log`, and `/var/run/pas`. Its root
 filesystem can be read-only.
 
 ## Required bootstrap settings
@@ -34,6 +35,25 @@ or losing it makes encrypted configuration unreadable.
 Run `pas database migrate` once before starting a new application version.
 Application Pods only run the read-only `pas database check` startup gate and
 never migrate automatically.
+
+## Optional management listener
+
+The control-plane management listener is disabled unless
+`PAS_MANAGEMENT_PORT` and `PAS_MANAGEMENT_AUTH_MODE` are explicitly set. The
+business and management ports must be distinct. A managed deployment also
+injects `PAS_MANAGED_INSTANCE_ID` and `PAS_MANAGED_INSTANCE_GENERATION` as
+environment variables when rendering the workload; these settings are not CLI
+arguments.
+
+Use `trusted-network` only behind a separate ClusterIP Service and a
+deny-by-default NetworkPolicy that admits the control plane alone. Any
+deployment where other tenants or public networks can reach the listener must
+use `bearer-token` with `PAS_MANAGEMENT_TOKEN_FILE` pointing to a restricted
+mounted file. Never put the token value in an environment variable.
+
+The management listener is an operator interface, not a customer OpenAPI.
+Keep it out of the business Service, Ingress, load balancer, and public API
+gateway.
 
 ## Image registry access
 

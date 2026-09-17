@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 
 export type AgentStatus = 'active' | 'disabled'
 export type AgentTokenStatus = 'active' | 'revoked' | 'expired'
@@ -20,6 +21,7 @@ export interface Agent {
   description: string | null
   status: AgentStatus
   max_active_resources: number | null
+  oauth_redirect_uri?: string | null
   created_by: string | null
   created_at: string
   updated_at: string | null
@@ -30,6 +32,7 @@ export interface AgentInput {
   name: string
   description?: string | null
   max_active_resources?: number | null
+  oauth_redirect_uri?: string | null
 }
 
 export interface AgentUpdate {
@@ -37,6 +40,7 @@ export interface AgentUpdate {
   description?: string | null
   status?: AgentStatus
   max_active_resources?: number | null
+  oauth_redirect_uri?: string | null
 }
 
 export interface AgentCreated extends Agent {
@@ -55,10 +59,6 @@ export interface AgentToken {
   created_at: string
   updated_at: string | null
   token: string | null
-}
-
-export interface AgentTokenRevealRequest {
-  password: string
 }
 
 export type AgentGroupKind =
@@ -116,7 +116,75 @@ export interface AgentUserAssignment {
   created_at: string
 }
 
-export const listAgents = () => api.get<Agent[]>('/api/agents')
+export type { Page } from './pagination'
+
+export interface AgentUserOption {
+  id: string
+  display_name: string
+  external_id: string
+  status: string
+}
+
+export type AgentKnowledgeScopeMode = 'LEGACY_ALL' | 'SCOPED'
+export type AgentKnowledgeBindingOrigin = 'MANUAL' | 'EXTERNAL_SYNC'
+export type AgentKnowledgeBindingSubjectType = 'USER' | 'DEPARTMENT' | 'GROUP'
+
+export interface AgentKnowledgeBindingSubject {
+  type: AgentKnowledgeBindingSubjectType
+  user_id?: string | null
+  department_id?: string | null
+  identity_source_id?: string | null
+  group_id?: string | null
+  display_name?: string
+  external_id?: string | null
+}
+
+export interface AgentKnowledgeResourceOption {
+  knowledge_resource_id: string
+  space_id: string | null
+  space_name: string | null
+  kb_id: string | null
+  name: string | null
+}
+
+export interface AgentKnowledgeBinding {
+  binding_id: string
+  scope_id: string
+  origin: AgentKnowledgeBindingOrigin
+  identity_source_id: string | null
+  external_scope_id: string | null
+  subject: AgentKnowledgeBindingSubject & { display_name: string }
+  knowledge_resources: AgentKnowledgeResourceOption[]
+  created_at: string
+  updated_at: string | null
+}
+
+export interface AgentKnowledgeBindingPage extends Page<AgentKnowledgeBinding> {
+  knowledge_scope_mode: AgentKnowledgeScopeMode
+}
+
+export interface AgentKnowledgeBindingOperation {
+  operation: 'BIND' | 'UNBIND'
+  subjects: AgentKnowledgeBindingSubject[]
+  targets: Array<
+    | { knowledge_resource_id: string }
+    | { space_id: string; kb_id: string }
+  >
+}
+
+export interface AgentKnowledgeBindingBatchInput {
+  operations: AgentKnowledgeBindingOperation[]
+  activate_scoped_mode?: boolean
+}
+
+export interface BulkUserAssignmentStatus {
+  status: 'running' | 'completed' | 'failed'
+  created_count: number
+  error: string | null
+}
+
+export const listAgents = (params: PageParams = {}) =>
+  api.get<Page<Agent>>('/api/agents', { params })
 
 export const getAgent = (agentId: string) =>
   api.get<Agent>(`/api/agents/${encodeURIComponent(agentId)}`)
@@ -136,14 +204,9 @@ export const regenerateAgentToken = (
     { expires_at: expiresAt },
   )
 
-export const revealAgentToken = (
-  agentId: string,
-  request: AgentTokenRevealRequest,
-) =>
+export const revealAgentToken = (agentId: string) =>
   api.post<AgentToken>(
     `/api/agents/${encodeURIComponent(agentId)}/token/reveal`,
-    request,
-    { pasSkipAuthRedirect: true },
   )
 
 export const revokeAgentToken = (agentId: string) =>
@@ -151,9 +214,13 @@ export const revokeAgentToken = (agentId: string) =>
     `/api/agents/${encodeURIComponent(agentId)}/token/revoke`,
   )
 
-export const listAgentPolarRAGBindings = (agentId: string) =>
-  api.get<AgentPolarRAGBinding[]>(
+export const listAgentPolarRAGBindings = (
+  agentId: string,
+  params: PageParams = {},
+) =>
+  api.get<Page<AgentPolarRAGBinding>>(
     `/api/agents/${encodeURIComponent(agentId)}/polarrag-bindings`,
+    { params },
   )
 
 export const createAgentPolarRAGBinding = (
@@ -168,9 +235,11 @@ export const createAgentPolarRAGBinding = (
 export const listAgentPolarRAGPublicResources = (
   agentId: string,
   bindingId: string,
+  params: Pick<Page<unknown>, 'offset' | 'limit'> & { search?: string },
 ) =>
-  api.get<AgentPolarRAGPublicResource[]>(
+  api.get<Page<AgentPolarRAGPublicResource>>(
     `/api/agents/${encodeURIComponent(agentId)}/polarrag-bindings/${encodeURIComponent(bindingId)}/public-resources`,
+    { params },
   )
 
 export const updateAgentPolarRAGPublicResources = (
@@ -191,9 +260,22 @@ export const deleteAgentPolarRAGBinding = (
     `/api/agents/${encodeURIComponent(agentId)}/polarrag-bindings/${encodeURIComponent(bindingId)}`,
   )
 
-export const listAgentUserAssignments = (agentId: string) =>
-  api.get<AgentUserAssignment[]>(
+export const listAgentUserAssignments = (
+  agentId: string,
+  params: Pick<Page<unknown>, 'offset' | 'limit'> & { search?: string },
+) =>
+  api.get<Page<AgentUserAssignment>>(
     `/api/agents/${encodeURIComponent(agentId)}/user-assignments`,
+    { params },
+  )
+
+export const listAgentUserOptions = (
+  agentId: string,
+  params: Pick<Page<unknown>, 'offset' | 'limit'> & { search?: string },
+) =>
+  api.get<Page<AgentUserOption>>(
+    `/api/agents/${encodeURIComponent(agentId)}/user-options`,
+    { params },
   )
 
 export const createAgentUserAssignment = (
@@ -203,6 +285,16 @@ export const createAgentUserAssignment = (
   api.post<AgentUserAssignment>(
     `/api/agents/${encodeURIComponent(agentId)}/user-assignments`,
     { user_id: userId },
+  )
+
+export const createAllAgentUserAssignments = (agentId: string) =>
+  api.post<BulkUserAssignmentStatus>(
+    `/api/agents/${encodeURIComponent(agentId)}/user-assignments/bulk`,
+  )
+
+export const getAllAgentUserAssignmentStatus = (agentId: string) =>
+  api.get<BulkUserAssignmentStatus>(
+    `/api/agents/${encodeURIComponent(agentId)}/user-assignments/bulk/status`,
   )
 
 export const deleteAgentUserAssignment = (
@@ -221,14 +313,22 @@ export const forceRevokeAgentUserToken = (
     `/api/agents/${encodeURIComponent(agentId)}/user-assignments/${encodeURIComponent(assignmentId)}/token/revoke`,
   )
 
-export const listAgentGroupOptions = (agentId: string) =>
-  api.get<AgentGroupOption[]>(
+export const listAgentGroupOptions = (
+  agentId: string,
+  params: Pick<Page<unknown>, 'offset' | 'limit'> & { search?: string },
+) =>
+  api.get<Page<AgentGroupOption>>(
     `/api/agents/${encodeURIComponent(agentId)}/group-options`,
+    { params },
   )
 
-export const listAgentGroupAssignments = (agentId: string) =>
-  api.get<AgentGroupAssignment[]>(
+export const listAgentGroupAssignments = (
+  agentId: string,
+  params: Pick<Page<unknown>, 'offset' | 'limit'> & { search?: string },
+) =>
+  api.get<Page<AgentGroupAssignment>>(
     `/api/agents/${encodeURIComponent(agentId)}/group-assignments`,
+    { params },
   )
 
 export const createAgentGroupAssignment = (
@@ -253,4 +353,38 @@ export const deleteAgentGroupAssignment = (
 ) =>
   api.delete(
     `/api/agents/${encodeURIComponent(agentId)}/group-assignments/${encodeURIComponent(assignmentId)}`,
+  )
+
+export const listAgentKnowledgeBindings = (
+  agentId: string,
+  params: PageParams & {
+    origin?: AgentKnowledgeBindingOrigin
+    subject_type?: AgentKnowledgeBindingSubjectType
+  } = {},
+) =>
+  api.get<AgentKnowledgeBindingPage>(
+    `/api/admin/agents/${encodeURIComponent(agentId)}/knowledge-bindings`,
+    { params },
+  )
+
+export const listAgentKnowledgeResourceOptions = (
+  agentId: string,
+  params: PageParams = {},
+) =>
+  api.get<Page<AgentKnowledgeResourceOption>>(
+    `/api/admin/agents/${encodeURIComponent(agentId)}/knowledge-resource-options`,
+    { params },
+  )
+
+export const updateAgentKnowledgeBindingsBatch = (
+  agentId: string,
+  input: AgentKnowledgeBindingBatchInput,
+) =>
+  api.post<{
+    agent_id: string
+    operations_processed: number
+    knowledge_scope_mode: AgentKnowledgeScopeMode
+  }>(
+    `/api/admin/agents/${encodeURIComponent(agentId)}/knowledge-bindings:batch`,
+    input,
   )

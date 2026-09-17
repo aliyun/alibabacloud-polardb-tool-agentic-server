@@ -53,6 +53,78 @@ async def create_config_context() -> ConfigTestContext:
     )
 
 
+async def seed_v1_global_audit(
+    context: ConfigTestContext,
+    *,
+    enabled: bool = False,
+    retention_days: int = 45,
+    with_drafts: bool = False,
+) -> tuple[ModuleDocument, ModuleDocument]:
+    sql = await context.repository.get_module("sql_security")
+    observability = await context.repository.get_module("observability")
+    assert sql is not None and sql.effective is not None
+    assert observability is not None and observability.effective is not None
+
+    sql_config = {
+        **sql.effective.config,
+        "audit_enabled": enabled,
+        "audit_retention_days": retention_days,
+    }
+    observability_config = {
+        key: value
+        for key, value in observability.effective.config.items()
+        if key not in {"audit_enabled", "audit_retention_days"}
+    }
+    sql_updates: dict[str, object] = {
+        "schema_version": 1,
+        "effective": sql.effective.model_copy(
+            update={"config": sql_config}
+        ),
+    }
+    observability_updates: dict[str, object] = {
+        "schema_version": 1,
+        "effective": observability.effective.model_copy(
+            update={"config": observability_config}
+        ),
+    }
+    if with_drafts:
+        sql_updates.update(
+            {
+                "workflow_state": ModuleState.DRAFT,
+                "draft": {
+                    **sql_config,
+                    "requests_per_minute": 17,
+                },
+            }
+        )
+        observability_updates.update(
+            {
+                "workflow_state": ModuleState.DRAFT,
+                "draft": {
+                    **observability_config,
+                    "log_level": "debug",
+                },
+            }
+        )
+    await context.repository.compare_and_set_module(
+        "sql_security",
+        expected_revision=sql.revision,
+        document=sql.model_copy(update=sql_updates),
+    )
+    await context.repository.compare_and_set_module(
+        "observability",
+        expected_revision=observability.revision,
+        document=observability.model_copy(update=observability_updates),
+    )
+    stored_sql = await context.repository.get_module("sql_security")
+    stored_observability = await context.repository.get_module(
+        "observability"
+    )
+    assert stored_sql is not None
+    assert stored_observability is not None
+    return stored_sql, stored_observability
+
+
 async def save_aliyun_draft(
     context: ConfigTestContext,
     config: dict[str, object],

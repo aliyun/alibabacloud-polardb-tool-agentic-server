@@ -56,10 +56,17 @@ describe('dashboard statistics', () => {
           },
         } as never)
       }
-      return Promise.resolve({ data: [{ id: 'department-1' }] } as never)
+      return Promise.resolve({
+        data: { items: [{ id: 'department-1' }], total: 1 },
+      } as never)
     })
     vi.mocked(listDedicatedPools).mockResolvedValue({
-      data: [{ allocatable: 2 }, { allocatable: 3 }],
+      data: {
+        items: [{ allocatable: 2 }, { allocatable: 3 }],
+        total: 2,
+        offset: 0,
+        limit: 20,
+      },
     } as never)
 
     await expect(getDashboardStats()).resolves.toEqual({
@@ -101,6 +108,7 @@ describe('dashboard statistics', () => {
               { knowledge_resource_id: 'kb-1' },
               { knowledge_resource_id: 'kb-2' },
             ],
+            knowledge_resource_total: 2,
           },
         } as never)
       }
