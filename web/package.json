@@ -1,7 +1,7 @@
 {
   "name": "alibabacloud-polardb-tool-agentic-server-web",
   "private": true,
-  "version": "0.0.11",
+  "version": "0.0.12",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -13,6 +13,7 @@
     "lint": "eslint ."
   },
   "dependencies": {
+    "@ant-design/icons": "^5.6.1",
     "antd": "^5.20.0",
     "axios": "^1.7.0",
     "i18next": "^26.3.6",

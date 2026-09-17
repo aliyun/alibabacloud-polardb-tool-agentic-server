@@ -5,6 +5,7 @@ import hashlib
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from server.auth.dependencies import validate_access_token_user
 from server.configuration.bootstrap import verify_bootstrap_token
 from server.configuration.service import ConfigService
 from server.configuration.types import (
@@ -38,13 +39,7 @@ async def resolve_config_actor(
     if await service._system_state() == SystemState.SETUP:
         authorization = request.headers.get("authorization", "")
         scheme, _, token = authorization.partition(" ")
-        if (
-            scheme.lower() != "bootstrap"
-            or not token
-            or not await verify_bootstrap_token(
-                service.repository, token
-            )
-        ):
+        if scheme.lower() != "bootstrap" or not token or not await verify_bootstrap_token(service.repository, token):
             raise HTTPException(
                 status_code=401,
                 detail={
@@ -55,28 +50,15 @@ async def resolve_config_actor(
         return ConfigActor(
             scope="bootstrap",
             actor_type="bootstrap",
-            credential_hash=hashlib.sha256(
-                token.encode("utf-8")
-            ).hexdigest(),
+            credential_hash=hashlib.sha256(token.encode("utf-8")).hexdigest(),
         )
 
-    from jwt import PyJWTError
-    from sqlalchemy import select
-
-    from server.auth.jwt_manager import verify_token
-    from server.auth.principal import (
-        InvalidPrincipalSubject,
-        PrincipalKind,
-        parse_subject,
-    )
-    from server.models import User, UserRole, UserStatus
+    from server.models import UserRole
 
     authorization = request.headers.get("authorization", "")
     scheme, _, token = authorization.partition(" ")
     bearer_authenticated = scheme.lower() == "bearer"
-    if not bearer_authenticated and request.headers.get(
-        "x-pas-csrf"
-    ) != "1":
+    if not bearer_authenticated and request.headers.get("x-pas-csrf") != "1":
         raise HTTPException(
             status_code=403,
             detail={
@@ -84,38 +66,10 @@ async def resolve_config_actor(
                 "message": "Browser configuration requires CSRF protection",
             },
         )
-    token = (
-        token
-        if bearer_authenticated
-        else request.cookies.get("session_token", "")
-    )
-    try:
-        payload = verify_token(token)
-        principal = parse_subject(str(payload.get("sub", "")))
-    except (PyJWTError, InvalidPrincipalSubject):
-        raise HTTPException(
-            status_code=401,
-            detail={
-                "code": "AUTH_REQUIRED",
-                "message": "Administrator authentication is required",
-            },
-        ) from None
-    if principal.kind != PrincipalKind.USER:
-        raise HTTPException(
-            status_code=403,
-            detail={"code": "FORBIDDEN", "message": "Admin required"},
-        )
+    token = token if bearer_authenticated else request.cookies.get("session_token", "")
     async with service.repository.session_factory() as session:
-        user = (
-            await session.execute(
-                select(User).where(User.id == principal.id)
-            )
-        ).scalar_one_or_none()
-    if (
-        user is None
-        or user.role != UserRole.ADMIN
-        or user.status != UserStatus.ACTIVE
-    ):
+        user = await validate_access_token_user(token, session)
+    if user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=403,
             detail={"code": "FORBIDDEN", "message": "Admin required"},
@@ -146,23 +100,49 @@ async def config_command(
             status_code=409,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
-    if (
-        result.system_state == SystemState.READY
-        and hasattr(request.app.state, "runtime_access_policy")
-    ):
+    if result.system_state == SystemState.READY and hasattr(request.app.state, "runtime_access_policy"):
         from server.middleware.runtime_policy import (
             RuntimeAccessPolicy,
         )
 
         current = request.app.state.runtime_access_policy
-        request.app.state.runtime_access_policy = (
-            RuntimeAccessPolicy(
-                mode="READY",
-                cors_allowed_origins=current.cors_allowed_origins,
-                sso_active=current.sso_active,
-            )
+        request.app.state.runtime_access_policy = RuntimeAccessPolicy(
+            mode="READY",
+            cors_allowed_origins=current.cors_allowed_origins,
+            sso_active=current.sso_active,
         )
     return JSONResponse(
         result.model_dump(mode="json", exclude_none=True),
         headers={"Cache-Control": "no-store"},
     )
+
+
+@router.post("/config/user-sso/tests")
+async def start_user_sso_test(
+    service: ConfigService = Depends(get_config_service),
+    actor: ConfigActor = Depends(resolve_config_actor),
+) -> JSONResponse:
+    try:
+        result = await service.start_user_sso_test(actor)
+    except ConfigError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
+@router.get("/config/user-sso/tests/{test_id}")
+async def get_user_sso_test(
+    test_id: str,
+    service: ConfigService = Depends(get_config_service),
+    actor: ConfigActor = Depends(resolve_config_actor),
+) -> JSONResponse:
+    try:
+        result = await service.describe_user_sso_test(test_id, actor)
+    except ConfigError as exc:
+        raise HTTPException(
+            status_code=404 if exc.code == "SSO_TEST_NOT_FOUND" else 409,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})

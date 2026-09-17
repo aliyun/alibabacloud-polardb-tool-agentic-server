@@ -93,7 +93,12 @@ export default function Users() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [authMode, setAuthMode] = useState('builtin')
-  const [activeTab, setActiveTab] = useState('accounts')
+  const [activeTab, setActiveTab] = useState(() => (
+    new URLSearchParams(window.location.search).get('tab')
+      === 'identity-sources'
+      ? 'identity-sources'
+      : 'accounts'
+  ))
   const [departments, setDepartments] = useState<DeptOption[]>([])
   const [createOpen, setCreateOpen] = useState(false)
   const [createLoading, setCreateLoading] = useState(false)
@@ -101,6 +106,7 @@ export default function Users() {
   const [editTarget, setEditTarget] = useState<UserItem | null>(null)
   const [editLoading, setEditLoading] = useState(false)
   const [editForm] = Form.useForm()
+  const departmentSearchRequestRef = useRef(0)
   const [resetTarget, setResetTarget] = useState<UserItem | null>(null)
   const [resetLoading, setResetLoading] = useState(false)
   const [resetForm] = Form.useForm()
@@ -152,10 +158,47 @@ export default function Users() {
   }, [])
   useEffect(() => {
     api.get('/auth/mode').then(r => setAuthMode(r.data.mode)).catch(() => {})
-    api.get('/api/departments').then(r => setDepartments(r.data)).catch(() => {})
+    const requestId = ++departmentSearchRequestRef.current
+    api.get('/api/departments', { params: { offset: 0, limit: 100 } })
+      .then(r => {
+        if (requestId === departmentSearchRequestRef.current) {
+          setDepartments(r.data.items)
+        }
+      })
+      .catch(() => {})
   }, [])
 
+  const searchDepartments = async (value: string) => {
+    const requestId = ++departmentSearchRequestRef.current
+    try {
+      const response = await api.get('/api/departments', {
+        params: {
+          offset: 0,
+          limit: 100,
+          search: value.trim() || undefined,
+        },
+      })
+      if (requestId !== departmentSearchRequestRef.current) return
+      const selected = editTarget?.departments ?? []
+      const selectedIds = new Set(selected.map(department => department.id))
+      setDepartments([
+        ...selected,
+        ...response.data.items.filter(
+          (department: DeptOption) => !selectedIds.has(department.id),
+        ),
+      ])
+    } catch {
+      return
+    }
+  }
+
   const openEdit = (user: UserItem) => {
+    departmentSearchRequestRef.current += 1
+    const currentIds = new Set(departments.map(department => department.id))
+    setDepartments([
+      ...departments,
+      ...user.departments.filter(department => !currentIds.has(department.id)),
+    ])
     setEditTarget(user)
     editForm.setFieldsValue({
       department_ids: user.departments.map(d => d.id),
@@ -324,7 +367,7 @@ export default function Users() {
         }
         const row =
           accessResult.status === 'fulfilled' ? accessResult.value.data : null
-        const credentials = credentialsResult.value.data.filter(
+        const credentials = credentialsResult.value.data.items.filter(
           (credential) =>
             credential.status === 'active' &&
             credential.purpose === 'direct_access' &&
@@ -1067,6 +1110,9 @@ export default function Users() {
           <Form.Item name="department_ids" label={t('users.departments')}>
             <Select
               mode="multiple"
+              showSearch
+              filterOption={false}
+              onSearch={value => void searchDepartments(value)}
               placeholder={t('users.selectDepartments')}
               options={departments.map(d => ({ label: d.name, value: d.id }))}
             />

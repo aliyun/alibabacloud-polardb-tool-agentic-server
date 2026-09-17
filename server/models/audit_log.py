@@ -34,7 +34,9 @@ class AuditLog(Base):
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    actor_user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True, index=True)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True, index=True
+    )
     actor_agent_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("agents.id"), nullable=True, index=True)
     instance_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("instances.id"), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(64))

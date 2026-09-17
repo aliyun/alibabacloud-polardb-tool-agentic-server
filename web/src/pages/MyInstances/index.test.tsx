@@ -33,6 +33,12 @@ const secondMemberAgent = {
   agent_name: 'Second Agent',
 }
 
+function agentConnectionsResponse(items: unknown[]) {
+  return {
+    data: { items, total: items.length, offset: 0, limit: 20 },
+  }
+}
+
 function knowledgeResourcesResponse(name: string, kbId: string) {
   return {
     data: {
@@ -51,6 +57,9 @@ function knowledgeResourcesResponse(name: string, kbId: string) {
           upload_ready: true,
         },
       ],
+      knowledge_resource_total: 1,
+      knowledge_resource_offset: 0,
+      knowledge_resource_limit: 20,
     },
   }
 }
@@ -77,12 +86,12 @@ describe('My Instances page', () => {
   beforeEach(() => vi.clearAllMocks())
 
   it('shows current-user database instances and knowledge spaces without listing KBs', async () => {
-    vi.mocked(api.get).mockImplementation((url) =>
-      Promise.resolve({
-        data:
-          url === '/api/me/agent-connections'
-            ? [memberAgent]
-            : {
+    vi.mocked(api.get).mockImplementation((url) => {
+      if (url === '/api/me/agent-connections') {
+        return Promise.resolve(agentConnectionsResponse([memberAgent]) as never)
+      }
+      return Promise.resolve({
+        data: {
                 database_instances: [
                   {
                     db_instance_id: 'db-1',
@@ -108,8 +117,8 @@ describe('My Instances page', () => {
                   },
                 ],
               },
-      } as never),
-    )
+      } as never)
+    })
 
     render(<MyInstances isAdmin />)
 
@@ -121,15 +130,16 @@ describe('My Instances page', () => {
       screen.queryByRole('columnheader', { name: 'Usage' }),
     ).not.toBeInTheDocument()
     expect(screen.queryByText('Not specified')).not.toBeInTheDocument()
-    expect(api.get).toHaveBeenCalledWith('/api/me/resources')
+    expect(api.get).toHaveBeenCalledWith('/api/me/resources', {
+      params: { database_cursor: null, database_limit: 20 },
+    })
   })
 
   it('opens the selected Agent knowledge bases in a drawer with the resource ID', async () => {
     const user = userEvent.setup()
     vi.mocked(api.get).mockImplementation((url, config) => {
       if (url === '/api/me/agent-connections') {
-        return Promise.resolve({
-          data: [
+        return Promise.resolve(agentConnectionsResponse([
             {
               assignment_id: 'assignment-1',
               agent_id: 'agent-1',
@@ -139,15 +149,20 @@ describe('My Instances page', () => {
               password_reveal_available: true,
               token: null,
             },
-          ],
-        } as never)
+          ]) as never)
       }
-      if (!config) {
+      if (!(config?.params as { agent_id?: string } | undefined)?.agent_id) {
         return Promise.resolve({
           data: { database_instances: [], knowledge_resources: [] },
         } as never)
       }
-      expect(config).toEqual({ params: { agent_id: 'agent-1' } })
+      expect(config).toEqual({
+        params: {
+          agent_id: 'agent-1',
+          knowledge_offset: 0,
+          knowledge_limit: 20,
+        },
+      })
       return Promise.resolve({
         data: {
           database_instances: [],
@@ -188,7 +203,11 @@ describe('My Instances page', () => {
     expect(within(drawer).getByText('resource-1')).toBeInTheDocument()
     expect(within(drawer).queryByText('kb-scoped')).not.toBeInTheDocument()
     expect(api.get).toHaveBeenCalledWith('/api/me/resources', {
-      params: { agent_id: 'agent-1' },
+      params: {
+        agent_id: 'agent-1',
+        knowledge_offset: 0,
+        knowledge_limit: 20,
+      },
     })
   })
 
@@ -198,11 +217,13 @@ describe('My Instances page', () => {
     const secondRequest = deferred<ReturnType<typeof knowledgeResourcesResponse>>()
     vi.mocked(api.get).mockImplementation((url, config) => {
       if (url === '/api/me/agent-connections') {
-        return Promise.resolve({
-          data: [memberAgent, secondMemberAgent],
-        } as never)
+        return Promise.resolve(
+          agentConnectionsResponse([memberAgent, secondMemberAgent]) as never,
+        )
       }
-      if (!config) return Promise.resolve(knowledgeResourcesResponse('Overview KB', 'overview')) as never
+      if (!(config?.params as { agent_id?: string } | undefined)?.agent_id) {
+        return Promise.resolve(knowledgeResourcesResponse('Overview KB', 'overview')) as never
+      }
       const agentId = (config as { params: { agent_id: string } }).params.agent_id
       return (agentId === memberAgent.agent_id
         ? firstRequest.promise
@@ -236,11 +257,13 @@ describe('My Instances page', () => {
     const user = userEvent.setup()
     vi.mocked(api.get).mockImplementation((url, config) => {
       if (url === '/api/me/agent-connections') {
-        return Promise.resolve({
-          data: [memberAgent, secondMemberAgent],
-        } as never)
+        return Promise.resolve(
+          agentConnectionsResponse([memberAgent, secondMemberAgent]) as never,
+        )
       }
-      if (!config) return Promise.resolve(knowledgeResourcesResponse('Overview KB', 'overview')) as never
+      if (!(config?.params as { agent_id?: string } | undefined)?.agent_id) {
+        return Promise.resolve(knowledgeResourcesResponse('Overview KB', 'overview')) as never
+      }
       const agentId = (config as { params: { agent_id: string } }).params.agent_id
       return agentId === memberAgent.agent_id
         ? Promise.resolve(knowledgeResourcesResponse('KB Agent A', 'kb-a'))
@@ -269,12 +292,12 @@ describe('My Instances page', () => {
 
   it('lets a member upload to an upload-ready visible KB', async () => {
     const user = userEvent.setup()
-    vi.mocked(api.get).mockImplementation((url) =>
-      Promise.resolve({
-        data:
-          url === '/api/me/agent-connections'
-            ? [memberAgent]
-            : {
+    vi.mocked(api.get).mockImplementation((url) => {
+      if (url === '/api/me/agent-connections') {
+        return Promise.resolve(agentConnectionsResponse([memberAgent]) as never)
+      }
+      return Promise.resolve({
+        data: {
                 database_instances: [],
                 knowledge_resources: [
                   {
@@ -290,8 +313,8 @@ describe('My Instances page', () => {
                   },
                 ],
               },
-      } as never),
-    )
+      } as never)
+    })
     vi.mocked(api.post).mockResolvedValue({
       data: { doc_id: 'doc-1', filename: 'guide.md', status: 'DISPATCHED' },
     } as never)
@@ -329,12 +352,12 @@ describe('My Instances page', () => {
 
   it('explains why document upload is unavailable', async () => {
     const user = userEvent.setup()
-    vi.mocked(api.get).mockImplementation((url) =>
-      Promise.resolve({
-        data:
-          url === '/api/me/agent-connections'
-            ? [memberAgent]
-            : {
+    vi.mocked(api.get).mockImplementation((url) => {
+      if (url === '/api/me/agent-connections') {
+        return Promise.resolve(agentConnectionsResponse([memberAgent]) as never)
+      }
+      return Promise.resolve({
+        data: {
                 database_instances: [],
                 knowledge_resources: [
                   {
@@ -350,8 +373,8 @@ describe('My Instances page', () => {
                   },
                 ],
               },
-      } as never),
-    )
+      } as never)
+    })
 
     render(
       <LocaleProvider i18nInstance={createTestI18n('zh-CN')}>
@@ -403,12 +426,12 @@ describe('My Instances page', () => {
 
   it('loads, refreshes, and paginates readable documents on demand', async () => {
     const user = userEvent.setup()
-    vi.mocked(api.get).mockImplementation((url) =>
-      Promise.resolve({
-        data:
-          url === '/api/me/agent-connections'
-            ? [memberAgent]
-            : {
+    vi.mocked(api.get).mockImplementation((url) => {
+      if (url === '/api/me/agent-connections') {
+        return Promise.resolve(agentConnectionsResponse([memberAgent]) as never)
+      }
+      return Promise.resolve({
+        data: {
                 database_instances: [],
                 knowledge_resources: [
                   {
@@ -424,8 +447,8 @@ describe('My Instances page', () => {
                   },
                 ],
               },
-      } as never),
-    )
+      } as never)
+    })
     vi.mocked(api.post).mockImplementation((_url, body) => {
       const afterDocId = (body as { after_doc_id?: string | null }).after_doc_id
       return Promise.resolve({
@@ -507,12 +530,12 @@ describe('My Instances page', () => {
 
   it('lets a member find, rechunk, and delete an authorized document', async () => {
     const user = userEvent.setup()
-    vi.mocked(api.get).mockImplementation((url) =>
-      Promise.resolve({
-        data:
-          url === '/api/me/agent-connections'
-            ? [memberAgent]
-            : {
+    vi.mocked(api.get).mockImplementation((url) => {
+      if (url === '/api/me/agent-connections') {
+        return Promise.resolve(agentConnectionsResponse([memberAgent]) as never)
+      }
+      return Promise.resolve({
+        data: {
                 database_instances: [],
                 knowledge_resources: [
                   {
@@ -528,8 +551,8 @@ describe('My Instances page', () => {
                   },
                 ],
               },
-      } as never),
-    )
+      } as never)
+    })
     vi.mocked(api.post).mockImplementation((url) =>
       Promise.resolve({
         data: url.endsWith('/_list')

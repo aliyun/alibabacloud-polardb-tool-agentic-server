@@ -36,6 +36,8 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
 ## Administration
 
+- [Accounts and resources](administration/accounts-and-resources.md): personal and service accounts, shared database grants, and personal MCP access.
+
 - [Users and departments](administration/users-and-departments.md): human
   identities, organization, instance access, and safe lifecycle operations.
 - [Authentication](administration/authentication.md): bootstrap, built-in
@@ -59,12 +61,16 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
 ## Knowledge
 
+- [Enable and disable knowledge](knowledge/activation.md)
 - [PolarRAG administrator onboarding](knowledge/polarrag-onboarding.md):
   end-to-end setup for users, native identities, public and personal knowledge,
   Agent Tokens, OSS upload, and MCP acceptance.
 - [PolarRAG MCP and enterprise identities](knowledge/polarrag-mcp.md):
   instance registration, identity principals, knowledge discovery, user-only
   tools, ACL boundaries, and required upstream capabilities.
+- [PolarRAG platform HTTP API](knowledge/polarrag-platform-http-api.md):
+  trusted BFF login, Authorization Code with PKCE, knowledge and document APIs,
+  search results, HTTP Tool calls, and enterprise access binding.
 
 ## Deployment
 

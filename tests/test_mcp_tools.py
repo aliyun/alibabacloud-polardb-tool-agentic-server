@@ -191,7 +191,7 @@ async def client(setup_data):
 
 @pytest.fixture
 def auth_headers(setup_data):
-    token = create_access_token({"sub": setup_data["admin"].id, "role": "admin"})
+    token = create_access_token({"sub": setup_data["admin"].id, "role": "admin", "credential_epoch": setup_data["admin"].credential_epoch})
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -1091,7 +1091,7 @@ async def multi_client(setup_multi_instance):
 
 @pytest.fixture
 def multi_auth_headers(setup_multi_instance):
-    token = create_access_token({"sub": setup_multi_instance["user"].id, "role": "member"})
+    token = create_access_token({"sub": setup_multi_instance["user"].id, "role": "member", "credential_epoch": setup_multi_instance["user"].credential_epoch})
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -1170,8 +1170,9 @@ class TestDefaultInstanceRouting:
             await session.commit()
             await session.refresh(user)
             user_id = user.id
+            credential_epoch = user.credential_epoch
 
-        token = create_access_token({"sub": user_id, "role": "member"})
+        token = create_access_token({"sub": user_id, "role": "member", "credential_epoch": credential_epoch})
         headers = {"Authorization": f"Bearer {token}"}
 
         app = create_app()
@@ -1281,10 +1282,11 @@ class TestDefaultInstanceRouting:
             await session.commit()
 
             user_id = user.id
+            credential_epoch = user.credential_epoch
             shared1_id = shared1.id
             shared2_id = shared2.id
 
-        token = create_access_token({"sub": user_id, "role": "member"})
+        token = create_access_token({"sub": user_id, "role": "member", "credential_epoch": credential_epoch})
         headers = {"Authorization": f"Bearer {token}"}
 
         app = create_app()

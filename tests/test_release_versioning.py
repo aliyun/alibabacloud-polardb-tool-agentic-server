@@ -14,6 +14,7 @@ CURRENT_VERSION = tomllib.loads(
 major, minor, patch = (int(part) for part in CURRENT_VERSION.split("."))
 NEXT_VERSION = f"{major}.{minor}.{patch + 1}"
 VERSION_PATHS = (
+    ".fw.yml",
     ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
     ".agents/skills/deploy-polardb-agentic-server/scripts/deploy-source.sh",
     ".claude/skills/deploy-polardb-agentic-server/scripts/deploy-docker.sh",
@@ -32,11 +33,16 @@ VERSION_PATHS = (
     "deploy/helm/polardb-agentic-server/values.yaml",
     "scripts/deploy/create-external-mysql-env.sh",
 )
+AVAILABLE_VERSION_PATHS = tuple(
+    relative
+    for relative in VERSION_PATHS
+    if relative != ".fw.yml" or (ROOT / relative).is_file()
+)
 
 
 def _copy_version_tree(tmp_path: Path) -> Path:
     destination = tmp_path / "source"
-    for relative in VERSION_PATHS:
+    for relative in AVAILABLE_VERSION_PATHS:
         source = ROOT / relative
         target = destination / relative
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +152,21 @@ def test_verify_version_rejects_environment_generator_drift(
     assert "Compose environment generator" in result.stderr
 
 
+def test_verify_version_allows_a_public_export_without_internal_pipeline(
+    tmp_path: Path,
+) -> None:
+    source = _copy_version_tree(tmp_path)
+    (source / ".fw.yml").unlink(missing_ok=True)
+
+    result = _run(
+        source,
+        "scripts/release/verify-version.py",
+        f"v{CURRENT_VERSION}",
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
     source = _copy_version_tree(tmp_path)
 
@@ -168,7 +189,7 @@ def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
         "DEFAULT_PAS_IMAGE=ghcr.io/aliyun/"
         f"alibabacloud-polardb-tool-agentic-server:{NEXT_VERSION}"
     ) == 1
-    for relative in VERSION_PATHS[:4]:
+    for relative in VERSION_PATHS[1:5]:
         assert (
             source / relative
         ).read_text(encoding="utf-8").count(
@@ -177,8 +198,14 @@ def test_bump_version_updates_release_locations_only(tmp_path: Path) -> None:
     changed_paths = {
         line for line in result.stdout.splitlines() if line
     }
-    assert changed_paths == set(VERSION_PATHS)
-    assert len(changed_paths) == 17
+    assert changed_paths == set(AVAILABLE_VERSION_PATHS)
+    assert len(changed_paths) == len(AVAILABLE_VERSION_PATHS)
+    if (source / ".fw.yml").is_file():
+        assert (
+            source / ".fw.yml"
+        ).read_text(encoding="utf-8").count(
+            f"IMAGE_TAG: {NEXT_VERSION}"
+        ) == 1
     assert (source / "release-notes.md").read_text(encoding="utf-8") == (
         "Historical releases v0.0.1 and v0.0.2 remain immutable.\n"
     )

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-import pytest
-from sqlalchemy import select
+import asyncio
+from datetime import UTC, datetime, timedelta
 
-from server.core.crypto import decrypt
+import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event, select
+
+from server.core.crypto import decrypt, encrypt
+from server.app import create_app
+from server.api.polarrag import _find_knowledge_base, _find_upstream_space
 from server.models import (
     AuditLog,
     EnterprisePrincipalAssignment,
@@ -12,6 +18,7 @@ from server.models import (
     EnterprisePrincipalType,
     KnowledgeResource,
     PolarRAGInstance,
+    PolarRAGInstanceStatus,
     PolarRAGSpace,
     AuthProvider,
     User,
@@ -22,6 +29,10 @@ from server.polarrag.contracts import (
     PolarRAGKnowledgeBaseRecord,
     PolarRAGSpaceRecord,
     PolarRAGUpstreamError,
+)
+from server.polarrag.catalog import (
+    _run_claimed_space_catalog_sync,
+    claim_space_catalog_sync,
 )
 
 pytest_plugins = ("tests._admin_api_fixtures",)
@@ -55,6 +66,10 @@ class FakeAdminClient:
             )
         ]
 
+    async def list_spaces_page(self, *, cursor, page_size):
+        assert cursor is None
+        return (await self.list_spaces())[:page_size], None
+
     async def list_knowledge_bases(self, space_id):
         assert space_id == "space-a"
         return [
@@ -68,6 +83,193 @@ class FakeAdminClient:
             )
         ]
 
+    async def list_knowledge_bases_page(
+        self,
+        space_id,
+        *,
+        cursor,
+        page_size,
+    ):
+        assert cursor is None
+        return (await self.list_knowledge_bases(space_id))[:page_size], None
+
+    async def list_unclaimed_knowledge_bases(self, space_id):
+        assert space_id == "space-a"
+        return []
+
+    async def list_unclaimed_knowledge_bases_page(
+        self,
+        space_id,
+        *,
+        cursor,
+        page_size,
+    ):
+        assert cursor is None
+        return (await self.list_unclaimed_knowledge_bases(space_id))[:page_size], None
+
+
+class PaginatedSpacesClient(FakeAdminClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cursors: list[str | None] = []
+
+    async def list_spaces(self):
+        raise AssertionError("unbounded Space listing must not be used")
+
+    async def list_spaces_page(self, *, cursor, page_size):
+        self.cursors.append(cursor)
+        if cursor is None:
+            return [
+                PolarRAGSpaceRecord(
+                    space_id="space-other",
+                    name="Other",
+                    identity_domain="tenant-a",
+                    status="ACTIVE",
+                )
+            ], "page-2"
+        assert cursor == "page-2"
+        return [
+            PolarRAGSpaceRecord(
+                space_id="space-a",
+                name="Space A",
+                identity_domain="tenant-a",
+                status="ACTIVE",
+            )
+        ], None
+
+
+async def test_find_upstream_space_uses_bounded_pages() -> None:
+    client = PaginatedSpacesClient()
+
+    result = await _find_upstream_space(client, "space-a")
+
+    assert result is not None
+    assert result.space_id == "space-a"
+    assert client.cursors == [None, "page-2"]
+
+
+async def test_find_upstream_space_rejects_repeated_cursor() -> None:
+    class RepeatedCursorClient(FakeAdminClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def list_spaces_page(self, *, cursor, page_size):
+            self.calls += 1
+            if self.calls > 2:
+                raise AssertionError("repeated cursor was not rejected")
+            return [], "same-cursor"
+
+    client = RepeatedCursorClient()
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await _find_upstream_space(client, "missing-space")
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+    assert client.calls == 2
+
+
+async def test_find_upstream_space_limits_page_count(monkeypatch) -> None:
+    class EndlessCursorClient(FakeAdminClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def list_spaces_page(self, *, cursor, page_size):
+            self.calls += 1
+            return [], f"cursor-{self.calls}"
+
+    client = EndlessCursorClient()
+    monkeypatch.setattr("server.api.polarrag._MAX_CATALOG_PAGES", 2)
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await _find_upstream_space(client, "missing-space")
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+    assert client.calls == 2
+
+
+async def test_find_knowledge_base_rejects_repeated_cursor() -> None:
+    class RepeatedCursorClient(FakeAdminClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def list_unclaimed_knowledge_bases_page(
+            self,
+            space_id,
+            *,
+            cursor,
+            page_size,
+        ):
+            self.calls += 1
+            if self.calls > 2:
+                raise AssertionError("repeated cursor was not rejected")
+            return [
+                PolarRAGKnowledgeBaseRecord(
+                    space_id=space_id,
+                    kb_id=f"other-{self.calls}",
+                    name="Other",
+                    kb_type="PERSONAL",
+                    identity_domain="tenant-a",
+                    owner=None,
+                    status="UNCLAIMED",
+                )
+            ], "same-cursor"
+
+    client = RepeatedCursorClient()
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await _find_knowledge_base(
+            client,
+            "space-a",
+            "missing-kb",
+            status="UNCLAIMED",
+        )
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+    assert client.calls == 2
+
+
+async def test_find_knowledge_base_limits_page_count(monkeypatch) -> None:
+    class EndlessCursorClient(FakeAdminClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def list_unclaimed_knowledge_bases_page(
+            self,
+            space_id,
+            *,
+            cursor,
+            page_size,
+        ):
+            self.calls += 1
+            return [
+                PolarRAGKnowledgeBaseRecord(
+                    space_id=space_id,
+                    kb_id=f"other-{self.calls}",
+                    name="Other",
+                    kb_type="PERSONAL",
+                    identity_domain="tenant-a",
+                    owner=None,
+                    status="UNCLAIMED",
+                )
+            ], f"cursor-{self.calls}"
+
+    client = EndlessCursorClient()
+    monkeypatch.setattr("server.api.polarrag._MAX_CATALOG_PAGES", 2)
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await _find_knowledge_base(
+            client,
+            "space-a",
+            "missing-kb",
+            status="UNCLAIMED",
+        )
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+    assert client.calls == 2
 
 class MissingIdentityDomainClient(FakeAdminClient):
     async def list_spaces(self):
@@ -79,6 +281,35 @@ class MissingIdentityDomainClient(FakeAdminClient):
                 status="ACTIVE",
             )
         ]
+
+
+class InactiveSpaceClient(FakeAdminClient):
+    async def list_spaces(self):
+        return [
+            PolarRAGSpaceRecord(
+                space_id="space-disabled",
+                name="Disabled Space",
+                identity_domain="tenant-a",
+                status="DISABLED",
+            )
+        ]
+
+
+class MutableAdminClient(FakeAdminClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.spaces: list[PolarRAGSpaceRecord] = []
+
+    async def list_spaces(self):
+        return self.spaces
+
+
+class FailingCatalogClient(FakeAdminClient):
+    async def list_knowledge_bases(self, space_id):
+        raise PolarRAGUpstreamError(
+            PolarRAGErrorCode.UNAVAILABLE,
+            retryable=True,
+        )
 
 
 class FakeClaimClient(FakeAdminClient):
@@ -241,37 +472,32 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
     assert discovered_space["identity_domain"] == "tenant-a"
     assert discovered_space["oss_bucket"] == "tenant-a-documents"
     assert discovered_space["oss_endpoint"] == "oss-cn-hangzhou.aliyuncs.com"
-    assert discovered_space["enabled"] is False
-    assert discovered_space["knowledge_space_id"] is None
-
-    enabled = await http.post(
-        f"/api/polarrag/instances/{instance_id}/spaces/enable",
-        json={"space_id": "space-a"},
-        headers=admin_headers,
-    )
-    assert enabled.status_code == 200
-    assert enabled.json()["sync"]["active"] == 1
-
-    spaces = await http.get(
-        f"/api/polarrag/instances/{instance_id}/spaces",
-        headers=admin_headers,
-    )
-    enabled_space = spaces.json()["items"][0]
+    assert discovered_space["enabled"] is True
+    assert discovered_space["knowledge_space_id"] is not None
+    enabled_space = discovered_space
     assert enabled_space["enabled"] is True
-    assert enabled_space["knowledge_space_id"] == enabled.json()[
-        "knowledge_space_id"
-    ]
     assert enabled_space["last_synced_at"] is not None
-    assert enabled_space["knowledge_resources"] == [
+    assert enabled_space["knowledge_resource_count"] == 1
+
+    resources = await http.get(
+        f"/api/polarrag/instances/{instance_id}/knowledge-resources",
+        headers=admin_headers,
+    )
+    assert resources.status_code == 200
+    assert resources.json()["total"] == 1
+    assert resources.json()["items"] == [
         {
-            "knowledge_resource_id": enabled_space["knowledge_resources"][0][
+            "knowledge_resource_id": resources.json()["items"][0][
                 "knowledge_resource_id"
             ],
             "name": "Public KB",
+            "space_id": "space-a",
+            "space_name": "Space A",
             "kb_type": "PUBLIC",
             "binding_mode": "domain",
             "sync_status": "active",
             "enabled": True,
+            "management_mode": "NATIVE",
         }
     ]
 
@@ -334,6 +560,12 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
     )
     assert disabled.status_code == 204
 
+    checked = await http.post(
+        f"/api/polarrag/instances/{instance_id}/check",
+        headers=admin_headers,
+    )
+    assert checked.status_code == 200
+
     async with factory() as session:
         instance = await session.get(PolarRAGInstance, instance_id)
         assert decrypt(instance.username_ciphertext) == "shared"
@@ -354,6 +586,101 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
         assert resource.kb_id == "public-kb"
         assert space.enabled is False
         assert resource.enabled is False
+
+
+@pytest.mark.parametrize("operation", ["check", "update"])
+async def test_instance_mutation_activates_newly_discovered_spaces(
+    client,
+    setup,
+    monkeypatch,
+    operation,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, _member = setup
+    fake = MutableAdminClient()
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: fake,
+    )
+    created = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "RAG",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "secret",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+    instance_id = created.json()["id"]
+    fake.spaces = [
+        PolarRAGSpaceRecord(
+            space_id="space-a",
+            name="Space A",
+            identity_domain="tenant-a",
+            status="ACTIVE",
+        )
+    ]
+
+    if operation == "check":
+        response = await http.post(
+            f"/api/polarrag/instances/{instance_id}/check",
+            headers=admin_headers,
+        )
+    else:
+        response = await http.patch(
+            f"/api/polarrag/instances/{instance_id}",
+            json={"name": "Updated RAG"},
+            headers=admin_headers,
+        )
+
+    assert response.status_code == 200
+    async with factory() as session:
+        space = (await session.execute(select(PolarRAGSpace))).scalar_one()
+        resource = (
+            await session.execute(select(KnowledgeResource))
+        ).scalar_one()
+        assert space.enabled is True
+        assert resource.enabled is True
+
+
+async def test_instance_create_rolls_back_when_automatic_space_sync_fails(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, _member = setup
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: FailingCatalogClient(),
+    )
+
+    failed = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "Atomic RAG",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "secret",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+
+    assert failed.status_code == 503
+    async with factory() as session:
+        assert (
+            await session.execute(select(PolarRAGInstance))
+        ).scalar_one_or_none() is None
+        assert (
+            await session.execute(select(PolarRAGSpace))
+        ).scalar_one_or_none() is None
 
 
 async def test_admin_lists_unconfigured_space_but_cannot_enable_it(
@@ -401,6 +728,327 @@ async def test_admin_lists_unconfigured_space_but_cannot_enable_it(
     )
     assert enabled.status_code == 409
     assert enabled.json()["detail"]["code"] == "POLARRAG_IDENTITY_DOMAIN_UNAVAILABLE"
+
+
+async def test_space_sync_returns_202_and_continues_in_background(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    _factory, _admin, _member = setup
+    fake_client = FakeAdminClient()
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: fake_client,
+    )
+    created = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "Async RAG",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "secret",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+    instance_id = created.json()["id"]
+    enabled = await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/enable",
+        json={"space_id": "space-a"},
+        headers=admin_headers,
+    )
+    assert enabled.status_code == 200
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_sync(*_args, **_kwargs):
+        started.set()
+        await release.wait()
+        return {
+            "knowledge_bases": 1,
+            "active": 1,
+            "disabled": 0,
+            "owner_unresolved": 0,
+        }
+
+    monkeypatch.setattr("server.polarrag.catalog.sync_space_catalog", slow_sync)
+    response = await http.post(
+        f"/api/polarrag/instances/{instance_id}/spaces/space-a/sync",
+        headers=admin_headers,
+    )
+    assert response.status_code == 202
+    assert response.json() == {
+        "status": "running",
+        "result": None,
+        "error": None,
+    }
+    await started.wait()
+
+    status = await http.get(
+        f"/api/polarrag/instances/{instance_id}/spaces/space-a/sync",
+        headers=admin_headers,
+    )
+    assert status.json()["status"] == "running"
+    release.set()
+    for _ in range(20):
+        await asyncio.sleep(0)
+        status = await http.get(
+            f"/api/polarrag/instances/{instance_id}/spaces/space-a/sync",
+            headers=admin_headers,
+        )
+        if status.json()["status"] == "completed":
+            break
+    assert status.json()["result"]["knowledge_bases"] == 1
+
+
+async def test_space_sync_state_and_claim_are_shared_across_app_instances(
+    client, setup, monkeypatch
+) -> None:
+    http_one, admin_headers, _member_headers = client
+    factory, admin, _member = setup
+    async with factory() as session:
+        instance = PolarRAGInstance(
+            name="Shared state RAG",
+            scheme="https",
+            host="rag.example.test",
+            port=9200,
+            username_ciphertext=encrypt("username"),
+            password_ciphertext=encrypt("password"),
+            status=PolarRAGInstanceStatus.ACTIVE,
+            created_by=admin.id,
+        )
+        session.add(instance)
+        await session.flush()
+        space = PolarRAGSpace(
+            polarrag_instance_id=instance.id,
+            space_id="shared-space",
+            name="Shared Space",
+            identity_domain="tenant-shared",
+            enabled=True,
+        )
+        session.add(space)
+        await session.commit()
+        instance_id = instance.id
+
+    calls = 0
+
+    async def fast_sync(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return {"knowledge_bases": 0, "active": 0, "disabled": 0, "owner_unresolved": 0}
+
+    async with factory() as session:
+        stored = await session.scalar(select(PolarRAGSpace))
+        assert stored is not None
+        stored.catalog_sync_status = "running"
+        stored.catalog_sync_worker_id = "first-process"
+        stored.catalog_sync_lease_until = datetime.now(UTC) + timedelta(minutes=5)
+        await session.commit()
+
+    monkeypatch.setattr("server.polarrag.catalog.sync_space_catalog", fast_sync)
+    from tests._knowledge_helpers import enable_knowledge_routes
+
+    app_two = enable_knowledge_routes(create_app())
+    async with AsyncClient(
+        transport=ASGITransport(app=app_two), base_url="http://second-app"
+    ) as http_two:
+        first = await http_one.get(
+            f"/api/polarrag/instances/{instance_id}/spaces/shared-space/sync",
+            headers=admin_headers,
+        )
+        assert first.json()["status"] == "running"
+
+        duplicate = await http_two.post(
+            f"/api/polarrag/instances/{instance_id}/spaces/shared-space/sync",
+            headers=admin_headers,
+        )
+        assert duplicate.status_code == 202
+        assert duplicate.json()["status"] == "running"
+        observed = await http_two.get(
+            f"/api/polarrag/instances/{instance_id}/spaces/shared-space/sync",
+            headers=admin_headers,
+        )
+        assert observed.json()["status"] == "running"
+
+        async with factory() as session:
+            stored = await session.scalar(select(PolarRAGSpace))
+            assert stored is not None
+            stored.catalog_sync_lease_until = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
+        restarted = await http_two.post(
+            f"/api/polarrag/instances/{instance_id}/spaces/shared-space/sync",
+            headers=admin_headers,
+        )
+        assert restarted.status_code == 202
+        for _ in range(20):
+            await asyncio.sleep(0)
+            observed = await http_two.get(
+                f"/api/polarrag/instances/{instance_id}/spaces/shared-space/sync",
+                headers=admin_headers,
+            )
+            if observed.json()["status"] == "completed":
+                break
+        assert observed.json()["status"] == "completed", observed.json()
+    assert calls == 1
+
+
+@pytest.mark.parametrize("stale_status_code", [None, 409])
+async def test_reclaimed_space_sync_rolls_back_stale_worker_catalog_writes(
+    setup,
+    monkeypatch,
+    stale_status_code,
+) -> None:
+    factory, admin, _member = setup
+    async with factory() as session:
+        instance = PolarRAGInstance(
+            name="Fenced sync RAG",
+            scheme="https",
+            host="rag.example.test",
+            port=9200,
+            username_ciphertext=encrypt("username"),
+            password_ciphertext=encrypt("password"),
+            status=PolarRAGInstanceStatus.ACTIVE,
+            created_by=admin.id,
+        )
+        session.add(instance)
+        await session.flush()
+        space = PolarRAGSpace(
+            polarrag_instance_id=instance.id,
+            space_id="fenced-space",
+            name="Fenced Space",
+            identity_domain="tenant-fenced",
+            enabled=True,
+            catalog_sync_status="running",
+            catalog_sync_worker_id="old-worker",
+            catalog_sync_lease_until=datetime.now(UTC) + timedelta(minutes=5),
+        )
+        session.add(space)
+        await session.flush()
+        resource = KnowledgeResource(
+            knowledge_space_id=space.knowledge_space_id,
+            polarrag_instance_id=instance.id,
+            space_id=space.space_id,
+            kb_id="kb-a",
+            name="initial",
+            kb_type="PUBLIC",
+            identity_domain=space.identity_domain,
+            sync_status="active",
+            enabled=True,
+            catalog_sync_token="initial-token",
+        )
+        session.add(resource)
+        await session.commit()
+        space_id = space.knowledge_space_id
+        resource_id = resource.id
+
+    old_started = asyncio.Event()
+    release_old = asyncio.Event()
+
+    async def overlapping_sync(session, synced_space, client, *, commit):
+        assert commit is False
+        if client == "old":
+            old_started.set()
+            await release_old.wait()
+        resource = await session.get(KnowledgeResource, resource_id)
+        assert resource is not None
+        resource.name = f"{client}-result"
+        resource.catalog_sync_token = f"{client}-token"
+        if client == "old" and stale_status_code is not None:
+            synced_space.enabled = False
+            await session.flush()
+            raise PolarRAGUpstreamError(
+                PolarRAGErrorCode.UNAVAILABLE,
+                status_code=stale_status_code,
+            )
+        return {
+            "knowledge_bases": 1,
+            "active": 1 if client == "old" else 2,
+            "disabled": 0,
+            "owner_unresolved": 0,
+        }
+
+    monkeypatch.setattr("server.polarrag.catalog.sync_space_catalog", overlapping_sync)
+    old_task = asyncio.create_task(
+        _run_claimed_space_catalog_sync(
+            factory,
+            space_id,
+            "old-worker",
+            client_factory=lambda _instance: "old",
+        )
+    )
+    await old_started.wait()
+
+    async with factory() as session:
+        stored = await session.get(PolarRAGSpace, space_id)
+        assert stored is not None
+        stored.catalog_sync_lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        await session.commit()
+    async with factory() as session:
+        assert await claim_space_catalog_sync(session, space_id, "new-worker")
+    assert await _run_claimed_space_catalog_sync(
+        factory,
+        space_id,
+        "new-worker",
+        client_factory=lambda _instance: "new",
+    ) == {
+        "knowledge_bases": 1,
+        "active": 2,
+        "disabled": 0,
+        "owner_unresolved": 0,
+    }
+
+    release_old.set()
+    assert await old_task is None
+
+    async with factory() as session:
+        stored_space = await session.get(PolarRAGSpace, space_id)
+        stored_resource = await session.get(KnowledgeResource, resource_id)
+        assert stored_space is not None
+        assert stored_resource is not None
+        assert stored_space.catalog_sync_status == "completed"
+        assert stored_space.enabled is True
+        assert stored_space.catalog_sync_result_json is not None
+        assert '"active": 2' in stored_space.catalog_sync_result_json
+        assert stored_resource.name == "new-result"
+        assert stored_resource.catalog_sync_token == "new-token"
+
+
+async def test_instance_registration_does_not_auto_enable_inactive_space(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, _member = setup
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: InactiveSpaceClient(),
+    )
+
+    created = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "RAG with disabled Space",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "secret",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+
+    assert created.status_code == 201
+    async with factory() as session:
+        assert (
+            await session.execute(select(PolarRAGSpace))
+        ).scalar_one_or_none() is None
 
 
 async def test_instance_create_rolls_back_when_required_audit_fails(
@@ -691,6 +1339,12 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
             "status": "UNCLAIMED",
         }
     ]
+    candidates = await http.get(
+        f"/api/polarrag/instances/{instance_id}/owner-candidates",
+        params={"identity_domain": "tenant-a"},
+        headers=admin_headers,
+    )
+    assert candidates.status_code == 200
     assert {
         "principal_assignment_id": principal_id,
         "pas_user_id": member.id,
@@ -699,7 +1353,7 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
         "identity_domain": "tenant-a",
         "provider": "feishu",
         "principal_id": "ou-owner",
-    } in pending.json()["owner_candidates"]
+    } in candidates.json()["items"]
 
     claimed = await http.post(
         f"/api/polarrag/instances/{instance_id}/spaces/space-a/knowledge-bases/personal-kb/claim",
@@ -767,14 +1421,15 @@ async def test_admin_assigns_unclaimed_kb_to_active_native_pas_user(
     assert enabled.status_code == 200
 
     pending = await http.get(
-        f"/api/polarrag/instances/{instance_id}/unclaimed-knowledge-bases",
+        f"/api/polarrag/instances/{instance_id}/owner-candidates",
+        params={"identity_domain": "tenant-a"},
         headers=admin_headers,
     )
 
     assert pending.status_code == 200
     native_owner = next(
         candidate
-        for candidate in pending.json()["owner_candidates"]
+        for candidate in pending.json()["items"]
         if candidate["pas_user_id"] == member.id
         and candidate["provider"] == "polarrag"
         and candidate["identity_domain"] == "tenant-a"
@@ -788,6 +1443,69 @@ async def test_admin_assigns_unclaimed_kb_to_active_native_pas_user(
 
     assert claimed.status_code == 200
     assert fake.claim_owner == member.external_id
+
+
+async def test_owner_candidates_are_domain_scoped_and_sql_paginated(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, admin, _member = setup
+    async with factory() as session:
+        instance = PolarRAGInstance(
+            name="Candidate RAG",
+            scheme="https",
+            host="rag.example.test",
+            port=9200,
+            username_ciphertext="username",
+            password_ciphertext="password",
+            status=PolarRAGInstanceStatus.ACTIVE,
+            created_by=admin.id,
+        )
+        session.add(instance)
+        await session.flush()
+        session.add(
+            PolarRAGSpace(
+                polarrag_instance_id=instance.id,
+                space_id="space-candidates",
+                name="Candidates",
+                identity_domain="tenant-candidates",
+                enabled=True,
+            )
+        )
+        session.add_all(
+            [
+                User(
+                    external_id=f"candidate-{index:03d}",
+                    display_name=f"Candidate {index:03d}",
+                    auth_provider=AuthProvider.BUILTIN,
+                )
+                for index in range(30)
+            ]
+        )
+        await session.commit()
+        instance_id = instance.id
+
+    statements: list[tuple[str, object]] = []
+
+    def record_statement(_conn, _cursor, statement, parameters, _context, _many):
+        if "UNION ALL" in statement and " LIMIT " in statement:
+            statements.append((statement, parameters))
+
+    event.listen(factory.kw["bind"].sync_engine, "before_cursor_execute", record_statement)
+    try:
+        response = await http.get(
+            f"/api/polarrag/instances/{instance_id}/owner-candidates",
+            params={"identity_domain": "tenant-candidates", "limit": 5},
+            headers=admin_headers,
+        )
+    finally:
+        event.remove(factory.kw["bind"].sync_engine, "before_cursor_execute", record_statement)
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 32
+    assert len(response.json()["items"]) == 5
+    assert len(statements) == 1
+    assert 5 in statements[0][1]
 
 
 async def test_claim_retry_recovers_after_upstream_success_and_sync_failure(

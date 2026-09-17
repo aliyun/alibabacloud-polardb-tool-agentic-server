@@ -3,13 +3,15 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from mcp.server.auth.provider import RegistrationError
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
-from server.auth.builtin import verify_password
+from server.auth.oauth_provider import validate_redirect_uri
+from server.api.pagination import Page
 from server.core import agent_service, agent_token_service
 from server.core.audit_logger import log_audit
 from server.db.engine import get_session
@@ -27,6 +29,20 @@ class CreateAgentRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     description: str | None = Field(default=None, max_length=4096)
     max_active_resources: int | None = Field(default=None, gt=0)
+    oauth_redirect_uri: AnyHttpUrl | None = None
+
+    @field_validator("oauth_redirect_uri")
+    @classmethod
+    def validate_oauth_redirect_uri(
+        cls, value: AnyHttpUrl | None
+    ) -> AnyHttpUrl | None:
+        if value is None:
+            return None
+        try:
+            validate_redirect_uri(str(value))
+        except RegistrationError as exc:
+            raise ValueError(exc.error_description) from exc
+        return value
 
 
 class UpdateAgentRequest(BaseModel):
@@ -34,6 +50,20 @@ class UpdateAgentRequest(BaseModel):
     description: str | None = Field(default=None, max_length=4096)
     status: AgentStatus | None = None
     max_active_resources: int | None = Field(default=None, gt=0)
+    oauth_redirect_uri: AnyHttpUrl | None = None
+
+    @field_validator("oauth_redirect_uri")
+    @classmethod
+    def validate_oauth_redirect_uri(
+        cls, value: AnyHttpUrl | None
+    ) -> AnyHttpUrl | None:
+        if value is None:
+            return None
+        try:
+            validate_redirect_uri(str(value))
+        except RegistrationError as exc:
+            raise ValueError(exc.error_description) from exc
+        return value
 
 
 class AgentTokenSummaryResponse(BaseModel):
@@ -79,6 +109,7 @@ class AgentResponse(BaseModel):
     description: str | None
     status: AgentStatus
     max_active_resources: int | None
+    oauth_redirect_uri: str | None
     created_by: str | None
     created_at: datetime
     updated_at: datetime | None
@@ -92,6 +123,7 @@ class AgentResponse(BaseModel):
             description=agent.description,
             status=agent.status,
             max_active_resources=agent.max_active_resources,
+            oauth_redirect_uri=agent.oauth_redirect_uri,
             created_by=agent.created_by,
             created_at=agent.created_at,
             updated_at=agent.updated_at,
@@ -111,12 +143,6 @@ class AgentCreatedResponse(AgentResponse):
 
 class TokenRequest(BaseModel):
     expires_at: datetime | None = None
-
-
-class AgentTokenRevealRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    password: str = Field(min_length=1, max_length=1024)
 
 
 class TokenResponse(BaseModel):
@@ -183,6 +209,11 @@ async def create_agent(
             name=body.name,
             description=body.description,
             max_active_resources=body.max_active_resources,
+            oauth_redirect_uri=(
+                str(body.oauth_redirect_uri)
+                if body.oauth_redirect_uri is not None
+                else None
+            ),
             admin_id=admin.id,
         )
     except IntegrityError as exc:
@@ -237,15 +268,26 @@ async def create_agent(
     )
 
 
-@router.get("", response_model=list[AgentResponse])
+@router.get("", response_model=Page[AgentResponse])
 async def list_agents(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    return [
-        AgentResponse.from_model(agent)
-        for agent in await agent_service.list_agents(session)
-    ]
+    agents, total = await agent_service.list_agents_page(
+        session,
+        offset=offset,
+        limit=limit,
+        search=search,
+    )
+    return Page(
+        items=[AgentResponse.from_model(agent) for agent in agents],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get("/{agent_id}", response_model=AgentResponse)
@@ -279,6 +321,13 @@ async def update_agent(
             status=body.status,
             max_active_resources=body.max_active_resources,
             update_max_active_resources="max_active_resources"
+            in body.model_fields_set,
+            oauth_redirect_uri=(
+                str(body.oauth_redirect_uri)
+                if body.oauth_redirect_uri is not None
+                else None
+            ),
+            update_oauth_redirect_uri="oauth_redirect_uri"
             in body.model_fields_set,
         )
         action = "agent.update"
@@ -343,15 +392,9 @@ async def regenerate_agent_token(
 @router.post("/{agent_id}/token/reveal", response_model=TokenResponse)
 async def reveal_agent_token(
     agent_id: str,
-    body: AgentTokenRevealRequest,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    if (
-        admin.password_hash is None
-        or not verify_password(body.password, admin.password_hash)
-    ):
-        raise HTTPException(status_code=401, detail="Password verification failed")
     try:
         await agent_token_service.consume_reveal_budget(
             session, admin.id, agent_id

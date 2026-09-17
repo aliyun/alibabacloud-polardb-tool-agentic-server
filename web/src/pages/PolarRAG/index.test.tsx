@@ -7,6 +7,8 @@ import {
   disablePolarRAGSpace,
   enablePolarRAGSpace,
   listPolarRAGInstances,
+  listPolarRAGKnowledgeResources,
+  listPolarRAGOwnerCandidates,
   listPolarRAGSpaces,
   listUnclaimedPolarRAGKnowledgeBases,
   syncPolarRAGSpace,
@@ -22,6 +24,8 @@ vi.mock('../../api/polarrag', () => ({
   disablePolarRAGSpace: vi.fn(),
   enablePolarRAGSpace: vi.fn(),
   listPolarRAGInstances: vi.fn(),
+  listPolarRAGKnowledgeResources: vi.fn(),
+  listPolarRAGOwnerCandidates: vi.fn(),
   listPolarRAGSpaces: vi.fn(),
   listUnclaimedPolarRAGKnowledgeBases: vi.fn(),
   syncPolarRAGSpace: vi.fn(),
@@ -61,6 +65,12 @@ describe('PolarRAG instance inventory', () => {
     } as never)
     vi.mocked(listUnclaimedPolarRAGKnowledgeBases).mockResolvedValue({
       data: { items: [], owner_candidates: [] },
+    } as never)
+    vi.mocked(listPolarRAGKnowledgeResources).mockResolvedValue({
+      data: { items: [], total: 0, offset: 0, limit: 20 },
+    } as never)
+    vi.mocked(listPolarRAGOwnerCandidates).mockResolvedValue({
+      data: { items: [], total: 0, offset: 0, limit: 20 },
     } as never)
   })
 
@@ -162,6 +172,23 @@ describe('PolarRAG instance inventory', () => {
     vi.mocked(syncPolarRAGSpace).mockResolvedValue({
       data: { active: 2, disabled: 0, owner_unresolved: 0 },
     } as never)
+    vi.mocked(listPolarRAGKnowledgeResources).mockResolvedValue({
+      data: {
+        items: [{
+          knowledge_resource_id: 'opaque-resource',
+          name: 'Public KB',
+          space_id: 'space-a',
+          space_name: 'Engineering',
+          kb_type: 'PUBLIC',
+          binding_mode: 'domain',
+          sync_status: 'active',
+          enabled: true,
+        }],
+        total: 1,
+        offset: 0,
+        limit: 20,
+      },
+    } as never)
     render(<InstancesPanel />)
 
     await user.click(
@@ -169,7 +196,7 @@ describe('PolarRAG instance inventory', () => {
         name: /manage spaces for Primary RAG/i,
       }),
     )
-    expect(await screen.findByText('Engineering')).toBeInTheDocument()
+    expect((await screen.findAllByText('Engineering')).length).toBeGreaterThan(0)
     expect(screen.getByText('tenant-a')).toBeInTheDocument()
     expect(screen.queryByLabelText(/identity domain/i)).not.toBeInTheDocument()
 
@@ -196,6 +223,46 @@ describe('PolarRAG instance inventory', () => {
         'space-a',
       ),
     )
+  })
+
+  it('renders Spaces before the unclaimed knowledge base scan completes', async () => {
+    const user = userEvent.setup()
+    let resolveUnclaimed: ((value: unknown) => void) | undefined
+    vi.mocked(listPolarRAGSpaces).mockResolvedValue({
+      data: {
+        items: [{
+          space_id: 'space-a',
+          name: 'Engineering',
+          identity_domain: 'tenant-a',
+          status: 'ACTIVE',
+          enabled: true,
+          knowledge_space_id: 'opaque-space',
+          last_synced_at: null,
+          knowledge_resources: [],
+        }],
+      },
+    } as never)
+    vi.mocked(listUnclaimedPolarRAGKnowledgeBases).mockImplementationOnce(
+      () => new Promise((resolve) => {
+        resolveUnclaimed = resolve
+      }) as never,
+    )
+
+    render(<InstancesPanel />)
+    await user.click(
+      await screen.findByRole('button', {
+        name: /manage spaces for Primary RAG/i,
+      }),
+    )
+
+    expect(await screen.findByText('Engineering')).toBeInTheDocument()
+    expect(listUnclaimedPolarRAGKnowledgeBases).toHaveBeenCalledWith(
+      'rag-1',
+      null,
+      20,
+    )
+
+    resolveUnclaimed?.({ data: { items: [], owner_candidates: [] } })
   })
 
   it('lets an administrator assign an owner and activate an unclaimed KB', async () => {
@@ -240,9 +307,22 @@ describe('PolarRAG instance inventory', () => {
           ],
         },
       } as never)
-      .mockResolvedValue({
-        data: { items: [], owner_candidates: [] },
-      } as never)
+    vi.mocked(listPolarRAGOwnerCandidates).mockResolvedValue({
+      data: {
+        items: [{
+          principal_assignment_id: 'principal-1',
+          pas_user_id: 'user-1',
+          user_name: 'Allen',
+          user_external_id: 'allen',
+          identity_domain: 'tenant-a',
+          provider: 'feishu',
+          principal_id: '053317',
+        }],
+        total: 1,
+        offset: 0,
+        limit: 20,
+      },
+    } as never)
     vi.mocked(claimPolarRAGKnowledgeBase).mockResolvedValue({
       data: {
         kb_id: 'public-kb',
@@ -322,9 +402,22 @@ describe('PolarRAG instance inventory', () => {
           }],
         },
       } as never)
-      .mockResolvedValue({
-        data: { items: [], owner_candidates: [] },
-      } as never)
+    vi.mocked(listPolarRAGOwnerCandidates).mockResolvedValue({
+      data: {
+        items: [{
+          principal_assignment_id: null,
+          pas_user_id: 'user-1',
+          user_name: 'Allen',
+          user_external_id: 'allen',
+          identity_domain: 'tenant-a',
+          provider: 'polarrag',
+          principal_id: 'allen',
+        }],
+        total: 1,
+        offset: 0,
+        limit: 20,
+      },
+    } as never)
     vi.mocked(claimPolarRAGKnowledgeBase).mockResolvedValue({
       data: {
         kb_id: 'personal-kb',
@@ -372,18 +465,46 @@ describe('PolarRAG instance inventory', () => {
             enabled: true,
             knowledge_space_id: 'opaque-space',
             last_synced_at: null,
-            knowledge_resources: Array.from({ length: 11 }, (_, index) => ({
-              knowledge_resource_id: `resource-${index + 1}`,
-              name: `Knowledge base ${index + 1}`,
-              kb_type: 'PUBLIC',
-              binding_mode: 'domain',
-              sync_status: 'active',
-              enabled: true,
-            })),
+            knowledge_resource_count: 21,
           },
         ],
       },
     } as never)
+    vi.mocked(listPolarRAGKnowledgeResources)
+      .mockResolvedValueOnce({
+        data: {
+          items: Array.from({ length: 20 }, (_, index) => ({
+            knowledge_resource_id: `resource-${index + 1}`,
+            name: `Knowledge base ${index + 1}`,
+            space_id: 'space-a',
+            space_name: 'Engineering',
+            kb_type: 'PUBLIC',
+            binding_mode: 'domain',
+            sync_status: 'active',
+            enabled: true,
+          })),
+          total: 21,
+          offset: 0,
+          limit: 20,
+        },
+      } as never)
+      .mockResolvedValueOnce({
+        data: {
+          items: [{
+            knowledge_resource_id: 'resource-21',
+            name: 'Knowledge base 21',
+            space_id: 'space-a',
+            space_name: 'Engineering',
+            kb_type: 'PUBLIC',
+            binding_mode: 'domain',
+            sync_status: 'active',
+            enabled: true,
+          }],
+          total: 21,
+          offset: 20,
+          limit: 20,
+        },
+      } as never)
 
     render(<InstancesPanel />)
     await user.click(
@@ -393,9 +514,10 @@ describe('PolarRAG instance inventory', () => {
     )
 
     expect(await screen.findByText('Knowledge base 1')).toBeInTheDocument()
-    expect(screen.queryByText('Knowledge base 11')).not.toBeInTheDocument()
+    expect(screen.queryByText('Knowledge base 21')).not.toBeInTheDocument()
     await user.click(screen.getByTitle('2'))
-    expect(await screen.findByText('Knowledge base 11')).toBeInTheDocument()
+    expect(await screen.findByText('Knowledge base 21')).toBeInTheDocument()
+    expect(listPolarRAGKnowledgeResources).toHaveBeenLastCalledWith('rag-1', 20, 20)
   })
 
   it('rotates instance credentials without revealing stored secrets', async () => {

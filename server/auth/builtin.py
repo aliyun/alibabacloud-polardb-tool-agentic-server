@@ -7,7 +7,7 @@ import os
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.models import AuthProvider, User
+from server.models import AuthProvider, PasswordState, User
 
 
 def hash_password(password: str) -> str:
@@ -29,18 +29,20 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-async def authenticate_builtin(
-    session: AsyncSession, username: str, password: str
-) -> User | None:
+async def authenticate_builtin(session: AsyncSession, username: str, password: str) -> User | None:
     """Authenticate with builtin credentials. Returns User if valid, None otherwise."""
     result = await session.execute(
-        select(User).where(
+        select(User)
+        .where(
             User.external_id == username,
             User.auth_provider == AuthProvider.BUILTIN,
         )
+        .with_for_update()
     )
     user = result.scalar_one_or_none()
     if user is None:
+        return None
+    if user.effective_password_state is PasswordState.RESET_REQUIRED:
         return None
     if not user.password_hash:
         return None

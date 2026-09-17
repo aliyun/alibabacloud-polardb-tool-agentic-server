@@ -102,6 +102,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
       - name: Install Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
@@ -115,7 +117,13 @@ jobs:
         run: uv sync --locked --extra dev
       - name: Check single Alembic head
         run: scripts/ci/check-alembic-head.sh
+      - name: Check schema evolution policy
+        env:
+          SCHEMA_POLICY_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: scripts/ci/check-schema-policy.sh
       - name: Test migrations
+        env:
+          PAS_TEST_SCALABILITY_DATABASE_OK: "1"
         run: scripts/ci/test-migrations.sh ${{ matrix.database }}
 
   container:
@@ -138,10 +146,12 @@ jobs:
           MYSQL_ROOT_PASSWORD: test-root-password
           MYSQL_PASSWORD: test-pas-password
           PAS_DATABASE_URL: mysql+asyncmy://pas:test-pas-password@database.example:3306/pas
+          PAS_SQLITE_VOLUME: pas-ci-sqlite-data
         run: |
           docker compose config --quiet
           docker compose -f deploy/compose/compose.external-mysql.yaml config --quiet
           docker compose -f deploy/compose/compose.external-postgres.yaml config --quiet
+          docker compose -f deploy/compose/compose.sqlite.yaml config --quiet
 
   helm:
     runs-on: ubuntu-latest

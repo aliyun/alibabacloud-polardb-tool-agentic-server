@@ -18,6 +18,7 @@ from server.mcp.tools.handlers import (
     handle_run_sql_transaction,
 )
 from server.mcp.tools.schema_handler import handle_describe_schema
+from server.mcp.workspace_context import WorkspaceSQLActor
 from server.models import (
     Agent,
     AgentInstanceBinding,
@@ -457,6 +458,41 @@ async def test_agent_run_sql_uses_binding_credential_and_namespaced_cache_key(
     assert gateway.execute_kwargs["database"] == "application"
     assert gateway.execute_kwargs["user_id"] == f"agent:{agent.id}"
     assert gateway.execute_kwargs["instance_id"] == instance.id
+
+
+async def test_workspace_user_run_sql_uses_agent_resource_and_user_audit(
+    session,
+    gateway,
+):
+    agent, instance, _, _ = await _bound_agent(session)
+    user = User(
+        external_id="workspace-sql-user",
+        display_name="Workspace SQL User",
+    )
+    session.add(user)
+    await session.commit()
+
+    result = await handle_run_sql(
+        WorkspaceSQLActor(user=user, agent=agent),
+        session,
+        sql="SELECT 1",
+        instance_id=instance.id,
+    )
+
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["permission"] == "readonly"
+    assert gateway.execute_kwargs["user"] == "agent-user"
+    assert gateway.execute_kwargs["user_id"] == (
+        f"workspace-user:{user.id}:agent:{agent.id}"
+    )
+    audit = await session.scalar(
+        select(AuditLog)
+        .where(AuditLog.action == "run_sql")
+        .order_by(AuditLog.created_at.desc())
+    )
+    assert audit is not None
+    assert audit.actor_user_id == user.id
+    assert audit.actor_agent_id is None
 
 
 async def test_agent_run_sql_uses_provisioned_resource_identity(

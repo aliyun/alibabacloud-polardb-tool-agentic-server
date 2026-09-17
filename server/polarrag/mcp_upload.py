@@ -11,6 +11,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.crypto import encrypt
+from server.core.polarrag_governance import (
+    PolarRAGToolGovernor,
+    get_polarrag_tool_governor,
+)
 from server.models import (
     KnowledgeResource,
     PolarRAGSpace,
@@ -42,6 +46,7 @@ from server.polarrag.upload import (
     object_store_from_space,
     validate_filename,
 )
+from server.polarrag.write_policy import require_pas_managed_resource
 
 PART_SIZE_BYTES = 8 * 1024 * 1024
 SIGNED_URL_TTL_SECONDS = 15 * 60
@@ -322,6 +327,10 @@ async def prepare_upload(
     except KnowledgeAccessError as exc:
         raise UploadSessionError("KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE") from exc
     try:
+        require_pas_managed_resource(plan.resources[0])
+    except PolarRAGUpstreamError as exc:
+        raise UploadSessionError(exc.code.value) from exc
+    try:
         document_actor(plan.acl_context)
     except ValueError as exc:
         raise UploadSessionError("IDENTITY_CONTEXT_UNAVAILABLE") from exc
@@ -472,6 +481,7 @@ async def complete_upload(
     resource_scope: KnowledgeResourceScope | None,
     object_store_factory: ObjectStoreFactory = object_store_from_space,
     client_factory: ClientFactory = client_from_instance,
+    governor: PolarRAGToolGovernor | None = None,
 ) -> tuple[KnowledgeResource, dict[str, Any]]:
     row = await _owned_session(
         session,
@@ -481,10 +491,7 @@ async def complete_upload(
     )
     if row.status == PolarRAGUploadStatus.ABORTED:
         raise UploadSessionError("UPLOAD_SESSION_NOT_ACTIVE")
-    if (
-        row.status == PolarRAGUploadStatus.PREPARED
-        and _as_utc(row.expires_at) <= datetime.now(UTC)
-    ):
+    if row.status == PolarRAGUploadStatus.PREPARED and _as_utc(row.expires_at) <= datetime.now(UTC):
         raise UploadSessionError("UPLOAD_SESSION_EXPIRED")
     plan = await _session_access(
         session,
@@ -492,9 +499,42 @@ async def complete_upload(
         row,
         resource_scope=resource_scope,
     )
-    resource = plan.resources[0]
+    try:
+        require_pas_managed_resource(plan.resources[0])
+    except PolarRAGUpstreamError as exc:
+        raise UploadSessionError(exc.code.value) from exc
     if row.status == PolarRAGUploadStatus.COMPLETED:
-        return resource, _completed_result(row)
+        return plan.resources[0], _completed_result(row)
+    governor = governor or get_polarrag_tool_governor()
+    async with governor.reserve_instance(
+        "complete_document_upload",
+        plan.instance.id,
+        1,
+    ):
+        return await _complete_upload_reserved(
+            session,
+            user,
+            row,
+            plan,
+            agent_id=agent_id,
+            upload_session_id=upload_session_id,
+            object_store_factory=object_store_factory,
+            client_factory=client_factory,
+        )
+
+
+async def _complete_upload_reserved(
+    session: AsyncSession,
+    user: User,
+    row: PolarRAGUploadSession,
+    plan: KnowledgeAccessPlan,
+    *,
+    agent_id: str,
+    upload_session_id: str,
+    object_store_factory: ObjectStoreFactory,
+    client_factory: ClientFactory,
+) -> tuple[KnowledgeResource, dict[str, Any]]:
+    resource = plan.resources[0]
     store = _store_for_space(plan.space, object_store_factory, row)
     await _cleanup_journal(session, row, plan.space)
     try:

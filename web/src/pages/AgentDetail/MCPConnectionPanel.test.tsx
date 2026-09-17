@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -19,7 +19,7 @@ const baseProps: MCPConnectionPanelProps = {
 }
 
 describe('Agent MCP connection panel', () => {
-  it('keeps the Token masked and requires a password before copying JSON', async () => {
+  it('keeps the Token masked and copies JSON with the admin session', async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, 'writeText')
     const revealToken = vi.fn().mockResolvedValue('pas_agent_secret')
@@ -33,15 +33,8 @@ describe('Agent MCP connection panel', () => {
     await user.click(
       screen.getByRole('button', { name: /copy json configuration/i }),
     )
-    expect(writeText).not.toHaveBeenCalled()
-    await user.type(screen.getByLabelText(/current password/i), 'password')
-    await user.click(
-      within(screen.getByRole('dialog')).getByRole('button', {
-        name: /^copy$/i,
-      }),
-    )
 
-    expect(revealToken).toHaveBeenCalledWith('password')
+    expect(revealToken).toHaveBeenCalledWith()
     expect(writeText).toHaveBeenCalledWith(`{
   "mcpServers": {
     "production-reader": {
@@ -57,7 +50,7 @@ describe('Agent MCP connection panel', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/copied/i)
   })
 
-  it('does not copy when password verification fails', async () => {
+  it('does not copy when the Token cannot be revealed', async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, 'writeText')
     render(
@@ -68,15 +61,9 @@ describe('Agent MCP connection panel', () => {
     )
 
     await user.click(screen.getByRole('button', { name: /copy token/i }))
-    await user.type(screen.getByLabelText(/current password/i), 'wrong')
-    await user.click(
-      within(screen.getByRole('dialog')).getByRole('button', {
-        name: /^copy$/i,
-      }),
-    )
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      /password verification failed/i,
+      /could not reveal or copy/i,
     )
     expect(writeText).not.toHaveBeenCalled()
   })

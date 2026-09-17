@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -106,6 +106,37 @@ async def list_instance_credentials(
         .scalars()
         .all()
     )
+
+
+async def list_instance_credentials_page(
+    session: AsyncSession,
+    instance_id: str,
+    *,
+    offset: int,
+    limit: int,
+    search: str | None = None,
+) -> tuple[list[InstanceCredential], int]:
+    if await session.get(Instance, instance_id) is None:
+        raise CredentialNotFound("Instance not found")
+    filters = [InstanceCredential.instance_id == instance_id]
+    if search and search.strip():
+        filters.append(InstanceCredential.name.ilike(f"%{search.strip()}%"))
+    total = (
+        await session.scalar(
+            select(func.count(InstanceCredential.id)).where(*filters)
+        )
+        or 0
+    )
+    rows = (
+        await session.execute(
+            select(InstanceCredential)
+            .where(*filters)
+            .order_by(InstanceCredential.created_at, InstanceCredential.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    return list(rows), total
 
 
 async def create_instance_credential(

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
+import logging
 import re
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
+import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -14,9 +19,9 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, literal, or_, select, union_all, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from server.auth.dependencies import require_admin
 from server.core.audit_logger import log_audit
@@ -29,17 +34,25 @@ from server.models import (
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
     KnowledgeResource,
+    KnowledgeResourceManagementMode,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
     PolarRAGSpace,
     User,
     UserStatus,
 )
-from server.polarrag.catalog import sync_space_catalog
-from server.polarrag.client import client_from_instance
+from server.polarrag.catalog import (
+    claim_space_catalog_sync,
+    run_claimed_space_catalog_sync,
+    sync_space_catalog,
+)
+from server.polarrag.client import _MAX_CATALOG_PAGES, client_from_instance
+from server.polarrag.connection_config import InstanceCreate
 from server.polarrag.contracts import (
     PolarRAGCapabilities,
+    PolarRAGClient,
     PolarRAGErrorCode,
+    PolarRAGKnowledgeBaseRecord,
     PolarRAGOperationNotSupported,
     PolarRAGSpaceRecord,
     PolarRAGUpstreamError,
@@ -52,7 +65,9 @@ from server.polarrag.oss import (
 )
 
 router = APIRouter(prefix="/polarrag", tags=["polarrag"])
+logger = logging.getLogger(__name__)
 _HOST_RE = re.compile(r"^[A-Za-z0-9_.:-]+$")
+_UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE = 20
 
 
 async def _commit_with_required_audit(
@@ -67,38 +82,10 @@ async def _commit_with_required_audit(
     )
     await session.commit()
 
-
-class InstanceCreate(BaseModel):
+class KnowledgeResourceManagementModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(min_length=1, max_length=255)
-    scheme: Literal["http", "https"]
-    host: str = Field(min_length=1, max_length=255)
-    port: int = Field(ge=1, le=65535, strict=True)
-    username: str = Field(min_length=1, max_length=1024)
-    password: str = Field(min_length=1, max_length=4096)
-    tls_verify: bool = True
-    ca_bundle: str | None = Field(default=None, max_length=262144)
-
-    @field_validator("name", "username")
-    @classmethod
-    def validate_nonblank(cls, value: str) -> str:
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("value must not be blank")
-        return candidate
-
-    @field_validator("host")
-    @classmethod
-    def validate_host(cls, value: str) -> str:
-        candidate = value.strip()
-        if (
-            not _HOST_RE.fullmatch(candidate)
-            or "/" in candidate
-            or "@" in candidate
-        ):
-            raise ValueError("host must not contain a URL or credentials")
-        return candidate
+    management_mode: KnowledgeResourceManagementMode
 
 
 class InstanceUpdate(BaseModel):
@@ -186,6 +173,12 @@ class ClaimKnowledgeBaseRequest(BaseModel):
         return self
 
 
+class SpaceSyncStatus(BaseModel):
+    status: Literal["idle", "running", "completed", "failed"]
+    result: dict[str, int] | None = None
+    error: str | None = None
+
+
 class OssConfigRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -259,7 +252,7 @@ def _principal_response(
 def _space_response(
     upstream: PolarRAGSpaceRecord,
     local: PolarRAGSpace | None,
-    resources: list[KnowledgeResource],
+    knowledge_resource_count: int,
 ) -> dict:
     return {
         "space_id": upstream.space_id,
@@ -284,21 +277,27 @@ def _space_response(
         "last_synced_at": (
             local.last_synced_at if local is not None else None
         ),
-        "knowledge_resources": [
-            {
-                "knowledge_resource_id": resource.id,
-                "name": resource.name,
-                "kb_type": resource.kb_type,
-                "binding_mode": (
-                    resource.binding_mode.value
-                    if resource.binding_mode is not None
-                    else None
-                ),
-                "sync_status": resource.sync_status.value,
-                "enabled": resource.enabled,
-            }
-            for resource in resources
-        ],
+        "knowledge_resource_count": knowledge_resource_count,
+    }
+
+
+def _knowledge_resource_response(
+    resource: KnowledgeResource,
+    *,
+    space_name: str | None,
+) -> dict:
+    return {
+        "knowledge_resource_id": resource.id,
+        "name": resource.name,
+        "space_id": resource.space_id,
+        "space_name": space_name or resource.space_id,
+        "kb_type": resource.kb_type,
+        "binding_mode": (
+            resource.binding_mode.value if resource.binding_mode is not None else None
+        ),
+        "sync_status": resource.sync_status.value,
+        "enabled": resource.enabled,
+        "management_mode": resource.management_mode.value,
     }
 
 
@@ -387,6 +386,111 @@ async def _find_space(
     return (await session.execute(query)).scalar_one_or_none()
 
 
+async def _activate_new_spaces(
+    session: AsyncSession,
+    instance: PolarRAGInstance,
+    client: PolarRAGClient,
+) -> tuple[PolarRAGSpace, ...]:
+    if instance.status != PolarRAGInstanceStatus.ACTIVE:
+        return ()
+    activated: list[PolarRAGSpace] = []
+    async for upstream_spaces in _iter_upstream_space_pages(client):
+        space_ids = [space.space_id for space in upstream_spaces]
+        local_spaces = {
+            space.space_id: space
+            for space in (
+                await session.execute(
+                    select(PolarRAGSpace).where(
+                        PolarRAGSpace.polarrag_instance_id == instance.id,
+                        PolarRAGSpace.space_id.in_(space_ids),
+                    )
+                )
+            ).scalars()
+        }
+        for upstream in upstream_spaces:
+            local = local_spaces.get(upstream.space_id)
+            if local is not None:
+                local.name = upstream.name
+                _apply_space_storage(local, upstream)
+                continue
+            if (
+                upstream.status.upper() != "ACTIVE"
+                or upstream.identity_domain is None
+            ):
+                continue
+            local = PolarRAGSpace(
+                polarrag_instance_id=instance.id,
+                space_id=upstream.space_id,
+                name=upstream.name,
+                identity_domain=upstream.identity_domain,
+                oss_bucket=upstream.oss_bucket,
+                oss_endpoint=upstream.oss_endpoint,
+                enabled=True,
+            )
+            session.add(local)
+            await session.flush()
+            await sync_space_catalog(session, local, client, commit=False)
+            activated.append(local)
+    return tuple(activated)
+
+
+async def _iter_upstream_space_pages(
+    client: PolarRAGClient,
+    *,
+    page_size: int = 100,
+) -> AsyncIterator[list[PolarRAGSpaceRecord]]:
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    for _page_number in range(_MAX_CATALOG_PAGES):
+        spaces, next_cursor = await client.list_spaces_page(
+            cursor=cursor,
+            page_size=page_size,
+        )
+        yield spaces
+        if next_cursor is None:
+            return
+        if next_cursor in seen_cursors:
+            raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+
+
+async def _find_upstream_space(
+    client: PolarRAGClient,
+    space_id: str,
+) -> PolarRAGSpaceRecord | None:
+    async for spaces in _iter_upstream_space_pages(client):
+        for space in spaces:
+            if space.space_id == space_id:
+                return space
+    return None
+
+
+async def _audit_auto_enabled_spaces(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    spaces: tuple[PolarRAGSpace, ...],
+) -> None:
+    for space in spaces:
+        await log_audit(
+            session,
+            user_id=user_id,
+            action="polarrag_space.enable",
+            status=AuditStatus.SUCCESS,
+            target_type="polarrag_space",
+            target_id=space.knowledge_space_id,
+            client_info=json.dumps(
+                {"mode": "automatic", "space_id": space.space_id},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            required=True,
+            commit=False,
+        )
+
+
 @router.post("/instances", status_code=201)
 async def create_instance(
     body: InstanceCreate,
@@ -407,16 +511,25 @@ async def create_instance(
         status=PolarRAGInstanceStatus.PENDING,
         created_by=admin.id,
     )
+    client = client_from_instance(instance)
     try:
-        capabilities = await client_from_instance(
-            instance
-        ).check_capabilities()
+        capabilities = await client.check_capabilities()
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
     _apply_capability_status(instance, capabilities)
     session.add(instance)
     try:
         await session.flush()
+        activated_spaces = await _activate_new_spaces(
+            session,
+            instance,
+            client,
+        )
+        await _audit_auto_enabled_spaces(
+            session,
+            user_id=admin.id,
+            spaces=activated_spaces,
+        )
         await _commit_with_required_audit(
             session,
             user_id=admin.id,
@@ -425,6 +538,9 @@ async def create_instance(
             target_id=instance.id,
             status=AuditStatus.SUCCESS,
         )
+    except PolarRAGUpstreamError as exc:
+        await session.rollback()
+        _raise_upstream(exc)
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(
@@ -437,15 +553,42 @@ async def create_instance(
 
 @router.get("/instances")
 async def list_instances(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=255),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    filters = []
+    if q and q.strip():
+        pattern = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                PolarRAGInstance.name.ilike(pattern),
+                PolarRAGInstance.host.ilike(pattern),
+            )
+        )
+    total = (
+        await session.scalar(
+            select(func.count(PolarRAGInstance.id)).where(*filters)
+        )
+        or 0
+    )
     instances = (
         await session.execute(
-            select(PolarRAGInstance).order_by(PolarRAGInstance.created_at)
+            select(PolarRAGInstance)
+            .where(*filters)
+            .order_by(PolarRAGInstance.created_at, PolarRAGInstance.id)
+            .offset(offset)
+            .limit(limit)
         )
     ).scalars()
-    return {"items": [_instance_response(item) for item in instances]}
+    return {
+        "items": [_instance_response(item) for item in instances],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
 
 
 @router.get("/instances/{instance_id}")
@@ -477,15 +620,24 @@ async def update_instance(
         instance.ca_bundle_ciphertext = (
             encrypt(body.ca_bundle) if body.ca_bundle else None
         )
+    client = client_from_instance(instance)
     try:
-        capabilities = await client_from_instance(
-            instance
-        ).check_capabilities()
+        capabilities = await client.check_capabilities()
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
     _apply_capability_status(instance, capabilities)
     try:
         await session.flush()
+        activated_spaces = await _activate_new_spaces(
+            session,
+            instance,
+            client,
+        )
+        await _audit_auto_enabled_spaces(
+            session,
+            user_id=admin.id,
+            spaces=activated_spaces,
+        )
         await _commit_with_required_audit(
             session,
             user_id=admin.id,
@@ -494,6 +646,9 @@ async def update_instance(
             target_id=instance.id,
             status=AuditStatus.SUCCESS,
         )
+    except PolarRAGUpstreamError as exc:
+        await session.rollback()
+        _raise_upstream(exc)
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail="Instance conflict") from exc
@@ -537,10 +692,9 @@ async def check_instance(
     session: AsyncSession = Depends(get_session),
 ):
     instance = await _get_instance(session, instance_id)
+    client = client_from_instance(instance)
     try:
-        capabilities = await client_from_instance(
-            instance
-        ).check_capabilities()
+        capabilities = await client.check_capabilities()
     except PolarRAGUpstreamError as exc:
         instance.status = PolarRAGInstanceStatus.ERROR
         instance.last_error_code = exc.code.value
@@ -555,6 +709,20 @@ async def check_instance(
         )
         _raise_upstream(exc)
     _apply_capability_status(instance, capabilities)
+    try:
+        activated_spaces = await _activate_new_spaces(
+            session,
+            instance,
+            client,
+        )
+        await _audit_auto_enabled_spaces(
+            session,
+            user_id=admin.id,
+            spaces=activated_spaces,
+        )
+    except PolarRAGUpstreamError as exc:
+        await session.rollback()
+        _raise_upstream(exc)
     await _commit_with_required_audit(
         session,
         user_id=admin.id,
@@ -569,34 +737,43 @@ async def check_instance(
 @router.get("/instances/{instance_id}/spaces")
 async def list_spaces(
     instance_id: str,
+    cursor: str | None = Query(default=None, max_length=2048),
+    limit: int = Query(default=20, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     instance = await _get_instance(session, instance_id)
     try:
-        spaces = await client_from_instance(instance).list_spaces()
+        spaces, next_cursor = await client_from_instance(
+            instance
+        ).list_spaces_page(cursor=cursor, page_size=limit)
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
+    space_ids = [space.space_id for space in spaces]
     local_spaces = {
         space.space_id: space
         for space in (
             await session.execute(
                 select(PolarRAGSpace).where(
-                    PolarRAGSpace.polarrag_instance_id == instance.id
+                    PolarRAGSpace.polarrag_instance_id == instance.id,
+                    PolarRAGSpace.space_id.in_(space_ids),
                 )
             )
         ).scalars()
     }
-    resources_by_space: dict[str, list[KnowledgeResource]] = {}
-    resources = (
+    count_rows = (
         await session.execute(
-            select(KnowledgeResource)
-            .where(KnowledgeResource.polarrag_instance_id == instance.id)
-            .order_by(KnowledgeResource.name, KnowledgeResource.id)
+            select(KnowledgeResource.space_id, func.count(KnowledgeResource.id))
+            .where(
+                KnowledgeResource.polarrag_instance_id == instance.id,
+                KnowledgeResource.space_id.in_(space_ids),
+            )
+            .group_by(KnowledgeResource.space_id)
         )
-    ).scalars()
-    for resource in resources:
-        resources_by_space.setdefault(resource.space_id, []).append(resource)
+    ).all()
+    resource_counts: dict[str, int] = {
+        space_id: count for space_id, count in count_rows
+    }
     storage_changed = False
     for upstream in spaces:
         local = local_spaces.get(upstream.space_id)
@@ -611,10 +788,73 @@ async def list_spaces(
             _space_response(
                 space,
                 local_spaces.get(space.space_id),
-                resources_by_space.get(space.space_id, []),
+                resource_counts.get(space.space_id, 0),
             )
             for space in spaces
-        ]
+        ],
+        "next_cursor": next_cursor,
+        "limit": limit,
+    }
+
+
+@router.get("/instances/{instance_id}/knowledge-resources")
+async def list_knowledge_resources(
+    instance_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    instance = await _get_instance(session, instance_id)
+    filters = [KnowledgeResource.polarrag_instance_id == instance.id]
+    total = await session.scalar(select(func.count(KnowledgeResource.id)).where(*filters))
+    rows = (
+        await session.execute(
+            select(KnowledgeResource, PolarRAGSpace.name)
+            .outerjoin(
+                PolarRAGSpace,
+                (PolarRAGSpace.polarrag_instance_id == KnowledgeResource.polarrag_instance_id)
+                & (PolarRAGSpace.space_id == KnowledgeResource.space_id),
+            )
+            .where(*filters)
+            .order_by(KnowledgeResource.name, KnowledgeResource.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "items": [
+            _knowledge_resource_response(resource, space_name=space_name)
+            for resource, space_name in rows
+        ],
+        "total": total or 0,
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@router.put("/knowledge-resources/{knowledge_resource_id}/management-mode")
+async def update_knowledge_resource_management_mode(
+    knowledge_resource_id: str,
+    body: KnowledgeResourceManagementModeRequest,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    resource = await session.get(KnowledgeResource, knowledge_resource_id)
+    if resource is None:
+        raise HTTPException(status_code=404, detail="Knowledge resource not found")
+    resource.management_mode = body.management_mode
+    await _commit_with_required_audit(
+        session,
+        user_id=admin.id,
+        action="polarrag.knowledge_resource.management_mode_update",
+        target_type="knowledge_resource",
+        target_id=resource.id,
+        status=AuditStatus.SUCCESS,
+    )
+    return {
+        "knowledge_resource_id": resource.id,
+        "management_mode": resource.management_mode.value,
     }
 
 
@@ -628,13 +868,9 @@ async def enable_space(
     instance = await _get_instance(session, instance_id)
     client = client_from_instance(instance)
     try:
-        upstream_spaces = await client.list_spaces()
+        upstream = await _find_upstream_space(client, body.space_id)
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
-    upstream = next(
-        (item for item in upstream_spaces if item.space_id == body.space_id),
-        None,
-    )
     if upstream is None or upstream.status.upper() != "ACTIVE":
         raise HTTPException(status_code=404, detail="PolarRAG Space not available")
     if upstream.identity_domain is None:
@@ -796,10 +1032,96 @@ async def configure_space_oss(
     }
 
 
-@router.post("/instances/{instance_id}/spaces/{space_id}/sync")
+def _space_sync_status(space: PolarRAGSpace) -> SpaceSyncStatus:
+    result = None
+    if space.catalog_sync_result_json:
+        try:
+            decoded = json.loads(space.catalog_sync_result_json)
+            if isinstance(decoded, dict):
+                result = decoded
+        except ValueError:
+            pass
+    return SpaceSyncStatus(
+        status=cast(
+            Literal["idle", "running", "completed", "failed"],
+            space.catalog_sync_status,
+        ),
+        result=result,
+        error=space.catalog_sync_error,
+    )
+
+
+async def _sync_space_in_background(
+    session_factory: async_sessionmaker[AsyncSession],
+    instance_id: str,
+    space_id: str,
+    admin_id: str,
+    knowledge_space_id: str,
+    worker_id: str,
+) -> None:
+    try:
+        result = await run_claimed_space_catalog_sync(
+            session_factory,
+            knowledge_space_id,
+            worker_id,
+        )
+        if result is not None:
+            async with session_factory() as session:
+                await _commit_with_required_audit(
+                    session,
+                    user_id=admin_id,
+                    action="polarrag_space.sync",
+                    target_type="polarrag_space",
+                    target_id=knowledge_space_id,
+                    status=AuditStatus.SUCCESS,
+                )
+    except Exception as exc:
+        logger.warning(
+            "polarrag.space.background_sync_failed",
+            extra={
+                "polarrag_instance_id": instance_id,
+                "space_id": space_id,
+                "error_type": type(exc).__name__,
+            },
+        )
+
+
+async def _schedule_space_sync(
+    session_factory: async_sessionmaker[AsyncSession],
+    session: AsyncSession,
+    space: PolarRAGSpace,
+    admin_id: str,
+) -> tuple[SpaceSyncStatus, asyncio.Task[None] | None]:
+    worker_id = str(uuid.uuid4())
+    if not await claim_space_catalog_sync(
+        session,
+        space.knowledge_space_id,
+        worker_id,
+    ):
+        await session.refresh(space)
+        return _space_sync_status(space), None
+    task = asyncio.create_task(
+        _sync_space_in_background(
+            session_factory,
+            space.polarrag_instance_id,
+            space.space_id,
+            admin_id,
+            space.knowledge_space_id,
+            worker_id,
+        )
+    )
+    return SpaceSyncStatus(status="running"), task
+
+
+@router.post(
+    "/instances/{instance_id}/spaces/{space_id}/sync",
+    response_model=SpaceSyncStatus,
+    status_code=202,
+)
 async def sync_space(
     instance_id: str,
     space_id: str,
+    request: Request,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -807,51 +1129,129 @@ async def sync_space(
     space = await _find_space(session, instance.id, space_id, enabled=True)
     if space is None:
         raise HTTPException(status_code=404, detail="Enabled Space not found")
-    try:
-        result = await sync_space_catalog(
-            session,
-            space,
-            client_from_instance(instance),
-            commit=False,
-        )
-    except PolarRAGUpstreamError as exc:
-        _raise_upstream(exc)
-    await _commit_with_required_audit(
+    session_factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    status, task = await _schedule_space_sync(
+        session_factory,
         session,
-        user_id=admin.id,
-        action="polarrag_space.sync",
-        target_type="polarrag_space",
-        target_id=space.knowledge_space_id,
-        status=AuditStatus.SUCCESS,
+        space,
+        admin.id,
     )
-    return result
+    if task is not None:
+        background_tasks = getattr(request.app.state, "background_tasks", None)
+        if background_tasks is not None:
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+    return status
+
+
+@router.get(
+    "/instances/{instance_id}/spaces/{space_id}/sync",
+    response_model=SpaceSyncStatus,
+)
+async def get_space_sync_status(
+    instance_id: str,
+    space_id: str,
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    instance = await _get_instance(session, instance_id)
+    space = await _find_space(session, instance.id, space_id, enabled=True)
+    if space is None:
+        raise HTTPException(status_code=404, detail="Enabled Space not found")
+    return _space_sync_status(space)
+
+
+def _decode_unclaimed_catalog_cursor(cursor: str | None) -> tuple[int, str | None]:
+    if cursor is None:
+        return 0, None
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+        space_offset = payload.get("space_offset")
+        upstream_cursor = payload.get("upstream_cursor")
+    except (UnicodeDecodeError, ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="Invalid unclaimed catalog cursor") from None
+    if (
+        not isinstance(space_offset, int)
+        or space_offset < 0
+        or (upstream_cursor is not None and not isinstance(upstream_cursor, str))
+    ):
+        raise HTTPException(status_code=422, detail="Invalid unclaimed catalog cursor")
+    return space_offset, upstream_cursor
+
+
+def _encode_unclaimed_catalog_cursor(space_offset: int, upstream_cursor: str | None) -> str:
+    payload = json.dumps(
+        {"space_offset": space_offset, "upstream_cursor": upstream_cursor},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+async def _find_knowledge_base(
+    client: PolarRAGClient,
+    space_id: str,
+    kb_id: str,
+    *,
+    status: str,
+) -> PolarRAGKnowledgeBaseRecord | None:
+    cursor: str | None = None
+    page_reader = (
+        client.list_unclaimed_knowledge_bases_page
+        if status == "UNCLAIMED"
+        else getattr(client, "list_knowledge_bases_page", None)
+    )
+    if page_reader is None:
+        records = await client.list_knowledge_bases(space_id)
+        return next((record for record in records if record.kb_id == kb_id), None)
+    seen_cursors: set[str] = set()
+    for _page_number in range(_MAX_CATALOG_PAGES):
+        records, next_cursor = await page_reader(
+            space_id,
+            cursor=cursor,
+            page_size=100,
+        )
+        record = next((item for item in records if item.kb_id == kb_id), None)
+        if record is not None or next_cursor is None:
+            return record
+        if next_cursor in seen_cursors:
+            raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+    raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
 
 
 @router.get("/instances/{instance_id}/unclaimed-knowledge-bases")
 async def list_unclaimed_knowledge_bases(
     instance_id: str,
+    cursor: str | None = None,
+    limit: int = Query(default=_UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     instance = await _get_instance(session, instance_id)
-    spaces = list(
-        (
-            await session.execute(
+    space_offset, upstream_cursor = _decode_unclaimed_catalog_cursor(cursor)
+    client = client_from_instance(instance)
+    items: list[dict] = []
+    next_cursor: str | None = None
+    try:
+        while len(items) < limit:
+            space = await session.scalar(
                 select(PolarRAGSpace)
                 .where(
                     PolarRAGSpace.polarrag_instance_id == instance.id,
                     PolarRAGSpace.enabled.is_(True),
                 )
                 .order_by(PolarRAGSpace.space_id)
+                .offset(space_offset)
+                .limit(1)
             )
-        ).scalars()
-    )
-    client = client_from_instance(instance)
-    items: list[dict] = []
-    try:
-        for space in spaces:
-            records = await client.list_unclaimed_knowledge_bases(
-                space.space_id
+            if space is None:
+                break
+            records, page_cursor = await client.list_unclaimed_knowledge_bases_page(
+                space.space_id,
+                cursor=upstream_cursor,
+                page_size=limit - len(items),
             )
             for record in records:
                 if (
@@ -873,90 +1273,122 @@ async def list_unclaimed_knowledge_bases(
                         "status": record.status,
                     }
                 )
+            if page_cursor is not None:
+                next_cursor = _encode_unclaimed_catalog_cursor(space_offset, page_cursor)
+                break
+            space_offset += 1
+            upstream_cursor = None
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
-    domains = {space.identity_domain for space in spaces}
-    current = datetime.now(UTC)
-    candidates: list[dict[str, str | None]] = []
-    if domains:
-        candidates.extend(
-            {
-                "principal_assignment_id": assignment.id,
-                "pas_user_id": user.id,
-                "user_name": user.display_name,
-                "user_external_id": user.external_id,
-                "identity_domain": assignment.identity_domain,
-                "provider": assignment.provider,
-                "principal_id": assignment.principal_id,
-            }
-            for assignment, user in (
-                await session.execute(
-                    select(EnterprisePrincipalAssignment, User)
-                    .join(
-                        User,
-                        User.id
-                        == EnterprisePrincipalAssignment.pas_user_id,
-                    )
-                    .where(
-                        EnterprisePrincipalAssignment.identity_domain.in_(
-                            domains
-                        ),
-                        EnterprisePrincipalAssignment.principal_type
-                        == EnterprisePrincipalType.USER,
-                        EnterprisePrincipalAssignment.status
-                        == EnterprisePrincipalStatus.ACTIVE,
-                        or_(
-                            EnterprisePrincipalAssignment.valid_until.is_(
-                                None
-                            ),
-                            EnterprisePrincipalAssignment.valid_until
-                            > current,
-                        ),
-                        User.status == UserStatus.ACTIVE,
-                    )
-                    .order_by(
-                        User.display_name,
-                        EnterprisePrincipalAssignment.identity_domain,
-                        EnterprisePrincipalAssignment.provider,
-                        EnterprisePrincipalAssignment.principal_id,
-                    )
-                )
-            ).all()
-            if principal_assignment_is_valid_for_user(assignment, user)
+    if next_cursor is None:
+        next_space = await session.scalar(
+            select(PolarRAGSpace.knowledge_space_id)
+            .where(
+                PolarRAGSpace.polarrag_instance_id == instance.id,
+                PolarRAGSpace.enabled.is_(True),
+            )
+            .order_by(PolarRAGSpace.space_id)
+            .offset(space_offset)
+            .limit(1)
         )
-        active_users = list(
-            (
-                await session.execute(
-                    select(User)
-                    .where(User.status == UserStatus.ACTIVE)
-                    .order_by(User.display_name, User.external_id)
-                )
-            ).scalars()
-        )
-        candidates.extend(
-            {
-                "principal_assignment_id": None,
-                "pas_user_id": user.id,
-                "user_name": user.display_name,
-                "user_external_id": user.external_id,
-                "identity_domain": domain,
-                "provider": "polarrag",
-                "principal_id": user.external_id,
-            }
-            for domain in sorted(domains)
-            for user in active_users
-        )
+        if next_space is not None:
+            next_cursor = _encode_unclaimed_catalog_cursor(space_offset, None)
     return {
         "items": items,
-        "owner_candidates": sorted(
-            candidates,
-            key=lambda candidate: (
-                candidate["identity_domain"] or "",
-                candidate["user_name"] or "",
-                candidate["provider"] or "",
-                candidate["principal_id"] or "",
+        "next_cursor": next_cursor,
+        "owner_candidates": [],
+    }
+
+
+@router.get("/instances/{instance_id}/owner-candidates")
+async def list_owner_candidates(
+    instance_id: str,
+    identity_domain: str = Query(min_length=1, max_length=255),
+    search: str | None = Query(default=None, min_length=1, max_length=255),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    instance = await _get_instance(session, instance_id)
+    domain_exists = await session.scalar(
+        select(PolarRAGSpace.knowledge_space_id)
+        .where(
+            PolarRAGSpace.polarrag_instance_id == instance.id,
+            PolarRAGSpace.enabled.is_(True),
+            PolarRAGSpace.identity_domain == identity_domain,
+        )
+        .limit(1)
+    )
+    if domain_exists is None:
+        raise HTTPException(status_code=404, detail="Enabled identity domain not found")
+    current = datetime.now(UTC)
+    assigned = (
+        select(
+            EnterprisePrincipalAssignment.id.label("principal_assignment_id"),
+            User.id.label("pas_user_id"),
+            User.display_name.label("user_name"),
+            User.external_id.label("user_external_id"),
+            EnterprisePrincipalAssignment.identity_domain.label("identity_domain"),
+            EnterprisePrincipalAssignment.provider.label("provider"),
+            EnterprisePrincipalAssignment.principal_id.label("principal_id"),
+        )
+        .join(User, User.id == EnterprisePrincipalAssignment.pas_user_id)
+        .where(
+            EnterprisePrincipalAssignment.identity_domain == identity_domain,
+            EnterprisePrincipalAssignment.provider.in_(("feishu", "sharepoint")),
+            EnterprisePrincipalAssignment.principal_type == EnterprisePrincipalType.USER,
+            EnterprisePrincipalAssignment.status == EnterprisePrincipalStatus.ACTIVE,
+            or_(
+                EnterprisePrincipalAssignment.valid_until.is_(None),
+                EnterprisePrincipalAssignment.valid_until > current,
             ),
-        ),
+            User.status == UserStatus.ACTIVE,
+        )
+    )
+    native = select(
+        literal(None).label("principal_assignment_id"),
+        User.id.label("pas_user_id"),
+        User.display_name.label("user_name"),
+        User.external_id.label("user_external_id"),
+        literal(identity_domain).label("identity_domain"),
+        literal("polarrag").label("provider"),
+        User.external_id.label("principal_id"),
+    ).where(User.status == UserStatus.ACTIVE)
+    normalized_search = (search or "").strip()
+    if normalized_search:
+        pattern = f"%{normalized_search}%"
+        assigned = assigned.where(
+            or_(
+                User.display_name.ilike(pattern),
+                User.external_id.ilike(pattern),
+                EnterprisePrincipalAssignment.provider.ilike(pattern),
+                EnterprisePrincipalAssignment.principal_id.ilike(pattern),
+            )
+        )
+        native = native.where(
+            or_(User.display_name.ilike(pattern), User.external_id.ilike(pattern))
+        )
+    candidates = union_all(assigned, native).subquery()
+    total = int(await session.scalar(select(func.count()).select_from(candidates)) or 0)
+    rows = (
+        await session.execute(
+            select(candidates)
+            .order_by(
+                candidates.c.user_name,
+                candidates.c.user_external_id,
+                candidates.c.provider,
+                candidates.c.principal_id,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    ).mappings().all()
+    return {
+        "items": [dict(row) for row in rows],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
     }
 
 
@@ -1012,8 +1444,12 @@ async def claim_knowledge_base(
             )
     client = client_from_instance(instance)
     try:
-        pending = await client.list_unclaimed_knowledge_bases(space.space_id)
-        record = next((item for item in pending if item.kb_id == kb_id), None)
+        record = await _find_knowledge_base(
+            client,
+            space.space_id,
+            kb_id,
+            status="UNCLAIMED",
+        )
         if record is not None:
             if (
                 record.space_id != space.space_id
@@ -1031,10 +1467,11 @@ async def claim_knowledge_base(
                 owner=user.external_id,
             )
         else:
-            active = await client.list_knowledge_bases(space.space_id)
-            record = next(
-                (item for item in active if item.kb_id == kb_id),
-                None,
+            record = await _find_knowledge_base(
+                client,
+                space.space_id,
+                kb_id,
+                status="ACTIVE",
             )
             expected_owners = {("polarrag", user.external_id)}
             if assignment is not None:
@@ -1151,18 +1588,44 @@ async def create_principal(
 @router.get("/users/{user_id}/principals")
 async def list_principals(
     user_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=255),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    filters = [EnterprisePrincipalAssignment.pas_user_id == user_id]
+    if q and q.strip():
+        pattern = f"%{q.strip()}%"
+        filters.append(
+            or_(
+                EnterprisePrincipalAssignment.principal_id.ilike(pattern),
+                EnterprisePrincipalAssignment.identity_domain.ilike(pattern),
+            )
+        )
+    total = (
+        await session.scalar(
+            select(func.count(EnterprisePrincipalAssignment.id)).where(*filters)
+        )
+        or 0
+    )
     assignments = (
         await session.execute(
             select(EnterprisePrincipalAssignment)
-            .where(EnterprisePrincipalAssignment.pas_user_id == user_id)
-            .order_by(EnterprisePrincipalAssignment.created_at)
+            .where(*filters)
+            .order_by(
+                EnterprisePrincipalAssignment.created_at,
+                EnterprisePrincipalAssignment.id,
+            )
+            .offset(offset)
+            .limit(limit)
         )
     ).scalars()
     return {
-        "items": [_principal_response(item) for item in assignments]
+        "items": [_principal_response(item) for item in assignments],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
     }
 
 

@@ -88,6 +88,12 @@ _login_remote_limiter = SlidingWindowRateLimiter(
 _login_account_limiter = SlidingWindowRateLimiter(
     requests=5, window_seconds=60
 )
+_recovery_remote_limiter = SlidingWindowRateLimiter(
+    requests=5, window_seconds=300
+)
+_recovery_account_limiter = SlidingWindowRateLimiter(
+    requests=3, window_seconds=300
+)
 _registration_limiter = SlidingWindowRateLimiter(
     requests=10, window_seconds=60
 )
@@ -115,6 +121,22 @@ async def check_builtin_login(request: Request, username: str) -> None:
     )
 
 
+async def check_recovery_login(request: Request, username: str) -> None:
+    remote = _remote_address(request.scope)
+    normalized_username = username.strip().casefold()[:255]
+    account_digest = hashlib.sha256(
+        normalized_username.encode("utf-8")
+    ).hexdigest()
+    await _recovery_remote_limiter.check(f"recovery-remote:{remote}")
+    await _recovery_account_limiter.check(
+        f"recovery-account:{account_digest}"
+    )
+
+
+async def check_token_endpoint(scope: Mapping[str, Any], path: str) -> None:
+    await _token_limiter.check(f"{path}:{_remote_address(scope)}")
+
+
 class AuthEndpointRateLimitMiddleware:
     def __init__(self, app: Callable[..., Awaitable[None]]) -> None:
         self._app = app
@@ -131,9 +153,12 @@ class AuthEndpointRateLimitMiddleware:
             )
             if limiter is not None:
                 try:
-                    await limiter.check(
-                        f"{path}:{_remote_address(scope)}"
-                    )
+                    if limiter is _token_limiter:
+                        await check_token_endpoint(scope, path)
+                    else:
+                        await limiter.check(
+                            f"{path}:{_remote_address(scope)}"
+                        )
                 except AuthRateLimitExceeded as exc:
                     response = JSONResponse(
                         {
@@ -156,5 +181,7 @@ class AuthEndpointRateLimitMiddleware:
 def reset_auth_rate_limiters() -> None:
     _login_remote_limiter.reset()
     _login_account_limiter.reset()
+    _recovery_remote_limiter.reset()
+    _recovery_account_limiter.reset()
     _registration_limiter.reset()
     _token_limiter.reset()

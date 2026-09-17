@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server
-  tag: "0.0.11"
+  tag: "0.0.12"
   digest: ""
   pullPolicy: IfNotPresent
 
@@ -15,6 +15,23 @@ existingSecret: pas-bootstrap
 service:
   type: ClusterIP
   port: 18760
+
+# The management listener is a separate, opt-in control-plane surface. Its
+# port has no default: a control plane or operator must allocate it explicitly.
+management:
+  enabled: false
+  port: null
+  authMode: ""
+  managedIdentity:
+    instanceId: ""
+    generation: null
+  tokenSecret:
+    name: ""
+    key: token
+  service:
+    enabled: false
+    type: ClusterIP
+    port: null
 
 ingress:
   enabled: false

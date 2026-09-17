@@ -5,6 +5,7 @@ import {
   Col,
   Descriptions,
   Empty,
+  Pagination,
   Popconfirm,
   Row,
   Skeleton,
@@ -55,28 +56,39 @@ export default function DedicatedPoolPanel() {
   const { t, i18n } = useTranslation()
   const navigate = useNavigate()
   const [pools, setPools] = useState<DedicatedPool[]>([])
+  const [poolTotal, setPoolTotal] = useState(0)
+  const [poolPage, setPoolPage] = useState(1)
   const [resources, setResources] = useState<DBInstanceResourceAdmin[]>([])
+  const [resourceTotal, setResourceTotal] = useState(0)
+  const [resourcePage, setResourcePage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [permissionPool, setPermissionPool] = useState<DedicatedPool | null>(null)
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (
+    nextPoolPage = poolPage,
+    nextResourcePage = resourcePage,
+  ) => {
     setLoading(true)
     setError(null)
     try {
-      const response = await listDedicatedPools()
-      setPools(response.data)
+      const response = await listDedicatedPools({
+        offset: (nextPoolPage - 1) * 20,
+        limit: 20,
+      })
+      setPools(response.data.items)
+      setPoolTotal(response.data.total)
+      setPoolPage(nextPoolPage)
       try {
-        const resourceResponse = await listDBInstanceResources()
-        setResources(
-          resourceResponse.data.filter(
-            (resource) =>
-              resource.provisioning_mode === 'dedicated' &&
-              ['deleting', 'cooling_down', 'delete_failed', 'restoring'].includes(
-                resource.status,
-              ),
-          ),
-        )
+        const resourceResponse = await listDBInstanceResources({
+          offset: (nextResourcePage - 1) * 20,
+          limit: 20,
+          provisioning_mode: 'dedicated',
+          status: ['deleting', 'cooling_down', 'delete_failed', 'restoring'],
+        })
+        setResources(resourceResponse.data.items)
+        setResourceTotal(resourceResponse.data.total)
+        setResourcePage(nextResourcePage)
       } catch {
         setResources([])
       }
@@ -85,7 +97,7 @@ export default function DedicatedPoolPanel() {
     } finally {
       setLoading(false)
     }
-  }, [t])
+  }, [poolPage, resourcePage, t])
 
   useEffect(() => {
     void load()
@@ -265,7 +277,8 @@ export default function DedicatedPoolPanel() {
           </Button>
         </Empty>
       ) : (
-        pools.map((pool) => (
+        <>
+        {pools.map((pool) => (
           <section
             key={pool.id}
             aria-labelledby={`pool-${pool.id}`}
@@ -370,7 +383,15 @@ export default function DedicatedPoolPanel() {
               locale={{ emptyText: t('pool.noMembers') }}
             />
           </section>
-        ))
+        ))}
+        <Pagination
+          current={poolPage}
+          pageSize={20}
+          total={poolTotal}
+          showSizeChanger={false}
+          onChange={(nextPage) => void load(nextPage, resourcePage)}
+        />
+        </>
       )}
 
       {resources.length > 0 && (
@@ -384,7 +405,13 @@ export default function DedicatedPoolPanel() {
           <Table
             rowKey="id"
             size="small"
-            pagination={false}
+            pagination={{
+              current: resourcePage,
+              pageSize: 20,
+              total: resourceTotal,
+              showSizeChanger: false,
+              onChange: (nextPage) => void load(poolPage, nextPage),
+            }}
             dataSource={resources}
             scroll={{ x: 760 }}
             columns={[

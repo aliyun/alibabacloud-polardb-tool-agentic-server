@@ -85,6 +85,11 @@ class KnowledgeResourceSyncStatus(str, enum.Enum):
     UNSUPPORTED_KB_TYPE = "unsupported_kb_type"
 
 
+class KnowledgeResourceManagementMode(str, enum.Enum):
+    NATIVE = "NATIVE"
+    EXTERNAL_SYNC = "EXTERNAL_SYNC"
+
+
 class PolarRAGInstance(TimestampMixin, Base):
     __tablename__ = "polarrag_instances"
     __table_args__ = (
@@ -167,7 +172,15 @@ class PolarRAGSpace(TimestampMixin, Base):
         Boolean, default=False, server_default=false()
     )
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
+    catalog_sync_status: Mapped[str] = mapped_column(
+        String(32), default="idle", server_default="idle"
+    )
+    catalog_sync_result_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    catalog_sync_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    catalog_sync_worker_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    catalog_sync_lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     instance: Mapped[PolarRAGInstance] = relationship(lazy="selectin")
 
 
@@ -219,7 +232,15 @@ class KnowledgeResource(TimestampMixin, Base):
         _enum_column(KnowledgeResourceSyncStatus, length=32),
     )
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    management_mode: Mapped[KnowledgeResourceManagementMode] = mapped_column(
+        _enum_column(KnowledgeResourceManagementMode, length=32),
+        default=KnowledgeResourceManagementMode.NATIVE,
+        server_default=KnowledgeResourceManagementMode.NATIVE.value,
+    )
     upstream_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    catalog_sync_token: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
 
     space: Mapped[PolarRAGSpace] = relationship(lazy="selectin")
 

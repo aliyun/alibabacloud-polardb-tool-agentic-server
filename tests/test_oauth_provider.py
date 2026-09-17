@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from mcp.server.auth.provider import (
+    AccessToken,
     AuthorizationParams,
     AuthorizeError,
     RegistrationError,
@@ -18,8 +24,15 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull
 
 from server.auth.jwt_manager import reset_keys
+from server.api.platform_oauth import get_platform_access_context, platform_resource_url
+from server.auth.external_tokens import (
+    ExternalTokenIdentity,
+    ExternalTokenInvalid,
+    ExternalTokenUnavailable,
+)
 from server.config import AppConfig, reset_config
 from server.core import agent_user_token_service
+from server.core.crypto import encrypt
 from tests._helpers import init_test_jwt_keys
 from server.db import engine as engine_mod
 from server.models import (
@@ -28,7 +41,10 @@ from server.models import (
     AgentUserAssignment,
     AuthProvider,
     Base,
+    OAuthRegisteredClient,
     User,
+    UserRole,
+    UserStatus,
 )
 from server.models.oauth import OAuthAuthorizationCode
 from server.auth.oauth_provider import PASAuthProvider
@@ -70,6 +86,17 @@ async def session_factory(test_engine):
     factory = async_sessionmaker(test_engine, expire_on_commit=False)
     engine_mod._engine = test_engine
     engine_mod._session_factory = factory
+    async with factory() as session:
+        session.add(
+            User(
+                id="user-1",
+                external_id="builtin-user",
+                display_name="Builtin User",
+                auth_provider=AuthProvider.BUILTIN,
+                role=UserRole.MEMBER,
+            )
+        )
+        await session.commit()
     return factory
 
 
@@ -120,9 +147,47 @@ class TestClientRegistration:
         result = await provider.get_client("does-not-exist")
         assert result is None
 
-    async def test_register_public_client_no_secret(
-        self, provider: PASAuthProvider
+    async def test_decryption_failure_does_not_log_client_identifier(
+        self,
+        provider: PASAuthProvider,
+        session_factory,
+        monkeypatch: pytest.MonkeyPatch,
     ):
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "server.auth.oauth_provider.logger.warning",
+            lambda message, *args: warnings.append(
+                message % args if args else message
+            ),
+        )
+        client_id = "sensitive-client-identifier"
+        await provider.register_client(
+            OAuthClientInformationFull(
+                client_id=client_id,
+                client_secret="stored-client-credential",
+                redirect_uris=["http://localhost:8080/callback"],
+                grant_types=["authorization_code", "refresh_token"],
+                response_types=["code"],
+                token_endpoint_auth_method="client_secret_post",
+            )
+        )
+        async with session_factory() as session:
+            row = await session.scalar(
+                select(OAuthRegisteredClient).where(
+                    OAuthRegisteredClient.client_id == client_id
+                )
+            )
+            assert row is not None
+            row.client_secret_enc = "invalid-envelope"
+            await session.commit()
+
+        result = await provider.get_client(client_id)
+
+        assert result is None
+        assert warnings == ["Failed to decrypt an OAuth client secret"]
+        assert client_id not in warnings[0]
+
+    async def test_register_public_client_no_secret(self, provider: PASAuthProvider):
         client_info = OAuthClientInformationFull(
             client_id="public-client-001",
             client_secret=None,
@@ -142,6 +207,28 @@ class TestClientRegistration:
         assert result.client_name == "Public App"
         assert result.token_endpoint_auth_method == "none"
         assert len(result.redirect_uris) == 1
+
+    async def test_register_client_with_token_exchange_grant(
+        self,
+        provider: PASAuthProvider,
+    ):
+        from server.auth.oauth_provider import TOKEN_EXCHANGE_GRANT_TYPE
+
+        client_info = OAuthClientInformationFull(
+            client_id="exchange-client",
+            scope="knowledge:read",
+            redirect_uris=None,
+            grant_types=[TOKEN_EXCHANGE_GRANT_TYPE],
+            response_types=[],
+            token_endpoint_auth_method="none",
+        )
+
+        await provider.register_client(client_info)
+
+        result = await provider.get_client("exchange-client")
+        assert result is not None
+        assert TOKEN_EXCHANGE_GRANT_TYPE in (result.grant_types or [])
+        assert result.redirect_uris is None
 
     @pytest.mark.parametrize(
         "redirect_uri",
@@ -181,13 +268,31 @@ class TestClientRegistration:
 
         assert await provider.get_client("remote-client") is not None
 
+    async def test_allows_client_secret_basic(
+        self, provider: PASAuthProvider
+    ):
+        client_info = OAuthClientInformationFull(
+            client_id="basic-client",
+            client_secret="basic-client-secret",
+            redirect_uris=["http://127.0.0.1:8080/callback"],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="client_secret_basic",
+        )
+
+        await provider.register_client(client_info)
+
+        result = await provider.get_client("basic-client")
+        assert result is not None
+        assert result.token_endpoint_auth_method == "client_secret_basic"
+
     @pytest.mark.parametrize(
         ("grant_types", "response_types", "auth_method"),
         [
             (["authorization_code"], ["code"], "none"),
             (["authorization_code", "refresh_token", "client_credentials"], ["code"], "none"),
             (["authorization_code", "refresh_token"], ["code", "token"], "none"),
-            (["authorization_code", "refresh_token"], ["code"], "client_secret_basic"),
+            (["authorization_code", "refresh_token"], ["code"], "private_key_jwt"),
         ],
     )
     async def test_rejects_non_minimal_client_metadata(
@@ -313,6 +418,33 @@ class TestAuthorize:
                 ),
             )
 
+    async def test_authorize_allows_dynamic_loopback_port(
+        self,
+        provider: PASAuthProvider,
+    ):
+        client = OAuthClientInformationFull(
+            client_id="loopback-client",
+            redirect_uris=["http://127.0.0.1:49152/callback"],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+        await provider.register_client(client)
+
+        url = await provider.authorize(
+            client,
+            AuthorizationParams(
+                state="s",
+                scopes=[],
+                code_challenge="c",
+                redirect_uri="http://127.0.0.1:61234/callback",
+                redirect_uri_provided_explicitly=True,
+                resource=None,
+            ),
+        )
+
+        assert "/mcp-auth/login?session_id=" in url
+
     async def test_oidc_authorize_persists_and_sends_nonce(
         self,
         provider: PASAuthProvider,
@@ -431,9 +563,7 @@ class TestCodeExchange:
         loaded = await provider.load_authorization_code(client, code)
         assert loaded is None
 
-    async def test_consumed_code_revokes_refresh_tokens(
-        self, provider, session_factory
-    ):
+    async def test_consumed_code_revokes_refresh_tokens(self, provider, session_factory):
         code = "replay-code"
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         async with session_factory() as session:
@@ -482,9 +612,7 @@ class TestCodeExchange:
 
         async with session_factory() as session:
             result = await session.execute(
-                select(OAuthRefreshToken).where(
-                    OAuthRefreshToken.token_hash == "fake-token-hash-abc"
-                )
+                select(OAuthRefreshToken).where(OAuthRefreshToken.token_hash == "fake-token-hash-abc")
             )
             rt_row = result.scalar_one()
             assert rt_row.revoked_at is not None
@@ -541,6 +669,7 @@ class TestCodeExchange:
         assert payload["client_id"] == "test-client"
         assert payload["scope"] == "openid"
         assert payload["type"] == "access"
+        assert payload["credential_epoch"] == 1
         assert "jti" in payload
         assert "iat" in payload
         assert "exp" in payload
@@ -579,16 +708,12 @@ class TestCodeExchange:
 
         async with session_factory() as session:
             result = await session.execute(
-                select(OAuthAuthorizationCode).where(
-                    OAuthAuthorizationCode.code_hash == code_hash
-                )
+                select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == code_hash)
             )
             row = result.scalar_one()
             assert row.consumed_at is not None
 
-    async def test_exchange_code_stores_refresh_token(
-        self, provider, session_factory
-    ):
+    async def test_exchange_code_stores_refresh_token(self, provider, session_factory):
         code = "refresh-store-code"
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         async with session_factory() as session:
@@ -622,11 +747,7 @@ class TestCodeExchange:
 
         rt_hash = hashlib.sha256(token.refresh_token.encode()).hexdigest()
         async with session_factory() as session:
-            result = await session.execute(
-                select(OAuthRefreshToken).where(
-                    OAuthRefreshToken.token_hash == rt_hash
-                )
-            )
+            result = await session.execute(select(OAuthRefreshToken).where(OAuthRefreshToken.token_hash == rt_hash))
             rt_row = result.scalar_one()
             assert rt_row.client_id == "test-client"
             assert rt_row.user_id == "user-1"
@@ -639,18 +760,20 @@ async def _issue_tokens(provider, session_factory) -> tuple[str, str]:
     """Helper that creates a code in DB, exchanges it, returns (access, refresh)."""
     code = f"code-{uuid.uuid4()}"
     async with session_factory() as session:
-        session.add(OAuthAuthorizationCode(
-            code_hash=hashlib.sha256(code.encode()).hexdigest(),
-            client_id="test-client",
-            user_id="user-1",
-            redirect_uri="http://localhost/callback",
-            redirect_uri_provided_explicitly=True,
-            code_challenge="c",
-            code_challenge_method="S256",
-            resource="http://localhost:18760/mcp",
-            scopes='["openid"]',
-            expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
-        ))
+        session.add(
+            OAuthAuthorizationCode(
+                code_hash=hashlib.sha256(code.encode()).hexdigest(),
+                client_id="test-client",
+                user_id="user-1",
+                redirect_uri="http://localhost/callback",
+                redirect_uri_provided_explicitly=True,
+                code_challenge="c",
+                code_challenge_method="S256",
+                resource="http://localhost:18760/mcp",
+                scopes='["openid"]',
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+        )
         await session.commit()
     client = OAuthClientInformationFull(
         client_id="test-client",
@@ -659,6 +782,101 @@ async def _issue_tokens(provider, session_factory) -> tuple[str, str]:
     loaded = await provider.load_authorization_code(client, code)
     token = await provider.exchange_authorization_code(client, loaded)
     return token.access_token, token.refresh_token
+
+
+def _enable_external_trust(
+    provider: PASAuthProvider,
+    *,
+    direct: bool = False,
+) -> None:
+    trust = provider._config.auth.external_token_trust
+    trust.enabled = True
+    trust.provider = "oauth2_userinfo"
+    trust.direct_mcp_enabled = direct
+    trust.config_digest = "external-token-test"
+
+
+def _external_identity(
+    provider: PASAuthProvider,
+    *,
+    subject: str = "external-user",
+) -> ExternalTokenIdentity:
+    from server.auth.external_tokens import ExternalTokenAuthenticator
+
+    authenticator = ExternalTokenAuthenticator(
+        provider._session_factory,
+        provider._config,
+    )
+    return ExternalTokenIdentity(
+        provider_type="oauth2_userinfo",
+        provider_key="test-idp",
+        provider_fingerprint=authenticator._base_fingerprint(),
+        subject=subject,
+        display_name="External User",
+        email="external@example.com",
+        scopes=("mcp",),
+        expires_at=None,
+    )
+
+
+async def _issue_legacy_external_refresh_token(
+    provider: PASAuthProvider,
+    session_factory,
+    monkeypatch,
+):
+    from server.models.oauth import ExternalTokenSession, OAuthRefreshToken
+
+    _enable_external_trust(provider)
+    identity = _external_identity(provider)
+
+    async def validate(_self, token):
+        assert token == "external-access-token"
+        return identity
+
+    monkeypatch.setattr(
+        "server.auth.external_tokens.ExternalTokenAuthenticator.validate",
+        validate,
+    )
+    client = OAuthClientInformationFull(
+        client_id="external-client",
+        redirect_uris=["http://localhost/callback"],
+        scope="mcp",
+    )
+    refresh_token = "legacy-external-refresh-token"
+    token_family = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=30)
+    async with session_factory() as session:
+        session.add(
+            OAuthRefreshToken(
+                token_hash=hashlib.sha256(
+                    refresh_token.encode()
+                ).hexdigest(),
+                client_id=client.client_id,
+                user_id="user-1",
+                code_id=None,
+                token_family=token_family,
+                scopes=json.dumps(["mcp"]),
+                resource="http://localhost:18760/mcp",
+                expires_at=expires_at,
+            )
+        )
+        session.add(
+            ExternalTokenSession(
+                token_family=token_family,
+                user_id="user-1",
+                provider_type=identity.provider_type,
+                provider_key=identity.provider_key,
+                provider_fingerprint=identity.provider_fingerprint,
+                external_subject=identity.subject,
+                subject_token_ciphertext=encrypt("external-access-token"),
+                external_expires_at=None,
+                last_validated_at=now,
+                expires_at=expires_at,
+            )
+        )
+        await session.commit()
+    return client, refresh_token
 
 
 class TestRefreshToken:
@@ -687,6 +905,7 @@ class TestRefreshToken:
             issuer="http://localhost:18760",
         )
         assert payload["iss"] == "http://localhost:18760"
+        assert payload["credential_epoch"] == 1
 
     async def test_old_refresh_revoked_after_rotation(
         self, provider, session_factory
@@ -702,9 +921,7 @@ class TestRefreshToken:
         loaded_again = await provider.load_refresh_token(client, refresh)
         assert loaded_again is None
 
-    async def test_reuse_detection_revokes_family(
-        self, provider, session_factory
-    ):
+    async def test_reuse_detection_revokes_family(self, provider, session_factory):
         _, refresh = await _issue_tokens(provider, session_factory)
         client = OAuthClientInformationFull(
             client_id="test-client",
@@ -716,10 +933,102 @@ class TestRefreshToken:
         reuse_result = await provider.load_refresh_token(client, refresh)
         assert reuse_result is None
         # New token should also be revoked now
-        new_result = await provider.load_refresh_token(
-            client, new_token.refresh_token
-        )
+        new_result = await provider.load_refresh_token(client, new_token.refresh_token)
         assert new_result is None
+
+    async def test_external_refresh_revalidates_and_revokes_invalid_family(
+        self,
+        provider,
+        session_factory,
+        monkeypatch,
+    ):
+        from sqlalchemy import select
+
+        from server.models.oauth import (
+            ExternalTokenSession,
+            OAuthRefreshToken,
+        )
+
+        client, refresh_token = await _issue_legacy_external_refresh_token(
+            provider,
+            session_factory,
+            monkeypatch,
+        )
+        loaded = await provider.load_refresh_token(
+            client,
+            refresh_token,
+        )
+        assert loaded is not None
+
+        async def reject(_self, _token):
+            raise ExternalTokenInvalid("expired")
+
+        monkeypatch.setattr(
+            "server.auth.external_tokens.ExternalTokenAuthenticator.validate",
+            reject,
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="External access token is no longer valid",
+        ):
+            await provider.exchange_refresh_token(client, loaded, [])
+
+        async with session_factory() as session:
+            refresh_rows = (
+                await session.execute(select(OAuthRefreshToken))
+            ).scalars().all()
+            external_row = (
+                await session.execute(select(ExternalTokenSession))
+            ).scalar_one()
+        assert refresh_rows
+        assert all(row.revoked_at is not None for row in refresh_rows)
+        assert external_row.revoked_at is not None
+
+    async def test_external_refresh_keeps_family_on_temporary_failure(
+        self,
+        provider,
+        session_factory,
+        monkeypatch,
+    ):
+        from sqlalchemy import select
+
+        from server.models.oauth import (
+            ExternalTokenSession,
+            OAuthRefreshToken,
+        )
+
+        client, refresh_token = await _issue_legacy_external_refresh_token(
+            provider,
+            session_factory,
+            monkeypatch,
+        )
+        loaded = await provider.load_refresh_token(
+            client,
+            refresh_token,
+        )
+        assert loaded is not None
+
+        async def unavailable(_self, _token):
+            raise ExternalTokenUnavailable("timeout")
+
+        monkeypatch.setattr(
+            "server.auth.external_tokens.ExternalTokenAuthenticator.validate",
+            unavailable,
+        )
+
+        with pytest.raises(ExternalTokenUnavailable):
+            await provider.exchange_refresh_token(client, loaded, [])
+
+        async with session_factory() as session:
+            refresh_row = (
+                await session.execute(select(OAuthRefreshToken))
+            ).scalar_one()
+            external_row = (
+                await session.execute(select(ExternalTokenSession))
+            ).scalar_one()
+        assert refresh_row.revoked_at is None
+        assert external_row.revoked_at is None
 
 
 class TestAccessToken:
@@ -732,9 +1041,165 @@ class TestAccessToken:
         assert loaded.client_id == "test-client"
         assert "openid" in loaded.scopes
 
+    async def test_load_access_token_rejects_disabled_user(
+        self, provider, session_factory
+    ):
+        access, _ = await _issue_tokens(provider, session_factory)
+
+        async with session_factory() as session:
+            user = await session.get(User, "user-1")
+            assert user is not None
+            user.status = UserStatus.DISABLED
+            await session.commit()
+
+        assert await provider.load_access_token(access) is None
+
+    async def test_platform_context_rejects_user_disabled_after_token_validation(
+        self, session_factory, monkeypatch
+    ):
+        async with session_factory() as session:
+            user = await session.get(User, "user-1")
+            assert user is not None
+            user.status = UserStatus.DISABLED
+            await session.commit()
+
+        token = AccessToken(
+            token="platform-token",
+            client_id="agent:agent-1",
+            scopes=["polarrag"],
+            resource=platform_resource_url(),
+            subject="user:user-1",
+        )
+        monkeypatch.setattr(
+            PASAuthProvider,
+            "load_access_token",
+            AsyncMock(return_value=token),
+        )
+
+        async with session_factory() as session:
+            with pytest.raises(HTTPException) as exc_info:
+                await get_platform_access_context(
+                    HTTPAuthorizationCredentials(
+                        scheme="Bearer", credentials="platform-token"
+                    ),
+                    session,
+                )
+
+        assert exc_info.value.status_code == 401
+        assert exc_info.value.detail["code"] == "AUTH_REQUIRED"
+
+    async def test_builtin_access_token_rejects_missing_and_stale_epoch(
+        self,
+        provider,
+        session_factory,
+    ):
+        import jwt as jose_jwt
+
+        from server.auth.jwt_manager import _load_keys
+
+        private_key, _ = _load_keys()
+        now = int(time.time())
+        payload = {
+            "iss": "http://localhost:18760",
+            "sub": "user:user-1",
+            "aud": "http://localhost:18760/mcp",
+            "jti": str(uuid.uuid4()),
+            "iat": now,
+            "exp": now + 3600,
+            "type": "access",
+            "client_id": "test-client",
+            "scope": "openid",
+        }
+        missing = jose_jwt.encode(payload, private_key, algorithm="RS256")
+        stale = jose_jwt.encode(
+            {**payload, "jti": str(uuid.uuid4()), "credential_epoch": 0},
+            private_key,
+            algorithm="RS256",
+        )
+        current = jose_jwt.encode(
+            {**payload, "jti": str(uuid.uuid4()), "credential_epoch": 1},
+            private_key,
+            algorithm="RS256",
+        )
+
+        assert await provider.load_access_token(missing) is None
+        assert await provider.load_access_token(stale) is None
+        assert await provider.load_access_token(current) is not None
+
+    async def test_oidc_access_token_preserves_missing_epoch_semantics(
+        self,
+        provider,
+        session_factory,
+    ):
+        import jwt as jose_jwt
+
+        from server.auth.jwt_manager import _load_keys
+
+        async with session_factory() as session:
+            session.add(
+                User(
+                    id="oidc-user",
+                    external_id="oidc-user",
+                    display_name="OIDC User",
+                    auth_provider=AuthProvider.OIDC,
+                    role=UserRole.MEMBER,
+                )
+            )
+            await session.commit()
+
+        private_key, _ = _load_keys()
+        now = int(time.time())
+        token = jose_jwt.encode(
+            {
+                "iss": "http://localhost:18760",
+                "sub": "user:oidc-user",
+                "aud": "http://localhost:18760/mcp",
+                "jti": str(uuid.uuid4()),
+                "iat": now,
+                "exp": now + 3600,
+                "type": "access",
+                "client_id": "test-client",
+                "scope": "openid",
+            },
+            private_key,
+            algorithm="RS256",
+        )
+
+        assert await provider.load_access_token(token) is not None
+
     async def test_load_invalid_token(self, provider):
         result = await provider.load_access_token("not-a-jwt")
         assert result is None
+
+    async def test_direct_external_token_is_validated_and_mapped(
+        self,
+        provider,
+        monkeypatch,
+    ):
+        _enable_external_trust(provider, direct=True)
+        identity = _external_identity(provider)
+        calls = 0
+
+        async def validate(_self, token):
+            nonlocal calls
+            calls += 1
+            assert token == "external-access-token"
+            return identity
+
+        monkeypatch.setattr(
+            "server.auth.external_tokens.ExternalTokenAuthenticator.validate",
+            validate,
+        )
+
+        first = await provider.load_access_token("external-access-token")
+        second = await provider.load_access_token("external-access-token")
+
+        assert first is not None
+        assert second is not None
+        assert first.subject == second.subject
+        assert first.client_id == "external:oauth2_userinfo"
+        assert first.scopes == ["mcp"]
+        assert calls == 2
 
     async def test_load_active_agent_token(self, provider, session_factory):
         async with session_factory() as session:
@@ -790,9 +1255,7 @@ class TestAccessToken:
         self, provider, session_factory
     ):
         async with session_factory() as session:
-            agent = Agent(
-                name="agent-disabled", status=AgentStatus.DISABLED
-            )
+            agent = Agent(name="agent-disabled", status=AgentStatus.DISABLED)
             session.add(agent)
             await session.flush()
             _, plaintext = await create_test_agent_token(session, agent.id)
@@ -800,21 +1263,15 @@ class TestAccessToken:
 
         assert await provider.load_access_token(plaintext) is None
 
-    async def test_load_rejects_missing_agent_owner(
-        self, provider, session_factory
-    ):
+    async def test_load_rejects_missing_agent_owner(self, provider, session_factory):
         async with session_factory() as session:
-            _, plaintext = await create_test_agent_token(
-                session, "missing-agent"
-            )
+            _, plaintext = await create_test_agent_token(session, "missing-agent")
             await session.commit()
 
         assert await provider.load_access_token(plaintext) is None
 
     @pytest.mark.parametrize("state", ["revoked", "expired"])
-    async def test_load_rejects_inactive_agent_token(
-        self, provider, session_factory, state
-    ):
+    async def test_load_rejects_inactive_agent_token(self, provider, session_factory, state):
         async with session_factory() as session:
             agent = Agent(name=f"agent-{state}")
             session.add(agent)
@@ -921,3 +1378,37 @@ class TestRevocation:
         # Should now be revoked
         result = await provider.load_refresh_token(client, refresh)
         assert result is None
+
+
+async def test_personal_oauth_code_and_refresh_keep_personal_audience(provider, session_factory):
+    from server.auth.personal_access import request_mcp_mode
+    resource = 'http://localhost:18760/mcp/personal'
+    client = OAuthClientInformationFull(client_id='personal-client', redirect_uris=['http://localhost/callback'])
+    code = 'personal-code'
+    async with session_factory() as session:
+        session.add(OAuthAuthorizationCode(
+            code_hash=hashlib.sha256(code.encode()).hexdigest(), client_id=client.client_id,
+            user_id='user-1', redirect_uri='http://localhost/callback',
+            redirect_uri_provided_explicitly=True, code_challenge='challenge', code_challenge_method='S256',
+            resource=resource, scopes='["openid"]', expires_at=datetime.now(timezone.utc)+timedelta(minutes=5),
+        ))
+        await session.commit()
+    loaded = await provider.load_authorization_code(client, code)
+    assert loaded.resource == resource
+    issued = await provider.exchange_authorization_code(client, loaded)
+    marker = request_mcp_mode.set('personal')
+    try:
+        verified = await provider.load_access_token(issued.access_token)
+        assert verified.subject == 'user:user-1'
+        assert verified.claims['access_mode'] == 'personal'
+        assert verified.claims['aud'] == resource
+        request_mcp_mode.set('legacy')
+        assert await provider.load_access_token(issued.access_token) is None
+        refreshed = await provider.load_refresh_token(client, issued.refresh_token)
+        rotated = await provider.exchange_refresh_token(client, refreshed, [])
+        request_mcp_mode.set('personal')
+        verified = await provider.load_access_token(rotated.access_token)
+        assert verified.claims['aud'] == resource
+        assert verified.claims['access_mode'] == 'personal'
+    finally:
+        request_mcp_mode.reset(marker)

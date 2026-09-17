@@ -24,7 +24,11 @@ from server.core.access_control import (
     resolve_agent_instance_access,
     resolve_user_instance_access,
 )
-from server.core.agent_user_token_service import TOKEN_PREFIX
+from server.auth.personal_access import is_personal_access
+from server.auth.token_claims import (
+    access_token_agent_id,
+    is_legacy_agent_user_token,
+)
 from server.core.credential_policy import (
     is_valid_direct_access_credential,
 )
@@ -46,9 +50,13 @@ from server.models import (
     ProvisioningMode,
     UserInstanceBinding,
 )
-from server.mcp.tools.polarrag import (
+from server.mcp.knowledge_tools import (
     POLARRAG_TOOL_NAMES,
     POLARRAG_UPLOAD_TOOL_NAMES,
+)
+from server.mcp.workspace_context import (
+    MCPWorkspaceUnavailable,
+    resolve_mcp_workspace_context,
 )
 
 DB_INSTANCE_TOOL_NAMES = frozenset(
@@ -59,14 +67,17 @@ DB_INSTANCE_TOOL_NAMES = frozenset(
         "delete_db_instance",
     }
 )
-USER_ONLY_TOOL_NAMES = frozenset(
+WORKSPACE_UNSUPPORTED_TOOL_NAMES = frozenset(
     {
         "set_default_instance",
         "list_branches",
         "create_branch",
         "delete_branch",
     }
-) | POLARRAG_TOOL_NAMES
+)
+PERSONAL_UNSUPPORTED_TOOL_NAMES = WORKSPACE_UNSUPPORTED_TOOL_NAMES | frozenset({
+    "create_db_instance", "delete_db_instance", "doc_delete", "doc_rechunk",
+})
 AGENT_SQL_TOOL_NAMES = frozenset(
     {
         "run_sql",
@@ -76,15 +87,26 @@ AGENT_SQL_TOOL_NAMES = frozenset(
 )
 
 
+def _is_agent_user_token(access_token: Any) -> bool:
+    return bool(
+        access_token is not None
+        and is_legacy_agent_user_token(access_token)
+    )
+
+
 async def _direct_management_tools(
     session: AsyncSession,
     principal: Principal,
+    *, personal: bool = False,
 ) -> set[str]:
     if principal.kind == PrincipalKind.USER:
         statement = select(UserInstanceBinding.instance_id).where(
             UserInstanceBinding.user_id == principal.id,
             UserInstanceBinding.enabled.is_(True),
         )
+        if personal:
+            from server.core.db_instance_query import personal_instance_ids
+            statement = personal_instance_ids(principal.id)
         instance_ids = (await session.execute(statement)).scalars().all()
         accesses = [
             await resolve_user_instance_access(
@@ -107,6 +129,14 @@ async def _direct_management_tools(
 
     allowed: set[str] = set()
     for access in accesses:
+        if personal and access is not None:
+            if access.permission is not None and BindingCapability.SQL_READ in access.capabilities:
+                allowed.update({"list_db_instances", "describe_db_instance", *AGENT_SQL_TOOL_NAMES})
+            if BindingCapability.DB_INSTANCE_LIST in access.capabilities:
+                allowed.add("list_db_instances")
+            if BindingCapability.DB_INSTANCE_DESCRIBE in access.capabilities:
+                allowed.add("describe_db_instance")
+            continue
         if access is None or access.binding is None:
             continue
         binding = access.binding
@@ -129,8 +159,7 @@ async def _direct_management_tools(
                 {"list_db_instances", "describe_db_instance"}
             )
         if (
-            principal.kind == PrincipalKind.AGENT
-            and access.permission is not None
+            access.permission is not None
             and BindingCapability.SQL_READ in access.capabilities
         ):
             allowed.update(AGENT_SQL_TOOL_NAMES)
@@ -190,8 +219,9 @@ async def has_eligible_provisioning_backend(
 async def allowed_db_instance_tool_names(
     session: AsyncSession,
     principal: Principal,
+    *, personal: bool = False,
 ) -> frozenset[str]:
-    allowed = await _direct_management_tools(session, principal)
+    allowed = await _direct_management_tools(session, principal, personal=personal)
     if principal.kind != PrincipalKind.AGENT:
         return frozenset(allowed)
 
@@ -230,32 +260,48 @@ async def allowed_db_instance_tool_names_for_request() -> frozenset[str]:
         return frozenset()
     try:
         async with get_session_factory()() as session:
-            principal = await get_current_principal(
-                session, access_token.subject
+            context = await resolve_mcp_workspace_context(
+                session,
+                access_token.subject,
+                access_token_agent_id(access_token),
+                personal=is_personal_access(access_token),
             )
             return await allowed_db_instance_tool_names(
-                session, principal
+                session, context.resource_principal, personal=context.agent is None
             )
-    except PrincipalAuthenticationError:
+    except (PrincipalAuthenticationError, MCPWorkspaceUnavailable):
         return frozenset()
 
 
 async def _request_catalog_policy(
-) -> tuple[Principal | None, frozenset[str]]:
+) -> tuple[Principal | None, Principal | None, frozenset[str]]:
     access_token = get_access_token()
     if access_token is None or not access_token.subject:
-        return None, frozenset()
+        return None, None, frozenset()
     try:
         async with get_session_factory()() as session:
-            principal = await get_current_principal(
+            authenticated = await get_current_principal(
                 session, access_token.subject
             )
+            try:
+                context = await resolve_mcp_workspace_context(
+                    session,
+                    access_token.subject,
+                    access_token_agent_id(access_token),
+                    personal=is_personal_access(access_token),
+                )
+            except MCPWorkspaceUnavailable:
+                return authenticated, None, frozenset()
             allowed = await allowed_db_instance_tool_names(
-                session, principal
+                session, context.resource_principal, personal=context.agent is None
             )
-            return principal, allowed
+            return (
+                context.authenticated_principal,
+                context.resource_principal,
+                allowed,
+            )
     except PrincipalAuthenticationError:
-        return None, frozenset()
+        return None, None, frozenset()
 
 
 class AuthorizedFastMCP(FastMCP):
@@ -263,15 +309,16 @@ class AuthorizedFastMCP(FastMCP):
 
     async def list_tools(self) -> list[MCPTool]:
         tools = await super().list_tools()
+        from server.features.knowledge import runtime
+        feature = runtime()
+        if feature is not None and not await feature.available():
+            tools = [tool for tool in tools if tool.name not in POLARRAG_TOOL_NAMES]
         access_token = get_access_token()
-        if (
-            access_token is not None
-            and access_token.token.startswith(TOKEN_PREFIX)
-        ):
+        if _is_agent_user_token(access_token):
             return [
                 tool for tool in tools if tool.name in POLARRAG_TOOL_NAMES
             ]
-        principal, allowed = await _request_catalog_policy()
+        authenticated, resource, allowed = await _request_catalog_policy()
         visible = [
             tool
             for tool in tools
@@ -280,21 +327,38 @@ class AuthorizedFastMCP(FastMCP):
                 or tool.name in allowed
             )
             and tool.name not in POLARRAG_UPLOAD_TOOL_NAMES
+            and not (is_personal_access(access_token) and tool.name in PERSONAL_UNSUPPORTED_TOOL_NAMES)
             and not (
-                principal is not None
-                and principal.kind == PrincipalKind.AGENT
-                and tool.name in USER_ONLY_TOOL_NAMES
+                authenticated is not None
+                and (
+                    resource is None
+                    or resource.kind == PrincipalKind.AGENT
+                    or is_personal_access(access_token)
+                )
+                and tool.name in WORKSPACE_UNSUPPORTED_TOOL_NAMES
             )
             and not (
-                principal is not None
-                and principal.kind == PrincipalKind.AGENT
+                authenticated is not None
+                and authenticated.kind == PrincipalKind.USER
+                and resource is None
+                and tool.name
+                in AGENT_SQL_TOOL_NAMES | POLARRAG_TOOL_NAMES
+            )
+            and not (
+                authenticated is not None
+                and authenticated.kind == PrincipalKind.AGENT
+                and tool.name in POLARRAG_TOOL_NAMES
+            )
+            and not (
+                resource is not None
+                and (resource.kind == PrincipalKind.AGENT or is_personal_access(access_token))
                 and tool.name in AGENT_SQL_TOOL_NAMES
                 and tool.name not in allowed
             )
         ]
         if (
-            principal is None
-            or principal.kind != PrincipalKind.AGENT
+            resource is None
+            or (resource.kind != PrincipalKind.AGENT and not is_personal_access(access_token))
         ):
             return visible
         rewritten: list[MCPTool] = []
@@ -324,14 +388,28 @@ class AuthorizedFastMCP(FastMCP):
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         access_token = get_access_token()
         if (
-            access_token is not None
-            and access_token.token.startswith(TOKEN_PREFIX)
+            _is_agent_user_token(access_token)
             and name not in POLARRAG_TOOL_NAMES
         ):
             raise ToolError(f"Unknown tool: {name}")
         if (
-            access_token is None
-            or not access_token.token.startswith(TOKEN_PREFIX)
-        ) and name in POLARRAG_UPLOAD_TOOL_NAMES:
+            not _is_agent_user_token(access_token)
+            and name in POLARRAG_UPLOAD_TOOL_NAMES
+        ):
             raise ToolError(f"Unknown tool: {name}")
+        if is_personal_access(access_token):
+            if name in PERSONAL_UNSUPPORTED_TOOL_NAMES:
+                raise ToolError(f"Unknown tool: {name}")
+            if name in AGENT_SQL_TOOL_NAMES and not arguments.get("instance_id"):
+                raise ToolError("Personal SQL access requires instance_id")
+            if name == "run_sql" and arguments.get("branch") is not None:
+                raise ToolError("Branch access is unavailable on personal MCP")
+        from server.features.knowledge import runtime, KnowledgeUnavailable
+        feature = runtime()
+        if name in POLARRAG_TOOL_NAMES and feature is not None:
+            try:
+                async with feature.operation(name):
+                    return await super().call_tool(name, arguments)
+            except KnowledgeUnavailable as error:
+                raise ToolError(error.code) from error
         return await super().call_tool(name, arguments)

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import enum
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Enum, ForeignKey, String
+from sqlalchemy import Enum, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from server.models.base import Base, TimestampMixin, generate_uuid
@@ -32,8 +33,17 @@ class ProvisioningMode(str, enum.Enum):
     MULTITENANT = "multitenant"
 
 
+class PasswordState(StrEnum):
+    RESET_REQUIRED = "RESET_REQUIRED"
+    ACTIVE = "ACTIVE"
+
+
 class User(TimestampMixin, Base):
     __tablename__ = "users"
+
+    def __init__(self, **kwargs: object) -> None:
+        kwargs.setdefault("credential_epoch", 1)
+        super().__init__(**kwargs)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
     external_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
@@ -44,6 +54,15 @@ class User(TimestampMixin, Base):
         default=AuthProvider.BUILTIN,
     )
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password_state: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    credential_epoch: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
+    )
     role: Mapped[UserRole] = mapped_column(
         Enum(UserRole, native_enum=False),
         default=UserRole.MEMBER,
@@ -66,6 +85,13 @@ class User(TimestampMixin, Base):
         Enum(ProvisioningMode, native_enum=False),
         nullable=True,
     )
+
+    @property
+    def effective_password_state(self) -> PasswordState:
+        """Return the application state, preserving legacy user behavior."""
+        if self.password_state is None:
+            return PasswordState.ACTIVE
+        return PasswordState(self.password_state)
 
     department_memberships: Mapped[list["UserDepartment"]] = relationship(back_populates="user", lazy="selectin")
     instance_bindings: Mapped[list["UserInstanceBinding"]] = relationship(back_populates="user", lazy="selectin")

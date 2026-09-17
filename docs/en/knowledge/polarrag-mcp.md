@@ -12,10 +12,14 @@ see [Enterprise identity sources](../administration/enterprise-identity-sources.
 
 ## Security boundary
 
+Personal `/mcp/personal` connections use the employee identity directly, without an Agent boundary. Visibility and each upstream document ACL check remain mandatory. Personal connections expose reads; the delegated upload/management workflows below retain their existing Agent connection. See [Accounts and resources](../administration/accounts-and-resources.md).
+
 Only an MCP access token whose subject is `user:<pas_user_id>` can list or call
-the PolarRAG tools. Machine `pas_agent_` Tokens never receive these tools and
-cannot act as a human user. A user-specific `pas_user_agent_` Token resolves to
-the assigned PAS user while retaining its Agent boundary on the server.
+the PolarRAG tools. For legacy `/mcp` browser OAuth, PAS resolves the user's Workspace default
+Agent and applies that Agent boundary. Machine `pas_agent_` Tokens never receive
+these tools and cannot act as a human user. A user-specific
+`pas_user_agent_` Token remains compatible and resolves to the assigned PAS
+user while retaining its explicit Agent boundary on the server.
 
 That Agent boundary is the live set of bound PolarRAG instances. Every enabled
 Space on a bound instance, including a Space enabled after the Agent binding
@@ -97,13 +101,14 @@ PolarRAG administration is integrated into the existing PAS pages:
   and group controls remain available for advanced changes. An assigned user
   manages their own `pas_user_agent_` Token under
   **My Instances > MCP connections**. Administrators see status only and can
-  force-revoke the Token without reading its plaintext. Built-in users reveal
-  an existing Token by confirming their password. SSO users have no PAS
-  password, so `issue` and `regenerate` return the new plaintext once in a
-  `Cache-Control: no-store` response. The UI never renders it: during that
-  one-time window, the user explicitly chooses **Copy Token** or **Copy JSON
-  configuration**. Regenerating requires confirmation and invalidates the old
-  Token immediately. Repeated deliveries are rate limited.
+  force-revoke the Token without reading its plaintext. Built-in and SSO users
+  reveal their own existing Token under the current authenticated session;
+  PAS does not request their password again. `issue` and `regenerate` return
+  the new plaintext once in a `Cache-Control: no-store` response. The UI never
+  renders it: during that one-time window, the user explicitly chooses **Copy
+  Token** or **Copy JSON configuration**. Regenerating requires confirmation
+  and invalidates the old Token immediately. Repeated deliveries are audited
+  and rate limited.
 - For administrators, Dashboard **Instances** and **Active** totals include both
   registered database instances and registered PolarRAG instances. Pool
   availability remains database-only. Members instead see only the counts of
@@ -121,23 +126,27 @@ cannot type an identity domain or bypass this capability check.
 
 Use this sequence for a normal enterprise PolarRAG rollout:
 
-1. Register the PolarRAG instance, then enable and synchronize the target
-   Space.
+1. Register the PolarRAG instance. PAS automatically enables and performs the
+   first synchronization of each newly discovered active Space. An explicitly
+   disabled Space remains disabled until an administrator restores it.
 2. Create the Feishu or SharePoint identity source, complete verification, and
    synchronize its directory.
-3. On the Agent's **PolarRAG instances** tab, bind the target instance and
-   configure its shared PUBLIC resource scope.
-4. Select **Configure enterprise access**.
-5. Choose one Source, explicitly select **All synchronized users** or specific
-   synchronized groups or PAS users, and choose one or more eligible Spaces.
+3. On the Agent's **PolarRAG instances** tab, select **Configure enterprise
+   access**.
+4. Choose one Source, explicitly select **All synchronized users** or specific
+   synchronized groups or PAS users, select active PolarRAG instances, and
+   choose at least one enabled Space from each selected instance. The apply
+   operation creates missing Agent-instance bindings atomically.
    **All synchronized users** is displayed first but is never preselected.
-6. Select **Preview changes** and separately review Agent-local grants, new
+5. Select **Preview changes** and separately review Agent-local grants, new
    global Source-Space bindings, and existing relations that will be reused.
    A new Source-Space binding is shared by other Agents and remains when this
    Agent grant is removed.
-7. Confirm the preview once. The user can then sign in and create or use their
-   own Agent connection under **My Instances > MCP connections**.
-8. Verify the user sees only the intersection of the Agent instance and PUBLIC
+6. Confirm the preview once. The user can then sign in, select the Agent as the
+   Workspace default under **My Instances > MCP connections**, and connect an
+   OAuth-capable MCP client with the PAS URL. Static `pas_user_agent_`
+   connections remain available for clients without browser OAuth.
+7. Verify the user sees only the intersection of the Agent instance and PUBLIC
    scope, Source-Space bindings, the user's current enterprise membership, and
    PolarRAG ACL.
 
@@ -163,31 +172,60 @@ separate gates.
 Administrator routes are under `/api/polarrag`:
 
 - `POST /instances` registers and checks one endpoint;
-- `GET /instances` and `GET /instances/{id}` return redacted configuration;
+- `GET /instances?offset=0&limit=20&q=<optional-search>` and
+  `GET /instances/{id}` return redacted configuration. The list response is
+  `{items, total, offset, limit}` and applies name/host search before paging;
 - `PATCH /instances/{id}` rotates the shared account, TLS settings, or name;
 - `POST /instances/{id}/check` repeats authentication and capability checks;
 - `DELETE /instances/{id}` disables the instance and its Spaces;
-- `GET /instances/{id}/spaces` enumerates trusted upstream Spaces and includes
-  each Space's synchronized knowledge resources, opaque resource IDs, binding
-  modes, and synchronization status;
+- `GET /instances/{id}/spaces?limit=20&cursor=<optional-cursor>` enumerates one
+  trusted upstream Space page and returns `items`, `next_cursor`, and `limit`;
+  pass `next_cursor` unchanged until it is `null`. Each item includes its
+  synchronized knowledge-base count. `GET
+  /instances/{id}/knowledge-resources?offset=0&limit=20` returns the paged
+  resource details as `{items, total, offset, limit}`;
 - `POST /instances/{id}/spaces/enable` enables one enumerated Space and
   immediately synchronizes its active knowledge bases;
 - `DELETE /instances/{id}/spaces/{space_id}` disables one Space and
   immediately hides its knowledge resources;
-- `POST /instances/{id}/spaces/{space_id}/sync` runs an explicit catalog sync.
+- `POST /instances/{id}/spaces/{space_id}/sync` returns HTTP `202` and starts
+  an explicit catalog sync without holding the browser request open. Poll
+  `GET /instances/{id}/spaces/{space_id}/sync` until `status` changes from
+  `idle` to `running`, then to `completed` or `failed`; `result` contains completion counts and
+  `error` contains only an error type. A duplicate POST joins the active run.
+  PAS reads and persists the upstream catalog in bounded pages and finalizes
+  removals only after the complete upstream scan succeeds. Sync status and the
+  active lease are stored in the PAS database, so every replica reports the
+  same run and rejects a duplicate. After a restart, an expired run is retried
+  by the periodic catalog worker; the operation is idempotent and does not
+  duplicate knowledge resources;
 - `PUT /spaces/{knowledge_space_id}/oss-config` validates and saves the OSS
   AccessKey pair and object prefix for an enabled Space. The bucket and endpoint
   are read-only and come from the trusted PolarRAG Space catalog.
-- `GET /instances/{id}/unclaimed-knowledge-bases` lists `UNCLAIMED` knowledge
-  bases in enabled Spaces and eligible owner principals;
+- `GET /instances/{id}/unclaimed-knowledge-bases?limit=20` returns one cursor
+  page of `UNCLAIMED` knowledge bases in enabled Spaces. Pass its opaque
+  `next_cursor` to fetch the next page. The legacy `owner_candidates` member is
+  retained as an empty compatibility field;
+- `GET /instances/{id}/owner-candidates?identity_domain=...&offset=0&limit=20`
+  searches and pages eligible mapped or native PAS owners for one enabled
+  identity domain. The Spaces drawer loads this list only when its owner picker
+  opens;
 - `POST /instances/{id}/spaces/{space_id}/knowledge-bases/{kb_id}/claim`
-  assigns an eligible same-domain user principal as owner, activates the
-  upstream knowledge base, synchronizes the Space, and records an audit event.
+  is administrator-only. It assigns an eligible same-domain user principal as
+  PERSONAL owner, activates the upstream knowledge base, synchronizes the
+  Space, and records an audit event. It is the supported HTTP operation for
+  setting a PERSONAL KB owner; MCP users cannot bypass this workflow.
 
 The create request contains `name`, `scheme`, `host`, `port`, `username`,
 `password`, `tls_verify`, and optional `ca_bundle`. PAS encrypts the username,
 password, and CA bundle with the existing root key. No response returns these
 values. PAS also synchronizes enabled Spaces every five minutes.
+
+In production, external Agent-to-PAS traffic must use HTTPS. PAS-to-PolarRAG
+HTTP remains supported when both services are in the same trusted VPC. When a
+PolarRAG instance uses HTTPS, keep `tls_verify: true` (the default) and install
+its private CA with `ca_bundle` when necessary. These are deployment
+requirements; PAS does not add a hard-coded scheme restriction.
 
 The Space OSS configuration reuses `PAS_ENCRYPTION_KEY` for AccessKey storage.
 Saving it uses the catalog endpoint to write and delete a zero-byte probe in the
@@ -196,11 +234,18 @@ PAS never returns the AccessKey pair. A changed upstream bucket or endpoint
 immediately invalidates the saved configuration and requires revalidation.
 
 `GET /api/me/resources` returns the authenticated user's accessible database
-instances and PolarRAG knowledge resources for the **My Instances** page. With
-`agent_id`, the knowledge resources are narrowed to that assigned Agent's
-bound instances and PUBLIC scope; the response also includes each upstream
-`kb_id`. It uses the same server-side access and resource-discovery rules as
-MCP and never returns endpoint credentials or trusted ACL context.
+instances and a paged PolarRAG knowledge-resource list for the **My Instances**
+page. Use `knowledge_offset` and `knowledge_limit`; the response includes
+`knowledge_resource_total`, `knowledge_resource_offset`, and
+`knowledge_resource_limit`. With `agent_id`, the knowledge resources are
+narrowed to that assigned Agent's bound instances and PUBLIC scope; each item
+also includes its upstream `kb_id`. It uses the same server-side access and
+resource-discovery rules as MCP and never returns endpoint credentials or
+trusted ACL context.
+
+`GET /api/agents/{agent_id}/polarrag-bindings/{binding_id}/public-resources`
+uses `offset`, `limit`, and optional `search` to page the PUBLIC resource
+selector. Its response is `{items, total, offset, limit}`.
 
 Agent-scoped user connections use these additional routes:
 
@@ -295,10 +340,11 @@ phase one.
 The user-only catalog contains:
 
 - `list_knowledge_resources(cursor?, limit?)`;
-- `kb_search(query, knowledge_resource_ids, search_mode?, top_k?,
+- `kb_search(query, knowledge_resource_ids?, search_mode?, top_k?,
   min_score?, reranker?)`;
 - `kb_fetch_context(knowledge_resource_id, doc_id, chunk_index,
   window_size?)`;
+- `doc_list_chunks(knowledge_resource_id, doc_id, offset?, limit?)`;
 - `doc_find_by_name(knowledge_resource_ids, filename, limit?)`;
 - `doc_status(knowledge_resource_id, doc_id)`;
 - `doc_recall(knowledge_resource_id, doc_id, query, top_k?)`;
@@ -307,19 +353,56 @@ The user-only catalog contains:
 - `doc_rechunk(knowledge_resource_id, doc_id, chunk_strategy?,
   chunk_max_tokens?)`.
 
+Chunk sources returned by `kb_search`, `kb_fetch_context`, `doc_list_chunks`,
+and `doc_recall` include `image_resources`; it is an empty array when no
+extracted image belongs to the Chunk.
+
 The user-specific Agent Token catalog additionally contains:
 
 - `prepare_document_upload(knowledge_resource_id, filename, file_size_bytes,
   file_md5, file_sha256, content_type?)`;
 - `complete_document_upload(upload_session_id)`.
 
-`knowledge_resource_ids` is mandatory where present. Accessible resources in
-one request must belong to one PolarRAG instance and one Space. `kb_search` can
-query multiple knowledge bases concurrently, merge hits by score, and return
-sanitized `partial_failures` for an inaccessible knowledge resource or a
-retryable per-KB upstream failure. Mixed instances, mixed Spaces, invalid
-arguments, invalid authentication, or an unavailable identity context fail the
-whole request.
+When `knowledge_resource_ids` is omitted, `kb_search` exhaustively searches all
+resources in the effective Agent and user scope. Explicit IDs and the effective
+scope are limited by `max_exhaustive_knowledge_resources` (default 1,000); PAS
+never silently truncates the scope.
+PAS groups resources by PolarRAG instance and Space, merges and deduplicates
+hits by score, and returns sanitized `partial_failures`. PolarRAG 1.0.6 and
+earlier receive legacy single-`kb_id` requests. For 1.0.7 and later, PAS reads
+`GET /_plugins/_polar_rag/_search_capabilities` and batches `kb_ids` by the
+reported `max_kb_ids` value.
+
+## Runtime governance
+
+PAS applies the active `polarrag_tool_limits` module before an upstream call.
+Every Tool call consumes the authenticated user's rate bucket and, when it uses
+a user-specific Agent Token, the Agent's bucket. Multi-resource searches run in
+bounded waves governed by `max_fanout` and instance concurrency for both legacy
+single-KB requests and PolarRAG 1.0.7+ multi-KB requests. Single-resource
+operations and document-upload completion reserve one slot on their target
+`polarrag_instance_id`. A request that exceeds rate or available instance
+concurrency is rejected before PAS calls PolarRAG; upload completion is also
+rejected before OSS completion work.
+
+The HTTP response is `429 Too Many Requests` with a `Retry-After` header. The
+MCP Tool result retains a stable, sanitized payload:
+
+```json
+{
+  "error": "POLARRAG_TOOL_LIMITED",
+  "message": "PolarRAG Tool capacity is temporarily unavailable.",
+  "reason": "RATE_LIMIT",
+  "retry_after_seconds": 1
+}
+```
+
+`reason` can be `RATE_LIMIT`, `INSTANCE_CONCURRENCY`, or `FANOUT_LIMIT`.
+Clients should wait at least the larger of `Retry-After` and
+`retry_after_seconds`, then retry with bounded backoff. Do not change resource
+IDs, disable ACL checks, or split one logical cross-resource request to evade
+the limit. Limits are independent in each PAS replica, so load balancing may
+observe approximate aggregate capacity rather than a cluster-wide exact rate.
 
 When `reranker=true` but the selected Space has no reranker model configured,
 `kb_search` fails with `RERANKER_NOT_CONFIGURED` and a safe explanatory
@@ -338,6 +421,9 @@ the file, generate a signed URL, or handle OSS credentials.
 `hybrid`, `hierarchical`, or `inherit`. `inherit` restores the current Space
 default and can return `noop`. Both tools first verify the document against the
 selected knowledge resource and use only the server-derived ACL context.
+Knowledge resources marked `EXTERNAL_SYNC` are read-only through PAS: upload
+preparation/completion, upload, delete, and rechunk return
+`EXTERNAL_SYNC_RESOURCE_READ_ONLY` before OSS or PolarRAG side effects.
 
 The upload tools never accept a local path, file bytes, OSS coordinates,
 credentials, identity, or ACL fields. `prepare_document_upload` creates a

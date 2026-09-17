@@ -42,6 +42,18 @@ Startup performs the same read-only schema and root-key compatibility check
 before configuration, JWT keys, or background workers initialize. Use
 `pas database migrate` explicitly when the schema is empty or behind.
 
+For same-machine SSO and external-token testing only:
+
+```bash
+pas serve --local-sso-dev
+```
+
+This explicit development mode binds every enabled PAS listener to
+`127.0.0.1`. The PAS external base HTTP origin must use `localhost` or
+`127.0.0.1`; Provider HTTP endpoints may also use `::1`. It is disabled by
+default and rejects LAN addresses, `0.0.0.0`, other `127/8` addresses,
+lookalike hostnames, and hostnames that resolve outside loopback.
+
 ## Guided configuration
 
 ```bash

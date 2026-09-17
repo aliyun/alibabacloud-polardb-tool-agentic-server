@@ -1,16 +1,32 @@
 import { useState } from 'react'
 import { Form, Input, Button, message } from 'antd'
-import { UserOutlined, LockOutlined, ApiOutlined, CloudOutlined, TeamOutlined, ThunderboltOutlined } from '@ant-design/icons'
+import {
+  ApiOutlined,
+  CloudOutlined,
+  LockOutlined,
+  LoginOutlined,
+  TeamOutlined,
+  ThunderboltOutlined,
+  UserOutlined,
+} from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
+import api from '../../api/client'
 import LanguageSwitcher from '../../components/LanguageSwitcher'
+import type { AuthModeInfo } from '../../hooks/useAuth'
 import './Login.css'
 
 interface LoginProps {
   onLogin: (username: string, password: string) => Promise<void>
+  authModeInfo?: AuthModeInfo
+  recovery?: boolean
 }
 
-export default function Login({ onLogin }: LoginProps) {
+export default function Login({
+  onLogin,
+  authModeInfo,
+  recovery = false,
+}: LoginProps) {
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
@@ -18,7 +34,15 @@ export default function Login({ onLogin }: LoginProps) {
   const handleSubmit = async (values: { username: string; password: string }) => {
     setLoading(true)
     try {
-      await onLogin(values.username, values.password)
+      if (recovery) {
+        await api.post('/auth/recovery/login', values, {
+          pasSkipAuthRedirect: true,
+        })
+        window.location.assign('/dashboard')
+        return
+      } else {
+        await onLogin(values.username, values.password)
+      }
       navigate('/dashboard')
     } catch {
       message.error(t('auth.invalidCredentials'))
@@ -26,6 +50,8 @@ export default function Login({ onLogin }: LoginProps) {
       setLoading(false)
     }
   }
+  const oidcMode = authModeInfo?.mode === 'oidc' && !recovery
+  const providerName = authModeInfo?.provider_name || t('auth.enterpriseSSO')
 
   return (
     <div className="login-page">
@@ -77,52 +103,89 @@ export default function Login({ onLogin }: LoginProps) {
       {/* Form Panel */}
       <div className="login-form-panel">
         <div className="login-form-header">
-          <h2 className="login-form-title">{t('auth.welcomeTitle')}</h2>
-          <p className="login-form-desc">{t('auth.welcomeDescription')}</p>
+          <h2 className="login-form-title">
+            {recovery ? t('auth.recoveryTitle') : t('auth.welcomeTitle')}
+          </h2>
+          <p className="login-form-desc">
+            {recovery
+              ? t('auth.recoveryDescription')
+              : oidcMode
+                ? t('auth.ssoDescription', { provider: providerName })
+                : t('auth.welcomeDescription')}
+          </p>
         </div>
 
-        <Form onFinish={handleSubmit} layout="vertical" size="large" requiredMark={false}>
-          <Form.Item name="username" rules={[{ required: true, message: t('auth.usernameRequired') }]}>
-            <Input
-              prefix={<UserOutlined />}
-              placeholder={t('auth.username')}
-              autoFocus
-            />
-          </Form.Item>
-          <Form.Item name="password" rules={[{ required: true, message: t('auth.passwordRequired') }]}>
-            <Input.Password
-              prefix={<LockOutlined />}
-              placeholder={t('auth.password')}
-            />
-          </Form.Item>
-          <Form.Item>
-            <Button
-              type="primary"
-              htmlType="submit"
-              loading={loading}
-              block
-              className="login-submit-btn"
-            >
-              {t('auth.signIn')}
-            </Button>
-          </Form.Item>
-          <Form.Item>
-            <Button
-              block
-              onClick={() => window.location.assign('/auth/feishu/login')}
-            >
-              {t('auth.signInWithFeishu')}
-            </Button>
-          </Form.Item>
-          <Form.Item>
-            <Button
-              block
-              onClick={() => window.location.assign('/auth/sharepoint/login')}
-            >
-              {t('auth.signInWithSharePoint')}
-            </Button>
-          </Form.Item>
-        </Form>
+        {oidcMode ? (
+          <Button
+            type="primary"
+            size="large"
+            block
+            className="login-submit-btn"
+            icon={<LoginOutlined />}
+            href={authModeInfo?.sso_login_url || '/auth/oidc/login'}
+            aria-label={t('auth.signInWithSSO', { provider: providerName })}
+          >
+            {t('auth.signInWithSSO', { provider: providerName })}
+          </Button>
+        ) : (
+          <Form onFinish={handleSubmit} layout="vertical" size="large" requiredMark={false}>
+            <Form.Item name="username" rules={[{ required: true, message: t('auth.usernameRequired') }]}>
+              <Input
+                prefix={<UserOutlined />}
+                placeholder={t('auth.username')}
+                autoFocus
+              />
+            </Form.Item>
+            <Form.Item name="password" rules={[{ required: true, message: t('auth.passwordRequired') }]}>
+              <Input.Password
+                prefix={<LockOutlined />}
+                placeholder={t('auth.password')}
+              />
+            </Form.Item>
+            <Form.Item>
+              <Button
+                type="primary"
+                htmlType="submit"
+                loading={loading}
+                block
+                className="login-submit-btn"
+              >
+                {t('auth.signIn')}
+              </Button>
+            </Form.Item>
+            {!recovery && (
+              <>
+                <Form.Item>
+                  <Button
+                    block
+                    onClick={() => window.location.assign('/auth/feishu/login')}
+                  >
+                    {t('auth.signInWithFeishu')}
+                  </Button>
+                </Form.Item>
+                <Form.Item>
+                  <Button
+                    block
+                    onClick={() => window.location.assign('/auth/sharepoint/login')}
+                  >
+                    {t('auth.signInWithSharePoint')}
+                  </Button>
+                </Form.Item>
+              </>
+            )}
+          </Form>
+        )}
+
+        {oidcMode && authModeInfo?.recovery_login_path && (
+          <Button
+            type="link"
+            block
+            href={authModeInfo.recovery_login_path}
+            className="login-recovery-link"
+          >
+            {t('auth.recoveryLink')}
+          </Button>
+        )}
 
         <div className="login-footer">
           alibabacloud polardb tool agentic server - {t('auth.footer')}

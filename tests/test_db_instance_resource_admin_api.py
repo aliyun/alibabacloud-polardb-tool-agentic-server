@@ -97,7 +97,9 @@ async def test_admin_lists_sanitized_resource_and_requests_restore(client, setup
         "/api/db-instance-resources", headers=admin_headers
     )
     assert listed.status_code == 200
-    row = next(item for item in listed.json() if item["id"] == resource_id)
+    row = next(
+        item for item in listed.json()["items"] if item["id"] == resource_id
+    )
     assert row["status"] == "cooling_down"
     assert row["actions"]["restore"] is True
     assert "password" not in str(row).lower()

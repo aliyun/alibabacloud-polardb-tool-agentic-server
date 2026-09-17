@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
+from server.api.pagination import Page
 from server.core import binding_manager, department_manager
 from server.db.engine import get_session
 from server.models import User
@@ -40,20 +41,31 @@ class DepartmentUserResponse(BaseModel):
     role: str
 
 
-@router.get("", response_model=list[DepartmentResponse])
+@router.get("", response_model=Page[DepartmentResponse])
 async def list_departments(
-    admin: User = Depends(require_admin),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
+    _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    depts = await department_manager.list_departments(session)
-    return [
-        DepartmentResponse(
+    depts, total = await department_manager.list_departments_page(
+        session,
+        offset=offset,
+        limit=limit,
+        search=search,
+    )
+    return Page(
+        items=[DepartmentResponse(
             id=d.id, name=d.name, description=d.description,
             agentic_db_cluster_id=d.agentic_db_cluster_id,
             agentic_db_cluster_description=d.agentic_db_cluster_description,
         )
-        for d in depts
-    ]
+        for d in depts],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post("", response_model=DepartmentResponse, status_code=201)
@@ -109,14 +121,28 @@ async def delete_department(
         raise HTTPException(status_code=400, detail={"code": "DEPARTMENT_NOT_EMPTY", "message": str(e)})
 
 
-@router.get("/{department_id}/users", response_model=list[DepartmentUserResponse])
+@router.get("/{department_id}/users", response_model=Page[DepartmentUserResponse])
 async def list_department_users(
     department_id: str,
-    admin: User = Depends(require_admin),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
+    _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    users = await department_manager.list_department_users(session, department_id)
-    return [DepartmentUserResponse(id=u.id, display_name=u.display_name, email=u.email, role=u.role.value) for u in users]
+    users, total = await department_manager.list_department_users_page(
+        session,
+        department_id,
+        offset=offset,
+        limit=limit,
+        search=search,
+    )
+    return Page(
+        items=[DepartmentUserResponse(id=u.id, display_name=u.display_name, email=u.email, role=u.role.value) for u in users],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 class BindMultitenantInstanceRequest(BaseModel):

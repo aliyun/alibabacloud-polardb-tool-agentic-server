@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from server.config import AppConfig
+from server.configuration.bootstrap import project_global_audit_documents
 from server.configuration.registry import (
     MODULE_REGISTRY,
     topological_modules,
@@ -88,12 +89,16 @@ def project_app_config(
     crypto: ConfigCrypto,
 ) -> AppConfig:
     """Project validated effective module documents into the legacy facade."""
+    documents = project_global_audit_documents(documents)
     config = AppConfig()
     effective = {
         module: _decrypt_effective(module, document, crypto)
         for module, document in documents.items()
         if module in MODULE_REGISTRY
     }
+
+    if "knowledge" in effective:
+        config.knowledge = config.knowledge.__class__.model_validate(effective["knowledge"])
 
     runtime = effective.get("runtime_policy", {})
     config.server.public_base_url = str(
@@ -161,6 +166,13 @@ def project_app_config(
     ):
         if field in observability:
             setattr(config.logging, field, observability[field])
+    config.audit.enabled = bool(
+        observability.get("audit_enabled", config.audit.enabled)
+    )
+    if "audit_retention_days" in observability:
+        config.audit.retention_days = int(
+            observability["audit_retention_days"]
+        )
 
     sql = effective.get("sql_security", {})
     for field in (
@@ -181,12 +193,15 @@ def project_app_config(
     for field in ("requests_per_minute", "burst"):
         if field in sql:
             setattr(config.sql_security.rate_limit, field, sql[field])
-    config.sql_security.audit.enabled = bool(
-        sql.get("audit_enabled", config.sql_security.audit.enabled)
-    )
-    if "audit_retention_days" in sql:
-        config.sql_security.audit.retention_days = int(
-            sql["audit_retention_days"]
+    polarrag_limits = effective.get("polarrag_tool_limits", {})
+    if polarrag_limits:
+        config.polarrag_tool_limits = config.polarrag_tool_limits.__class__.model_validate(polarrag_limits)
+    identity_sync = effective.get("enterprise_identity_sync", {})
+    if identity_sync:
+        config.enterprise_identity_sync = (
+            config.enterprise_identity_sync.__class__.model_validate(
+                identity_sync
+            )
         )
 
     token = effective.get("token_security", {})
@@ -213,36 +228,52 @@ def project_app_config(
         and sso_document.effective.state == ModuleState.ACTIVE
     ):
         sso = effective["user_sso"]
-        config.auth.mode = "oidc"
-        config.auth.web_sso_guard.enabled = True
-        for field in (
+        browser_login_enabled = sso.get("browser_login_enabled", True) is True
+        if browser_login_enabled:
+            config.auth.mode = "oidc"
+            config.auth.web_sso_guard.enabled = True
+        shared_fields = (
+            "user_id_claim",
+            "display_name_claim",
+            "email_claim",
+            "provider_name",
+            "userinfo_token_method",
+        )
+        browser_fields = (
+            "protocol_mode",
             "discovery_url",
             "issuer",
             "client_id",
             "client_secret",
             "scopes",
-            "user_id_claim",
-            "display_name_claim",
-            "email_claim",
             "authorization_endpoint",
             "token_endpoint",
             "userinfo_endpoint",
             "jwks_uri",
-            "userinfo_token_method",
-            "provider_name",
             "idp_pkce",
             "id_token_algorithms",
+        )
+        for field in shared_fields + (
+            browser_fields if browser_login_enabled else ()
         ):
             if field in sso:
                 setattr(config.auth.oidc, field, sso[field])
         config.auth.default_department = str(
             sso.get("default_department") or ""
         )
-        if config.server.public_base_url:
-            config.auth.oidc.redirect_uri = (
-                config.server.public_base_url
-                + "/auth/oidc/callback"
+        external_token_trust = sso.get("external_token_trust")
+        if isinstance(external_token_trust, dict):
+            config.auth.external_token_trust = (
+                config.auth.external_token_trust.__class__.model_validate(
+                    {
+                        **external_token_trust,
+                        "config_revision": sso_document.effective.revision,
+                        "config_digest": crypto.digest(sso),
+                    }
+                )
             )
+        if browser_login_enabled and config.server.public_base_url:
+            config.auth.oidc.redirect_uri = config.server.public_base_url + "/auth/oidc/callback"
 
     aliyun = effective.get("aliyun_access", {})
     aliyun_document = documents.get("aliyun_access")
@@ -289,9 +320,7 @@ class RuntimeConfigStore:
     ) -> None:
         self.repository = repository
         self.crypto = crypto
-        self.lifecycle_manager = (
-            lifecycle_manager or ModuleLifecycleManager()
-        )
+        self.lifecycle_manager = lifecycle_manager or ModuleLifecycleManager()
         self._config = AppConfig()
         self._documents: dict[str, ModuleDocument] = {}
         self._config_version = 0
@@ -356,14 +385,9 @@ class RuntimeConfigStore:
                 )
             candidate = project_app_config(documents, self.crypto)
             try:
-                optional_failures = (
-                    await self.lifecycle_manager.apply(
-                        self._config, candidate, changed
-                    )
-                )
+                optional_failures = await self.lifecycle_manager.apply(self._config, candidate, changed)
             except Exception:
-                logger.exception(
-                    "required runtime configuration adapter failed"
+                logger.exception("required runtime configuration adapter failed"
                 )
                 self.last_error_code = "RUNTIME_APPLY_FAILED"
                 return ReloadResult(
@@ -376,11 +400,8 @@ class RuntimeConfigStore:
                 for module in optional_failures:
                     if module in self._documents:
                         documents[module] = self._documents[module]
-                    self.local_errors[module] = (
-                        "RUNTIME_APPLY_FAILED"
-                    )
-                candidate = project_app_config(
-                    documents, self.crypto
+                    self.local_errors[module] = "RUNTIME_APPLY_FAILED"
+                candidate = project_app_config(documents, self.crypto
                 )
             for module in changed:
                 if module not in optional_failures:

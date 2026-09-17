@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.models import Department, UserDepartment, DepartmentInstanceBinding, User
@@ -14,6 +14,32 @@ logger = logging.getLogger(__name__)
 async def list_departments(session: AsyncSession) -> Sequence[Department]:
     result = await session.execute(select(Department).order_by(Department.name))
     return result.scalars().all()
+
+
+async def list_departments_page(
+    session: AsyncSession,
+    *,
+    offset: int,
+    limit: int,
+    search: str | None = None,
+) -> tuple[list[Department], int]:
+    filters = []
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(Department.name.ilike(pattern), Department.description.ilike(pattern))
+        )
+    total = await session.scalar(select(func.count(Department.id)).where(*filters)) or 0
+    rows = (
+        await session.execute(
+            select(Department)
+            .where(*filters)
+            .order_by(Department.name, Department.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    return list(rows), total
 
 
 async def get_department(session: AsyncSession, department_id: str) -> Department | None:
@@ -72,3 +98,43 @@ async def list_department_users(session: AsyncSession, department_id: str) -> Se
         select(User).join(UserDepartment).where(UserDepartment.department_id == department_id)
     )
     return result.scalars().all()
+
+
+async def list_department_users_page(
+    session: AsyncSession,
+    department_id: str,
+    *,
+    offset: int,
+    limit: int,
+    search: str | None = None,
+) -> tuple[list[User], int]:
+    filters = [UserDepartment.department_id == department_id]
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                User.display_name.ilike(pattern),
+                User.email.ilike(pattern),
+                User.external_id.ilike(pattern),
+            )
+        )
+    total = (
+        await session.scalar(
+            select(func.count(User.id))
+            .select_from(User)
+            .join(UserDepartment)
+            .where(*filters)
+        )
+        or 0
+    )
+    rows = (
+        await session.execute(
+            select(User)
+            .join(UserDepartment)
+            .where(*filters)
+            .order_by(User.display_name, User.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    return list(rows), total

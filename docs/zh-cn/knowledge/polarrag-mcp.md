@@ -11,10 +11,13 @@ PAS 可以管理多个 PolarRAG 实例，并向经过认证的人类用户开放
 
 ## 安全边界
 
+个人 `/mcp/personal` 连接直接使用员工身份，无需 Agent 边界；可见性与每次上游文档 ACL 检查仍为必需。个人连接提供读取，下文委托上传与管理流程保留原 Agent 连接。参见[账号与资源](../administration/accounts-and-resources.md)。
+
 只有 subject 为 `user:<pas_user_id>` 的 MCP access token 才能看到并调用
-PolarRAG Tool。机器 `pas_agent_` Token 不会获得这些 Tool，也不能冒充人类
-用户。用户专用 `pas_user_agent_` Token 在服务端解析为被分配的 PAS 用户，同时
-保留所属 Agent 的实例边界。
+PolarRAG Tool。通过旧 `/mcp` 浏览器 OAuth 登录时，PAS 会解析用户 Workspace 的默认 Agent，
+并应用该 Agent 的边界。机器 `pas_agent_` Token 不会获得这些 Tool，也不能冒充
+人类用户。用户专用 `pas_user_agent_` Token 继续兼容，在服务端解析为被分配的
+PAS 用户，同时保留显式 Agent 的实例边界。
 
 该 Agent 边界是实时读取的 PolarRAG 绑定实例集合。绑定实例上的每个已启用 Space，
 包括建立 Agent 绑定后才启用的 Space，都可以进入资源发现范围。进入范围不等于获得
@@ -81,11 +84,11 @@ PolarRAG 管理能力统一放在现有 PAS 页面：
 - 管理员在 Agent 详情页使用**配置企业访问**完成常规的身份源、主体与 Space 配置；
   既有实例、PUBLIC 范围、用户与组控件仍用于高级操作。被分配用户
   在 **My Instances > MCP connections** 管理自己的 `pas_user_agent_` Token。
-  管理员只能查看状态和强制吊销，不能读取明文。builtin 用户通过确认密码读取已有
-  Token；SSO 用户没有 PAS 密码，因此 `issue` 和 `regenerate` 只在带
-  `Cache-Control: no-store` 的响应中返回一次新明文。页面不渲染明文；在这一次
-  机会中，用户可明确选择**复制 Token**或**复制 JSON 配置**。重新生成需要确认，
-  并会立即使旧 Token 失效。连续交付请求受限流保护。
+  管理员只能查看状态和强制吊销，不能读取明文。builtin 和 SSO 用户都使用当前
+  已认证 Session 读取自己的已有 Token，PAS 不会再次要求输入密码。执行 `issue`
+  和 `regenerate` 时，响应只会通过 `Cache-Control: no-store` 返回一次新明文。
+  页面不渲染明文；在这一次机会中，用户可明确选择**复制 Token**或**复制 JSON
+  配置**。重新生成需要确认，并会立即使旧 Token 失效。连续交付请求受审计和限流保护。
 - 管理员 Dashboard 的 **Instances** 和 **Active** 统计同时包含已注册的数据库
   实例与 PolarRAG 实例；资源池可用数量仍只统计数据库实例。普通用户只会看到自己
   可访问的数据库实例数和 PolarRAG 知识资源数，不显示全局管理统计或管理操作。
@@ -100,18 +103,20 @@ PolarRAG 管理能力统一放在现有 PAS 页面：
 
 常规企业 PolarRAG 上线按以下顺序操作：
 
-1. 注册 PolarRAG 实例，然后启用并同步目标 Space。
+1. 注册 PolarRAG 实例。PAS 会自动启用每个新发现的活动 Space 并执行首次同步；管理员
+   显式停用过的 Space 会保持停用，直到被手工恢复。
 2. 创建飞书或 SharePoint 企业身份源，完成验证并同步目录。
-3. 在 Agent 的 **PolarRAG 实例**页签绑定目标实例，并配置共享 PUBLIC 资源范围。
-4. 点击**配置企业访问**。
-5. 选择一个 Source，显式选择**全部同步用户**或指定的同步组/PAS 用户，并选择一个或
-   多个可用 Space。**全部同步用户**展示在首位，但绝不会默认勾选。
-6. 点击**预览变更**，分别检查 Agent 局部授权、新增的全局 Source-Space 绑定以及将
+3. 在 Agent 的 **PolarRAG 实例**页签点击**配置企业访问**。
+4. 选择一个 Source，显式选择**全部同步用户**或指定的同步组/PAS 用户，选择活动的
+   PolarRAG 实例，并从每个所选实例中至少选择一个已启用 Space。应用时会在同一事务中
+   创建缺失的 Agent-实例绑定。**全部同步用户**展示在首位，但绝不会默认勾选。
+5. 点击**预览变更**，分别检查 Agent 局部授权、新增的全局 Source-Space 绑定以及将
    复用的现有关系。新增 Source-Space 绑定可由其他 Agent 复用，删除当前 Agent 授权
    时也会保留。
-7. 对预览确认一次。用户随后登录，在 **My Instances > MCP connections** 创建或使用
-   自己的 Agent 连接。
-8. 验证用户只能看到 Agent 实例与 PUBLIC 范围、Source-Space 绑定、用户当前企业成员
+6. 对预览确认一次。用户随后登录，在 **My Instances > MCP connections** 中把该
+   Agent 选为 Workspace 默认值，并可只使用 PAS 地址连接支持 OAuth 的 MCP Client。
+   不支持浏览器 OAuth 的 Client 仍可使用静态 `pas_user_agent_` 连接。
+7. 验证用户只能看到 Agent 实例与 PUBLIC 范围、Source-Space 绑定、用户当前企业成员
    关系和 PolarRAG ACL 的交集。
 
 该操作只做附加写入并保证原子性，不会删除既有授权。删除用户、组或全部同步用户的 Agent
@@ -131,28 +136,52 @@ Source-Space 绑定、Agent 主体授权、Agent-实例绑定和 PUBLIC 范围�
 管理员路由位于 `/api/polarrag`：
 
 - `POST /instances` 注册并检查一个 endpoint；
-- `GET /instances` 和 `GET /instances/{id}` 返回脱敏配置；
+- `GET /instances?offset=0&limit=20&q=<可选搜索>` 和 `GET /instances/{id}`
+  返回脱敏配置；列表响应为 `{items, total, offset, limit}`，先按名称或 host 搜索，
+  再做分页；
 - `PATCH /instances/{id}` 轮换共享账号、TLS 设置或名称；
 - `POST /instances/{id}/check` 重新执行认证和能力检查；
 - `DELETE /instances/{id}` 停用实例及其 Space；
-- `GET /instances/{id}/spaces` 枚举可信上游 Space，并返回各 Space 已同步的知识
-  资源、opaque resource ID、绑定模式和同步状态；
+- `GET /instances/{id}/spaces?limit=20&cursor=<可选游标>` 枚举一页可信上游
+  Space，返回 `items`、`next_cursor` 和 `limit`；原样传递 `next_cursor`，直到其
+  为 `null`。每项同时包含已同步知识库数量；`GET
+  /instances/{id}/knowledge-resources?offset=0&limit=20` 以
+  `{items, total, offset, limit}` 返回分页知识库详情；
 - `POST /instances/{id}/spaces/enable` 启用一个已枚举 Space，并立即同步其
   active 知识库；
 - `DELETE /instances/{id}/spaces/{space_id}` 停用一个 Space，并立即隐藏其知识
   资源；
-- `POST /instances/{id}/spaces/{space_id}/sync` 显式执行一次目录同步。
+- `POST /instances/{id}/spaces/{space_id}/sync` 返回 HTTP `202`，在后台启动显式
+  目录同步，不占用浏览器请求等待。轮询
+  `GET /instances/{id}/spaces/{space_id}/sync`；`status` 会从 `idle` 变为
+  `running`，然后变为 `completed` 或 `failed`；`result` 返回完成计数，`error`
+  只返回错误类型。
+  重复 POST 会加入正在运行的任务。PAS 使用有限分页读取并持久化上游目录，只有
+  完整扫描成功后才最终处理已在上游删除的 KB。同步状态和活动 lease 保存在 PAS
+  数据库中，因此所有副本会返回同一状态并拒绝重复任务。重启后，周期目录 worker
+  会重跑 lease 已过期的任务；目录同步是幂等的，不会因此生成重复知识资源。
 - `PUT /spaces/{knowledge_space_id}/oss-config` 为已启用 Space 验证并保存 OSS
   AccessKey 和对象前缀。bucket 与 endpoint 均为只读值，必须来自可信 PolarRAG
   Space 目录。
-- `GET /instances/{id}/unclaimed-knowledge-bases` 列出已启用 Space 中的
-  `UNCLAIMED` 知识库和符合条件的 owner 主体；
+- `GET /instances/{id}/unclaimed-knowledge-bases?limit=20` 以游标分页列出
+  已启用 Space 中的 `UNCLAIMED` 知识库；使用响应中的不透明 `next_cursor`
+  获取下一页。旧有 `owner_candidates` 字段保留为空数组以维持响应兼容；
+- `GET /instances/{id}/owner-candidates?identity_domain=...&offset=0&limit=20`
+  在一个已启用 identity domain 内搜索并分页返回可用的映射 owner 或 PAS 原生
+  owner。Spaces 抽屉仅在打开 owner 选择器时加载该列表；
 - `POST /instances/{id}/spaces/{space_id}/knowledge-bases/{kb_id}/claim`
-  将同域的有效用户主体设为 owner，激活上游知识库、同步 Space 并写入审计记录。
+  仅管理员可调用。它将同域的有效用户主体设为 PERSONAL owner，激活上游知识库、
+  同步 Space 并写入审计记录。这是通过 HTTP 设置 PERSONAL KB owner 的受支持操作；
+  MCP 用户不能绕过该流程。
 
 创建请求包含 `name`、`scheme`、`host`、`port`、`username`、`password`、
 `tls_verify` 和可选 `ca_bundle`。PAS 使用现有根密钥加密用户名、密码和 CA
 Bundle，任何响应都不会返回这些值。PAS 还会每五分钟同步一次已启用 Space。
+
+生产环境的外部 Agent 到 PAS 流量必须使用 HTTPS。PAS 和 PolarRAG 位于同一可信
+VPC 时，PAS 到 PolarRAG 仍可使用 HTTP。PolarRAG 实例使用 HTTPS 时，应保持
+`tls_verify: true`（默认值），需要时通过 `ca_bundle` 安装私有 CA。这些属于部署
+要求；PAS 不新增硬编码的 scheme 限制。
 
 Space OSS 配置复用 `PAS_ENCRYPTION_KEY` 加密保存 AccessKey。保存配置时，PAS 使用
 目录返回的 endpoint，在目录返回的 bucket 中写入并删除一个零字节探针，因此凭证
@@ -160,9 +189,16 @@ Space OSS 配置复用 `PAS_ENCRYPTION_KEY` 加密保存 AccessKey。保存配�
 变化，已有配置会立即失效，必须重新验证。
 
 `GET /api/me/resources` 为 **My Instances** 页面返回已认证用户可访问的数据库
-实例和 PolarRAG 知识资源。提供 `agent_id` 时，知识资源会收窄到该已分配 Agent
-绑定的实例和 PUBLIC 范围，响应同时返回上游 `kb_id`。该接口复用 MCP 的服务端
-访问控制和资源发现规则，不会返回 endpoint 凭证或可信 ACL 上下文。
+实例和分页 PolarRAG 知识资源列表。使用 `knowledge_offset` 与
+`knowledge_limit` 翻页；响应包含 `knowledge_resource_total`、
+`knowledge_resource_offset` 和 `knowledge_resource_limit`。提供 `agent_id` 时，
+知识资源会收窄到该已分配 Agent 绑定的实例和 PUBLIC 范围，每项同时返回上游
+`kb_id`。该接口复用 MCP 的服务端访问控制和资源发现规则，不会返回 endpoint
+凭证或可信 ACL 上下文。
+
+`GET /api/agents/{agent_id}/polarrag-bindings/{binding_id}/public-resources`
+使用 `offset`、`limit` 和可选 `search` 分页加载 PUBLIC 资源选择器，响应为
+`{items, total, offset, limit}`。
 
 Agent 范围的用户连接使用以下附加接口：
 
@@ -234,10 +270,11 @@ PAS Department 继续承载本地组成员关系。本地组与外部企业组�
 仅用户可见的目录包含：
 
 - `list_knowledge_resources(cursor?, limit?)`；
-- `kb_search(query, knowledge_resource_ids, search_mode?, top_k?,
+- `kb_search(query, knowledge_resource_ids?, search_mode?, top_k?,
   min_score?, reranker?)`；
 - `kb_fetch_context(knowledge_resource_id, doc_id, chunk_index,
   window_size?)`；
+- `doc_list_chunks(knowledge_resource_id, doc_id, offset?, limit?)`；
 - `doc_find_by_name(knowledge_resource_ids, filename, limit?)`；
 - `doc_status(knowledge_resource_id, doc_id)`；
 - `doc_recall(knowledge_resource_id, doc_id, query, top_k?)`；
@@ -246,17 +283,49 @@ PAS Department 继续承载本地组成员关系。本地组与外部企业组�
 - `doc_rechunk(knowledge_resource_id, doc_id, chunk_strategy?,
   chunk_max_tokens?)`。
 
+`kb_search`、`kb_fetch_context`、`doc_list_chunks` 与 `doc_recall` 返回的
+Chunk source 都包含 `image_resources`；当前 Chunk 没有归属的提取图片时为空数组。
+
 用户专用 Agent Token 的目录还包含：
 
 - `prepare_document_upload(knowledge_resource_id, filename, file_size_bytes,
   file_md5, file_sha256, content_type?)`；
 - `complete_document_upload(upload_session_id)`。
 
-凡出现 `knowledge_resource_ids` 均为必填。一次请求中剩余的可访问资源必须属于同一
-PolarRAG 实例和同一 Space。`kb_search` 可以并发查询多个知识库，按 score 合并
-命中，并对单个不可访问知识资源或可重试的单 KB 上游失败返回脱敏
-`partial_failures`。混用实例、混用 Space、参数非法、认证无效或身份上下文不可用
-会导致整个请求失败。
+`kb_search` 省略 `knowledge_resource_ids` 时，会穷举检索 Agent 与用户有效范围内的
+全部资源；显式列表和有效范围受 `max_exhaustive_knowledge_resources` 限制（默认
+1000），PAS 不会静默截断。PAS 按 PolarRAG 实例和 Space 分组检索，再按 score
+合并、去重，并返回脱敏 `partial_failures`。
+PolarRAG 1.0.6 及以下使用旧单值 `kb_id` 请求；1.0.7 及以上先读取
+`GET /_plugins/_polar_rag/_search_capabilities`，再按返回的 `max_kb_ids` 分批发送
+`kb_ids`。
+
+## 运行治理
+
+PAS 会在调用上游前应用有效的 `polarrag_tool_limits` 模块。每次 Tool 调用都消耗
+已认证用户的速率桶；使用用户专用 Agent Token 时，还会同时消耗 Agent 速率桶。
+旧版单 KB 请求和 PolarRAG 1.0.7 及以上的多 KB 请求都会按 `max_fanout` 和实例
+并发上限分波执行。单资源操作和文档上传完成会在目标 `polarrag_instance_id` 上
+预约一个槽位。超过速率或实例可用并发的请求会在 PAS 调用 PolarRAG 前被拒绝；
+上传完成还会在执行 OSS 完成操作前被拒绝。
+
+HTTP 响应为 `429 Too Many Requests`，并携带 `Retry-After` 响应头。MCP Tool
+结果保留稳定且脱敏的载荷：
+
+```json
+{
+  "error": "POLARRAG_TOOL_LIMITED",
+  "message": "PolarRAG Tool capacity is temporarily unavailable.",
+  "reason": "RATE_LIMIT",
+  "retry_after_seconds": 1
+}
+```
+
+`reason` 可能为 `RATE_LIMIT`、`INSTANCE_CONCURRENCY` 或 `FANOUT_LIMIT`。
+客户端应至少等待 `Retry-After` 与 `retry_after_seconds` 中较大的秒数，再使用
+有上限的退避重试。不要通过修改资源 ID、绕过 ACL 或拆分一个逻辑上的跨资源请求
+来规避限额。限额在每个 PAS 副本独立生效，因此负载均衡后的聚合容量是近似值，
+不是集群级精确速率。
 
 当 `reranker=true` 但所选 Space 未配置 reranker 模型时，`kb_search` 返回
 `RERANKER_NOT_CONFIGURED` 和脱敏说明。管理员完成 Space 配置前，该错误不可重试；
@@ -271,6 +340,9 @@ PAS 不会暴露上游响应体、Space 标识、request id、账号、Endpoint 
 `doc_rechunk` 要求 PolarRAG `EXECUTE` 权限；`chunk_strategy` 可选 `hybrid`、
 `hierarchical` 或 `inherit`。`inherit` 恢复当前 Space 默认策略，可能返回 `noop`。
 两个 Tool 都会先验证文档属于所选知识资源，并且只使用服务端推导的 ACL 上下文。
+标记为 `EXTERNAL_SYNC` 的知识资源在 PAS 中只读；准备/完成上传、直接上传、删除和
+重新切分都会在 OSS 或 PolarRAG 产生副作用前返回
+`EXTERNAL_SYNC_RESOURCE_READ_ONLY`。
 
 上传 Tool 不接受本地路径、文件字节、OSS 坐标、凭证、身份或 ACL 字段。
 `prepare_document_upload` 创建有效期 24 小时的上传会话，并返回 8 MiB 分片的

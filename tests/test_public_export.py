@@ -34,13 +34,26 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
-def _fixture_repo(tmp_path: Path, *, secret: bool = False) -> Path:
+def _fixture_repo(
+    tmp_path: Path,
+    *,
+    secret: bool = False,
+    private_domain: bool = False,
+) -> Path:
     source = tmp_path / "source"
     source.mkdir()
-    _write(source / ".public-release-allowlist", "README.md\nserver/\nscripts/\n")
+    _write(
+        source / ".public-release-allowlist",
+        "README.md\nserver/\nscripts/\ntests/\n"
+        ":(exclude)tests/internal_only.py\n",
+    )
     _write(source / "README.md", "# Public\n")
     _write(source / "server/app.py", "TOKEN = 'placeholder'\n")
     _write(source / "scripts/run.sh", "#!/bin/sh\nexit 0\n")
+    _write(
+        source / "tests/internal_only.py",
+        "REGISTRY = 'https://registry." + "alibaba" + "-inc.com/internal'\n",
+    )
     _write(
         source / "pyproject.toml",
         '[project]\nname = "fixture"\nversion = "1.2.3"\n',
@@ -61,6 +74,11 @@ def _fixture_repo(tmp_path: Path, *, secret: bool = False) -> Path:
     _write(source / "benign-unlisted.txt", "not selected\n")
     if secret:
         _write(source / "server/secret.py", "KEY = '" + "LTAI" + "1234567890ABCDEF'\n")
+    if private_domain:
+        _write(
+            source / "server/private_source.py",
+            "INDEX = 'https://mirror.aone." + "alibaba" + "-inc.com/simple'\n",
+        )
     subprocess.run(["git", "init", "-q"], cwd=source, check=True)
     subprocess.run(["git", "add", "."], cwd=source, check=True)
     return source
@@ -87,6 +105,7 @@ def test_allowlist_export_excludes_unlisted_and_internal_files(tmp_path: Path) -
     assert (destination / "README.md").exists()
     assert not (destination / ("docs/" + "superpowers/spec.md")).exists()
     assert not (destination / "benign-unlisted.txt").exists()
+    assert not (destination / "tests/internal_only.py").exists()
     assert not (destination / ".git").exists()
     assert (destination / "scripts/run.sh").stat().st_mode & 0o777 == 0o755
     assert (destination / "server/app.py").stat().st_mode & 0o777 == 0o644
@@ -114,6 +133,17 @@ def test_export_rejects_secret_bearing_allowlisted_content(tmp_path: Path) -> No
     assert result.returncode != 0
     assert "SECRET_ALIBABA_ACCESS_KEY" in result.stderr
     assert ("LTAI" + "1234567890ABCDEF") not in result.stderr
+
+
+def test_export_rejects_any_internal_private_domain(tmp_path: Path) -> None:
+    source = _fixture_repo(tmp_path, private_domain=True)
+    destination = tmp_path / "public"
+
+    result = _run_export(source, destination)
+
+    assert result.returncode != 0
+    assert "INTERNAL_PRIVATE_DOMAIN" in result.stderr
+    assert ("mirror.aone." + "alibaba" + "-inc.com") not in result.stderr
 
 
 def test_export_rejects_relative_or_existing_output(tmp_path: Path) -> None:

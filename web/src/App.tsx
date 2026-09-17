@@ -8,8 +8,14 @@ import AppLayout from './components/Layout'
 import AuthGuard from './components/AuthGuard'
 import Login from './pages/Login'
 import Setup from './pages/Setup'
+import { FeaturesProvider } from './hooks/useFeatures'
 
 // Lazy-loaded pages for code splitting
+const Resources = lazy(() => import('./pages/AccessConsole/Resources'))
+const Accounts = lazy(() => import('./pages/AccessConsole/Accounts'))
+const PersonalResources = lazy(() => import('./pages/AccessConsole/MyResources'))
+const Connect = lazy(() => import('./pages/AccessConsole/Connect'))
+const Features = lazy(() => import('./pages/Features'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const Users = lazy(() => import('./pages/Users'))
 const Departments = lazy(() => import('./pages/Departments'))
@@ -17,6 +23,7 @@ const Instances = lazy(() => import('./pages/Instances'))
 const InstanceDetail = lazy(() => import('./pages/InstanceDetail'))
 const MyInstances = lazy(() => import('./pages/MyInstances'))
 const AuditLogs = lazy(() => import('./pages/AuditLogs'))
+const ExternalApplications = lazy(() => import('./pages/ExternalApplications'))
 const Pool = lazy(() => import('./pages/Pool'))
 const Agents = lazy(() => import('./pages/Agents'))
 const AgentDetail = lazy(() => import('./pages/AgentDetail'))
@@ -42,11 +49,31 @@ interface ReadyRoutesProps {
 function ReadyRoutes({
   setupDestination = '/settings/configuration',
 }: ReadyRoutesProps) {
-  const { user, loading, login, logout, authMode } = useAuth()
+  const {
+    user,
+    loading,
+    login,
+    logout,
+    authMode,
+    authModeInfo,
+  } = useAuth()
 
   return (
     <Routes>
-      <Route path="/login" element={<Login onLogin={login} />} />
+      <Route
+        path="/login"
+        element={<Login onLogin={login} authModeInfo={authModeInfo} />}
+      />
+      <Route
+        path="/login/recovery"
+        element={(
+          <Login
+            onLogin={login}
+            authModeInfo={authModeInfo}
+            recovery
+          />
+        )}
+      />
       <Route
         path="/setup"
         element={<Navigate to={setupDestination} replace />}
@@ -54,7 +81,7 @@ function ReadyRoutes({
       <Route
         element={
           <AuthGuard user={user} loading={loading}>
-            <AppLayout user={user!} onLogout={logout} authMode={authMode} />
+            <FeaturesProvider key={user?.id}><AppLayout user={user!} onLogout={logout} authMode={authMode} /></FeaturesProvider>
           </AuthGuard>
         }
       >
@@ -62,6 +89,14 @@ function ReadyRoutes({
           path="/dashboard"
           element={<Dashboard isAdmin={user?.role === 'admin'} />}
         />
+        <Route path="/my-resources" element={<PersonalResources />} />
+        <Route path="/connect" element={<Connect />} />
+        {(loading || user?.role === 'admin') && (
+          <>
+            <Route path="/resources" element={<Resources />} />
+            <Route path="/access" element={<Accounts />} />
+          </>
+        )}
         <Route path="/users" element={<Users />} />
         <Route path="/departments" element={<Departments />} />
         <Route path="/instances" element={<Instances />} />
@@ -92,9 +127,14 @@ function ReadyRoutes({
               path="/polarrag"
               element={<Navigate to="/instances?type=polarrag" replace />}
             />
+            <Route path="/settings/features" element={<Features />} />
             <Route
               path="/settings/configuration"
               element={<Setup mode="admin" />}
+            />
+            <Route
+              path="/external-applications"
+              element={<ExternalApplications />}
             />
           </>
         )}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -11,15 +12,27 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     String,
     Text,
     UniqueConstraint,
     true,
 )
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from server.models.base import Base, TimestampMixin, generate_uuid
 from server.models.polarrag import EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS
+
+_KNOWLEDGE_ACCESS_ID_NAMESPACE = uuid.UUID(
+    "1c3cd655-5acc-4b3b-9af2-25cbfdef2324"
+)
+
+
+def _knowledge_access_id(*parts: str) -> str:
+    encoded = "".join(f"{len(part)}:{part}" for part in parts)
+    return str(uuid.uuid5(_KNOWLEDGE_ACCESS_ID_NAMESPACE, encoded))
+
 
 if TYPE_CHECKING:
     from server.models.agent import Agent
@@ -33,6 +46,11 @@ class AgentGroupKind(str, enum.Enum):
     ENTERPRISE = "enterprise"
     IDENTITY_SOURCE = "identity_source"
     IDENTITY_SOURCE_ALL = "identity_source_all"
+
+
+class AgentKnowledgeScopeOrigin(str, enum.Enum):
+    MANUAL = "MANUAL"
+    EXTERNAL_SYNC = "EXTERNAL_SYNC"
 
 
 class AgentGroupAssignment(TimestampMixin, Base):
@@ -240,6 +258,121 @@ class AgentPolarRAGInstanceBinding(TimestampMixin, Base):
     agent: Mapped[Agent] = relationship(lazy="selectin")
     instance: Mapped[PolarRAGInstance] = relationship(lazy="selectin")
     created_by: Mapped[User | None] = relationship(lazy="selectin")
+
+
+class AgentKnowledgeScope(TimestampMixin, Base):
+    __tablename__ = "agent_knowledge_scopes"
+    __table_args__ = (
+        Index(
+            "ix_agent_knowledge_scope_external",
+            "agent_id",
+            "identity_source_id",
+            "external_scope_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    agent_id: Mapped[str] = mapped_column(String(36))
+    name: Mapped[str] = mapped_column(String(255))
+    origin: Mapped[AgentKnowledgeScopeOrigin] = mapped_column(
+        Enum(
+            AgentKnowledgeScopeOrigin,
+            native_enum=False,
+            length=32,
+            values_callable=lambda values: [item.value for item in values],
+        )
+    )
+    identity_source_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+    external_scope_id: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    knowledge_resource_ids_json: Mapped[str] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT(), "mysql")
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    @staticmethod
+    def external_id(
+        agent_id: str,
+        identity_source_id: str,
+        external_scope_id: str,
+    ) -> str:
+        return _knowledge_access_id(
+            "external-scope",
+            agent_id,
+            identity_source_id,
+            external_scope_id,
+        )
+
+
+class AgentKnowledgeScopeBinding(TimestampMixin, Base):
+    __tablename__ = "agent_knowledge_scope_bindings"
+    __table_args__ = (
+        Index(
+            "ix_agent_knowledge_scope_binding_user",
+            "user_id",
+            "scope_id",
+        ),
+        Index(
+            "ix_agent_knowledge_scope_binding_group",
+            "group_assignment_id",
+            "scope_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=generate_uuid
+    )
+    scope_id: Mapped[str] = mapped_column(
+        String(36), index=True
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+    group_assignment_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    @classmethod
+    def for_user(
+        cls,
+        *,
+        scope_id: str,
+        user_id: str,
+    ) -> AgentKnowledgeScopeBinding:
+        return cls(
+            id=_knowledge_access_id("scope-user", scope_id, user_id),
+            scope_id=scope_id,
+            user_id=user_id,
+        )
+
+    @classmethod
+    def for_group(
+        cls,
+        *,
+        scope_id: str,
+        group_assignment_id: str,
+    ) -> AgentKnowledgeScopeBinding:
+        return cls(
+            id=_knowledge_access_id(
+                "scope-group",
+                scope_id,
+                group_assignment_id,
+            ),
+            scope_id=scope_id,
+            group_assignment_id=group_assignment_id,
+        )
 
 
 class AgentUserAssignment(TimestampMixin, Base):

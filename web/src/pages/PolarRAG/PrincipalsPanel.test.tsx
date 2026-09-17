@@ -102,4 +102,36 @@ describe('PrincipalsPanel', () => {
       expect(screen.getByText('Feishu directory · Bob · bob')).toBeInTheDocument()
     })
   })
+
+  it('hides managed identity actions when manual mapping is disabled', async () => {
+    vi.mocked(api.get).mockResolvedValueOnce({
+      data: {
+        items: [{
+          id: 'identity-1',
+          identity_source_id: 'source-1',
+          source_name: 'Feishu directory',
+          provider: 'feishu',
+          external_user_id: 'user-201',
+          display_name: 'OIDC user',
+          email: null,
+          status: 'active',
+          mapping_mode: 'pas_managed',
+          native_principal_id: 'feishu:user-201',
+          principals: [],
+        }],
+      },
+    } as never)
+
+    render(
+      <PrincipalsPanel
+        userId="user-1"
+        userName="OIDC user"
+        allowManualMapping={false}
+      />,
+    )
+
+    await screen.findByText('Feishu directory')
+    expect(screen.queryByText('Edit')).not.toBeInTheDocument()
+    expect(screen.queryByText('Delete')).not.toBeInTheDocument()
+  })
 })
