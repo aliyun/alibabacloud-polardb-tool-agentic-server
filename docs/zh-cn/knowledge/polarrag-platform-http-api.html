@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PolarRAG 平台 HTTP API</title>
+  <style>
+    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; background: #f5f7fb; color: #1f2937; line-height: 1.65; }
+    main { max-width: 900px; margin: 0 auto; padding: 40px 24px 72px; }
+    article { background: #fff; border: 1px solid #e5e7eb; border-radius: 14px; padding: 32px 40px; box-shadow: 0 8px 24px rgba(15, 23, 42, .06); }
+    h1 { margin-top: 0; color: #102a56; }
+    h2 { margin-top: 32px; color: #173f7a; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
+    code { background: #eef2f7; border-radius: 4px; padding: 2px 5px; }
+    pre { overflow-x: auto; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 16px; }
+    pre code { background: transparent; padding: 0; }
+    .notice { background: #fff7ed; border-left: 4px solid #f97316; padding: 12px 16px; }
+    .flow { background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; }
+    li { margin: 6px 0; }
+  </style>
+</head>
+<body>
+<main>
+<article>
+  <h1>PolarRAG 平台 HTTP API</h1>
+  <p>完整字段、分页、错误码和全部端点请参阅同目录的 <a href="polarrag-platform-http-api.md">Markdown 文档</a> 或目标 PAS 的 <code>/openapi.json</code>。</p>
+
+  <div class="notice"><strong>认证边界：</strong>管理员先在“外部应用”页面注册调用方服务并领取一次性 Client Secret、Resource、Scope 和请求示例。外部应用可通过 PAS 的 <code>/token</code> 或 <code>/api/v1/external-auth/token</code> 执行标准 Token Exchange。PAS 只签发 Access Token，不签发 Refresh Token；除非单独启用直连兼容模式，否则不会直接接受飞书 <code>user_access_token</code>。</div>
+
+  <h2>一、授权前提</h2>
+  <ul>
+    <li>PAS Token 的 <code>aud</code> 为 <code>&lt;PAS base URL&gt;/api/v1</code>；</li>
+    <li><code>scope</code> 包含 <code>polarrag</code>；</li>
+    <li>Token 代表一个 PAS 用户和有效 Agent 上下文；PAS 在每次请求中复核用户仍有该 Agent 访问权。</li>
+  </ul>
+
+  <h2>二、管理员准备</h2>
+  <p>管理员先创建 Agent、授予 PolarRAG 资源，并将目标用户或企业用户组绑定给 Agent。使用 Token Exchange 时，还需配置外部 Token 信任并注册外部应用。需要查询现有对象时可使用：</p>
+  <pre><code>GET /api/agents
+GET /api/identity-sources
+GET /api/identity-sources/&lt;identity_source_id&gt;/directory?entry_type=all&amp;limit=100
+GET /api/identity-sources/spaces</code></pre>
+  <p>将 PAS 用户绑定给 Agent：</p>
+  <pre><code>POST /api/agents/&lt;agent_id&gt;/user-assignments
+Authorization: Bearer &lt;admin-token&gt;
+Content-Type: application/json
+
+{"user_id":"&lt;pas-user-id&gt;"}</code></pre>
+
+  <h2>三、使用 PAS Token 访问知识库</h2>
+  <div class="flow">Token Exchange 签发 PAS 用户 Token → 查询可见知识库 → 使用知识库、Space/KB 或文档路径检索和查看文档。</div>
+  <pre><code>GET /api/v1/knowledge-bases?limit=50
+Authorization: Bearer &lt;pas-user-access-token&gt;</code></pre>
+  <pre><code>POST /api/v1/knowledge-bases/&lt;knowledge_resource_id&gt;/search
+Authorization: Bearer &lt;pas-user-access-token&gt;
+Content-Type: application/json
+
+{"query":"退款流程","search_mode":"balanced","top_k":10,"reranker":false}</code></pre>
+  <pre><code>POST /api/v1/spaces/&lt;space_id&gt;/knowledge-bases/&lt;kb_id&gt;/search
+Authorization: Bearer &lt;pas-user-access-token&gt;
+Content-Type: application/json
+
+{"query":"退款流程","search_mode":"balanced","top_k":10,"reranker":false}</code></pre>
+  <pre><code>GET /api/v1/knowledge-bases/&lt;knowledge_resource_id&gt;/documents?limit=20
+GET /api/v1/spaces/&lt;space_id&gt;/knowledge-bases/&lt;kb_id&gt;/documents?limit=20</code></pre>
+  <p>知识库和文档结果始终受 PAS 用户授权、Agent 资源范围及 PolarRAG 文档 ACL 共同约束。</p>
+</article>
+</main>
+</body>
+</html>

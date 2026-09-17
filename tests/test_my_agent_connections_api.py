@@ -60,8 +60,8 @@ async def test_user_manages_only_own_agent_token(client, setup) -> None:
         "/api/me/agent-connections", headers=member_headers
     )
     assert listed.status_code == 200
-    assert listed.json()[0]["assignment_id"] == assignment_id
-    assert listed.json()[0]["polarrag_instances"][0]["name"] == "RAG"
+    assert listed.json()["items"][0]["assignment_id"] == assignment_id
+    assert listed.json()["items"][0]["polarrag_instances"][0]["name"] == "RAG"
     assert "host" not in listed.text
 
     issued = await http.post(
@@ -81,14 +81,12 @@ async def test_user_manages_only_own_agent_token(client, setup) -> None:
 
     hidden = await http.post(
         f"/api/me/agent-connections/{assignment_id}/token/reveal",
-        json={"password": "password"},
         headers=admin_headers,
     )
     assert hidden.status_code == 404
 
     revealed = await http.post(
         f"/api/me/agent-connections/{assignment_id}/token/reveal",
-        json={"password": "password"},
         headers=member_headers,
     )
     assert revealed.status_code == 200
@@ -105,7 +103,6 @@ async def test_user_manages_only_own_agent_token(client, setup) -> None:
     assert regenerated.json()["token"] is None
     replacement = await http.post(
         f"/api/me/agent-connections/{assignment_id}/token/reveal",
-        json={"password": "password"},
         headers=member_headers,
     )
     assert replacement.json()["token"] != plaintext
@@ -139,7 +136,7 @@ async def test_user_sets_expiry_when_issuing_and_regenerating(
     summary = await http.get(
         "/api/me/agent-connections", headers=member_headers
     )
-    assert summary.json()[0]["token"]["expires_at"] == issued.json()[
+    assert summary.json()["items"][0]["token"]["expires_at"] == issued.json()[
         "expires_at"
     ]
 
@@ -172,7 +169,7 @@ async def test_user_token_confirmation_is_strict(client, setup) -> None:
     assert response.status_code == 422
 
 
-async def test_oidc_user_receives_token_once_on_issue_and_regenerate(
+async def test_oidc_user_can_reveal_and_receives_token_on_issue_and_regenerate(
     client,
     setup,
 ) -> None:
@@ -200,14 +197,14 @@ async def test_oidc_user_receives_token_once_on_issue_and_regenerate(
         headers=member_headers,
     )
     assert first not in listed.text
-    assert listed.json()[0]["password_reveal_available"] is False
+    assert listed.json()["items"][0]["password_reveal_available"] is True
 
     reveal = await http.post(
         f"/api/me/agent-connections/{assignment_id}/token/reveal",
-        json={"password": "irrelevant"},
         headers=member_headers,
     )
-    assert reveal.status_code == 409
+    assert reveal.status_code == 200
+    assert reveal.json()["token"] == first
 
     regenerated = await http.post(
         f"/api/me/agent-connections/{assignment_id}/token/regenerate",
@@ -220,7 +217,7 @@ async def test_oidc_user_receives_token_once_on_issue_and_regenerate(
     assert replacement.startswith("pas_user_agent_")
     assert replacement != first
 
-    for _ in range(3):
+    for _ in range(2):
         response = await http.post(
             f"/api/me/agent-connections/{assignment_id}/token/regenerate",
             json={"confirmed": True},
@@ -268,8 +265,8 @@ async def test_department_member_can_issue_but_loses_access_immediately(
         headers=member_headers,
     )
     assert listed.status_code == 200
-    assert listed.json()[0]["agent_id"] == agent_id
-    assert listed.json()[0]["assignment_id"] is None
+    assert listed.json()["items"][0]["agent_id"] == agent_id
+    assert listed.json()["items"][0]["assignment_id"] is None
 
     issued = await http.post(
         f"/api/me/agent-connections/{agent_id}/token/issue",
@@ -278,15 +275,8 @@ async def test_department_member_can_issue_but_loses_access_immediately(
     assert issued.status_code == 200
     assert issued.json()["token"] is None
 
-    wrong_password = await http.post(
-        f"/api/me/agent-connections/{agent_id}/token/reveal",
-        json={"password": "wrong-password"},
-        headers=member_headers,
-    )
-    assert wrong_password.status_code == 401
     revealed = await http.post(
         f"/api/me/agent-connections/{agent_id}/token/reveal",
-        json={"password": "password"},
         headers=member_headers,
     )
     assert revealed.status_code == 200
@@ -304,7 +294,7 @@ async def test_department_member_can_issue_but_loses_access_immediately(
             "/api/me/agent-connections",
             headers=member_headers,
         )
-    ).json() == []
+    ).json()["items"] == []
     async with factory() as session:
         assert (
             await agent_user_token_service.resolve_token(session, plaintext)

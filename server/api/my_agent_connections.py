@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import or_, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from server.auth.dependencies import get_current_user
-from server.auth.builtin import verify_password
+from server.api.pagination import Page
 from server.core import agent_token_service, agent_user_token_service
 from server.core.agent_access import has_agent_access, list_accessible_agent_ids
 from server.core.audit_logger import log_audit
@@ -37,11 +37,6 @@ class ConfirmedRequest(BaseModel):
 class TokenExpiryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expires_at: datetime | None = None
-
-
-class PasswordRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    password: str = Field(min_length=1, max_length=1024)
 
 
 class MyTokenSummary(BaseModel):
@@ -165,14 +160,41 @@ async def _audit(
     )
 
 
-@router.get("", response_model=list[MyAgentConnection])
+@router.get("", response_model=Page[MyAgentConnection])
 async def list_connections(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     agent_ids = await list_accessible_agent_ids(session, user.id)
     if not agent_ids:
-        return []
+        return Page(items=[], total=0, offset=offset, limit=limit)
+    agent_filters: list[Any] = [Agent.id.in_(agent_ids)]
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        agent_filters.append(
+            or_(Agent.name.ilike(pattern), Agent.description.ilike(pattern))
+        )
+    total = (
+        await session.scalar(
+            select(func.count(Agent.id)).where(*agent_filters)
+        )
+        or 0
+    )
+    agents = list(
+        (
+            await session.execute(
+                select(Agent)
+                .where(*agent_filters)
+                .order_by(Agent.name, Agent.id)
+                .offset(offset)
+                .limit(limit)
+            )
+        ).scalars()
+    )
+    page_agent_ids = [agent.id for agent in agents]
     assignments = list(
         (
             await session.execute(
@@ -183,46 +205,42 @@ async def list_connections(
                 )
                 .where(
                     AgentUserAssignment.user_id == user.id,
-                    AgentUserAssignment.agent_id.in_(agent_ids),
+                    AgentUserAssignment.agent_id.in_(page_agent_ids),
                 )
                 .order_by(AgentUserAssignment.id)
             )
         ).scalars()
     )
     assignments_by_agent = {row.agent_id: row for row in assignments}
-    agents = list(
-        (
-            await session.execute(
-                select(Agent)
-                .where(Agent.id.in_(agent_ids))
-                .order_by(Agent.name, Agent.id)
-            )
-        ).scalars()
-    )
     bindings = list(
         (
             await session.execute(
                 select(AgentPolarRAGInstanceBinding)
                 .options(selectinload(AgentPolarRAGInstanceBinding.instance))
-                .where(AgentPolarRAGInstanceBinding.agent_id.in_(agent_ids))
+                .where(AgentPolarRAGInstanceBinding.agent_id.in_(page_agent_ids))
                 .order_by(AgentPolarRAGInstanceBinding.id)
             )
         ).scalars()
-    ) if agent_ids else []
+    ) if page_agent_ids else []
     by_agent: dict[str, list[MyPolarRAGInstance]] = {}
     for binding in bindings:
         by_agent.setdefault(binding.agent_id, []).append(
             MyPolarRAGInstance(id=binding.instance.id, name=binding.instance.name)
         )
-    return [
-        _connection_response(
+    return Page(
+        items=[_connection_response(
             agent,
             assignments_by_agent.get(agent.id),
             by_agent.get(agent.id, []),
-            password_reveal_available=user.password_hash is not None,
+            # Retain the legacy field for older web clients. Token reveal is
+            # available to every authenticated owner, including SSO users.
+            password_reveal_available=True,
         )
-        for agent in agents
-    ]
+        for agent in agents],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 def _connection_response(
@@ -318,24 +336,10 @@ async def issue_token(
 @router.post("/{connection_id}/token/reveal", response_model=MyTokenResponse)
 async def reveal_token(
     connection_id: str,
-    body: PasswordRequest,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     assignment = await _owned_assignment(session, connection_id, user.id)
-    if user.auth_provider == AuthProvider.OIDC:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Password reveal is unavailable for SSO users; regenerate "
-                "the Token for one-time delivery"
-            ),
-        )
-    if (
-        user.password_hash is None
-        or not verify_password(body.password, user.password_hash)
-    ):
-        raise HTTPException(status_code=401, detail="Password verification failed")
     try:
         await agent_token_service.consume_reveal_budget(
             session, user.id, assignment.agent_id

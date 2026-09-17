@@ -53,8 +53,6 @@ from server.models import (
     ProvisioningBackendHealth,
     ProvisioningCapacity,
     User,
-    UserInstanceBinding,
-    UserInstanceBindingCapability,
 )
 from server.models.base import utc_now
 from tests._helpers import init_test_jwt_keys
@@ -88,6 +86,7 @@ USER_ONLY_TOOLS = {
     "doc_get_original",
     "doc_delete",
     "doc_rechunk",
+    "doc_list_chunks",
 }
 POLARRAG_TOOLS = USER_ONLY_TOOLS - {
     "set_default_instance",
@@ -101,7 +100,7 @@ POLARRAG_UPLOAD_TOOLS = {
 }
 
 
-def _user_token(user_id: str) -> str:
+def _user_token(user_id: str, credential_epoch: int) -> str:
     private_key, _ = _load_keys()
     issuer = get_config().server.public_base_url
     now = int(time.time())
@@ -114,6 +113,7 @@ def _user_token(user_id: str) -> str:
             "iat": now,
             "exp": now + 3600,
             "type": "access",
+            "credential_epoch": credential_epoch,
             "client_id": "test-client",
             "scope": "",
         },
@@ -247,6 +247,11 @@ async def catalog_setup():
             display_name="Granted User",
             auth_provider=AuthProvider.BUILTIN,
         )
+        agent_token_user = User(
+            external_id="catalog-agent-token-user",
+            display_name="Agent Token User",
+            auth_provider=AuthProvider.BUILTIN,
+        )
         provisioning_agent = Agent(name="catalog-provisioning-agent")
         direct_agent = Agent(name="catalog-direct-agent")
         owner_agent = Agent(name="catalog-owner-agent")
@@ -274,6 +279,7 @@ async def catalog_setup():
                 admin,
                 ungranted,
                 granted,
+                agent_token_user,
                 provisioning_agent,
                 direct_agent,
                 owner_agent,
@@ -336,17 +342,6 @@ async def catalog_setup():
             require_existing=False,
         )
 
-        user_binding = UserInstanceBinding(
-            user_id=granted.id,
-            instance_id=direct_instance.id,
-            credential_id=direct_credential.id,
-            permission=Permission.READWRITE,
-            capabilities=[
-                UserInstanceBindingCapability(
-                    capability=BindingCapability.DB_INSTANCE_CREDENTIALS_READ
-                )
-            ],
-        )
         direct_binding = AgentInstanceBinding(
             agent_id=direct_agent.id,
             instance_id=direct_instance.id,
@@ -358,6 +353,11 @@ async def catalog_setup():
                     capability=BindingCapability.DB_INSTANCE_DESCRIBE
                 ),
                 AgentInstanceBindingCapability(
+                    capability=(
+                        BindingCapability.DB_INSTANCE_CREDENTIALS_READ
+                    )
+                ),
+                AgentInstanceBindingCapability(
                     capability=BindingCapability.SQL_READ
                 ),
                 AgentInstanceBindingCapability(
@@ -365,7 +365,7 @@ async def catalog_setup():
                 ),
             ],
         )
-        session.add_all([user_binding, direct_binding])
+        session.add(direct_binding)
         await session.flush()
 
         resource = DBInstanceResource(
@@ -400,12 +400,17 @@ async def catalog_setup():
         _, owner_token = await get_or_create_token(
             session, owner_agent.id, None
         )
-        agent_user_assignment = AgentUserAssignment(
+        workspace_assignment = AgentUserAssignment(
             agent_id=direct_agent.id,
-            user_id=ungranted.id,
+            user_id=granted.id,
             created_by_user_id=admin.id,
         )
-        session.add(agent_user_assignment)
+        agent_user_assignment = AgentUserAssignment(
+            agent_id=direct_agent.id,
+            user_id=agent_token_user.id,
+            created_by_user_id=admin.id,
+        )
+        session.add_all([workspace_assignment, agent_user_assignment])
         await session.flush()
         _, agent_user_token = await agent_user_token_service.issue_token(
             session, agent_user_assignment.id
@@ -413,10 +418,13 @@ async def catalog_setup():
         await session.commit()
         result = {
             "factory": factory,
-            "ungranted_token": _user_token(ungranted.id),
-            "ungranted_user_id": ungranted.id,
-            "granted_token": _user_token(granted.id),
-            "granted_binding_id": user_binding.id,
+            "ungranted_token": _user_token(
+                ungranted.id, ungranted.credential_epoch
+            ),
+            "granted_token": _user_token(
+                granted.id, granted.credential_epoch
+            ),
+            "granted_user_id": granted.id,
             "direct_instance_id": direct_instance.id,
             "provisioning_token": provisioning_token,
             "provisioning_agent_id": provisioning_agent.id,
@@ -450,6 +458,8 @@ async def test_ungranted_user_does_not_see_database_instance_tools(
         for tool in await _tools(client, catalog_setup["ungranted_token"])
     }
     assert not DB_TOOLS & names
+    assert AGENT_SQL_TOOLS.isdisjoint(names)
+    assert POLARRAG_TOOLS.isdisjoint(names)
     assert "list_instances" not in names
 
 
@@ -505,7 +515,7 @@ async def test_user_sees_polarrag_tools_and_agent_does_not(
         tool["name"]
         for tool in await _tools(
             client,
-            catalog_setup["ungranted_token"],
+            catalog_setup["granted_token"],
         )
     }
     agent_names = {
@@ -572,7 +582,7 @@ async def test_polarrag_tool_rejects_acl_context_injection(
 ):
     result = await _call_tool(
         client,
-        catalog_setup["ungranted_token"],
+        catalog_setup["granted_token"],
         "kb_search",
         {
             "query": "acl",
@@ -595,7 +605,7 @@ async def test_polarrag_tool_call_writes_sanitized_user_audit(
 ):
     result = await _call_tool(
         client,
-        catalog_setup["ungranted_token"],
+        catalog_setup["granted_token"],
         "list_knowledge_resources",
         {},
     )
@@ -610,7 +620,7 @@ async def test_polarrag_tool_call_writes_sanitized_user_audit(
                 )
             )
         ).scalar_one()
-    assert row.actor_user_id == catalog_setup["ungranted_user_id"]
+    assert row.actor_user_id == catalog_setup["granted_user_id"]
     assert row.actor_agent_id is None
     assert row.duration_ms is not None
     metadata = json.loads(row.metadata_json or "{}")
@@ -824,8 +834,8 @@ async def test_describe_reauthorizes_direct_binding_after_catalog_list(
 
     async with catalog_setup["factory"]() as session:
         binding = await session.get(
-            UserInstanceBinding,
-            catalog_setup["granted_binding_id"],
+            AgentInstanceBinding,
+            catalog_setup["direct_binding_id"],
         )
         assert binding is not None
         binding.enabled = False
@@ -861,8 +871,8 @@ async def test_invalid_direct_credential_never_lists_or_decrypts(
     }
     async with catalog_setup["factory"]() as session:
         binding = await session.get(
-            UserInstanceBinding,
-            catalog_setup["granted_binding_id"],
+            AgentInstanceBinding,
+            catalog_setup["direct_binding_id"],
         )
         assert binding is not None
         credential = await session.get(
@@ -872,7 +882,7 @@ async def test_invalid_direct_credential_never_lists_or_decrypts(
         if mutation == "admin_capability":
             credential.capability = CredentialCapability.ADMIN
         elif mutation == "missing":
-            binding.credential_id = None
+            binding.credential_id = str(uuid.uuid4())
         elif mutation == "empty_ciphertext":
             credential.password_ciphertext = ""
         else:
@@ -923,8 +933,8 @@ async def test_corrupt_physical_ciphertext_returns_stable_not_found(
 ):
     async with catalog_setup["factory"]() as session:
         binding = await session.get(
-            UserInstanceBinding,
-            catalog_setup["granted_binding_id"],
+            AgentInstanceBinding,
+            catalog_setup["direct_binding_id"],
         )
         assert binding is not None
         credential = await session.get(
@@ -1365,7 +1375,7 @@ async def test_read_audit_failure_does_not_mask_list_result(
 async def test_disabled_optional_audit_does_not_suppress_required_create(
     client, catalog_setup
 ):
-    audit_config = get_config().sql_security.audit
+    audit_config = get_config().audit
     original_enabled = audit_config.enabled
     audit_config.enabled = False
     try:

@@ -6,9 +6,13 @@
 
 API 与授权契约参见 [PolarRAG MCP 集成](polarrag-mcp.md)。完整 PAS 安装流程请使用仓库中的 `deploy-polardb-agentic-server` Skill。
 
+新安装默认关闭知识库，请先完成[启用与停用知识库](activation.md)中的流程。
+
 ## 交付结果与前置条件
 
-完成后，用户可以使用 `pas_user_agent_` Token 连接 MCP 客户端，发现有权限的知识资源，检索或读取文档，并通过受支持的上传客户端上传本地文档。
+完成后，用户只需在支持 OAuth 的 MCP Client 中配置 PAS 地址，通过浏览器完成企业
+SSO，即可发现有权限的知识资源、检索或读取文档，并通过受支持的上传客户端上传
+本地文档。不支持浏览器 OAuth 的 Client 仍可使用静态 `pas_user_agent_` Token。
 
 本文使用 PAS `v0.0.8` 及后续版本提供的上传契约：MCP 目录只暴露
 `prepare_document_upload` 和
@@ -45,7 +49,7 @@ checkout 中的 `docs/en/knowledge/polarrag-mcp.md`。执行本文前，必须�
 
 仅能打开控制台或看到容器运行并不足以继续。若 PAS 仍处于 `SETUP`，先完成初始化；若 `config_status` 不是 `CURRENT`，先完成 PAS 要求的配置或迁移，再注册 PolarRAG。
 
-## 2. 注册 PolarRAG 并启用 Space
+## 2. 注册 PolarRAG 并核验 Space
 
 在 **管理 > 实例** 中选择 **注册实例 > PolarRAG**，填写：
 
@@ -54,7 +58,7 @@ checkout 中的 `docs/en/knowledge/polarrag-mcp.md`。执行本文前，必须�
 - OpenSearch 账号和密码。
 - 与 Endpoint 证书匹配的 TLS 校验设置。
 
-不要把凭据嵌入 Endpoint URL。注册后确认实例为活动状态，打开实例的 **Spaces** 抽屉，启用目标 Space 并同步目录。
+不要把凭据嵌入 Endpoint URL。注册后确认实例为活动状态。PAS 会自动启用每个新发现的活动 Space，并执行首次目录同步；打开实例的 **Spaces** 抽屉核验目标 Space 及其资源即可。管理员显式停用过的 Space 会保持停用，仅在需要恢复它时使用**启用**。
 
 PAS 会验证所需的上游路由。如果实例或 Space 报告 `capability_missing`，应停止交付并把缺失的能力名称交给 PolarRAG 运维人员处理，不能通过放宽 PAS 授权绕过。[集成参考](polarrag-mcp.md)列出了目录、文档与上传所需的能力。
 
@@ -91,35 +95,41 @@ PAS 会执行写入并删除测试对象的凭据探测；策略还必须允许�
 
 在 **管理 > Agents** 中创建 Agent。其机器 Token 以 `pas_agent_` 开头；如其他 PAS 自动化需要可妥善保存，但不能用于 PolarRAG，因为机器 Token 不会获得 PolarRAG 工具。
 
-打开 Agent 的 PolarRAG 设置并执行：
+在 Agent 的 PolarRAG 设置中打开**配置企业访问**并执行：
 
-1. 绑定已注册的 PolarRAG 实例。
-2. 设置允许的 `PUBLIC` 范围：全部、指定资源或无。
-3. 分配前面创建的 PAS 用户。
+1. 选择活动的 PolarRAG 实例，并从每个实例中至少选择一个已启用 Space。
+2. 选择身份源并分配前面创建的 PAS 用户。
+3. 预览并确认；PAS 会在同一事务中创建缺失的 Agent-实例绑定。
+4. 如需收窄权限，再使用高级控件把该绑定的 `PUBLIC` 范围设置为全部、指定资源或无。
 
 用户分配、原生 Principal、活动 Space、资源 ACL 与 Agent 绑定必须同时匹配。Agent 绑定不能扩大 PolarRAG 授权，也不能把 `PERSONAL` 资源授予其他用户。
 
-## 7. 派发并连接用户 Agent Token
+## 7. 选择 Agent 并连接
 
-让用户自行登录，在 **我的实例 > MCP 连接** 中选择已分配的 Agent，派发用户 Agent Token，并可选设置过期时间。Token 以 `pas_user_agent_` 开头。内置用户确认密码后可以 Reveal 现有 Token；SSO 用户新签发或重新生成的明文只返回一次。管理员只能查看状态或强制吊销，不能读取明文。
-
-把 PAS 生成的 MCP 配置复制到目标客户端。典型 HTTP 连接如下：
+让用户自行登录，并在**我的实例**中选择已分配的 Agent。该选择会成为 User
+Workspace 的默认 Agent。支持 OAuth 的 MCP Client 只需要 PAS 地址：
 
 ```json
 {
   "mcpServers": {
     "pas-polarrag": {
       "type": "http",
-      "url": "https://pas.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer pas_user_agent_REDACTED"
-      }
+      "url": "https://pas.example.com/mcp"
     }
   }
 }
 ```
 
-应使用 PAS 实际生成的 URL，反向代理可能带有不同路径前缀。Token 一旦泄露应立即吊销并重新派发，不要尝试修改原 Token。
+Client 会打开浏览器完成企业 SSO，并自动获取和刷新 PAS Access Token。最终
+`/mcp` 请求使用 PAS Bearer Token，不直接使用外部身份提供方 Token。
+
+不支持浏览器 OAuth 的 Client 仍可由用户在**我的实例 > MCP 连接**签发
+`pas_user_agent_` Token，并可选设置过期时间，再复制静态 Bearer 配置。
+内置用户确认密码后可以 Reveal 现有 Token；SSO 用户新签发或重新生成的明文
+只返回一次。管理员只能查看状态或强制吊销，不能读取明文。
+
+应使用 PAS 实际生成的 URL，反向代理可能带有不同路径前缀。静态 Token 一旦
+泄露应立即吊销并重新派发，不要尝试修改原 Token。
 
 ## 8. 通过 Agent 上传文档
 
@@ -137,11 +147,13 @@ PAS 托管上传上限为 `100 MiB`；会话有效期为 `24` 小时，常规分
 
 ## 可用的 MCP 工具
 
-正确授权的 `pas_user_agent_` 连接可以提供以下 PolarRAG 工具：
+正确授权的 Workspace OAuth 或 `pas_user_agent_` 连接可以提供以下
+PolarRAG 工具：
 
 - `list_knowledge_resources`：列出调用者有权访问的不透明资源句柄。
 - `kb_search`：在单个资源中检索，并返回排序后的文档摘要。
 - `kb_fetch_context`：根据选定检索结果获取可溯源上下文。
+- `doc_list_chunks`：使用 offset 分页枚举已授权文档的 Chunk。
 - `doc_find_by_name`：按名称查找文档，不暴露上游知识库 ID。
 - `doc_status`：查看摄取或处理状态。
 - `doc_recall`：召回文档已索引的 Chunk。

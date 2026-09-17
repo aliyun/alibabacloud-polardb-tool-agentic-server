@@ -56,8 +56,12 @@ const bindings = [
 
 describe('DedicatedPoolRoutes', () => {
   beforeEach(() => {
-    vi.mocked(listDedicatedPools).mockResolvedValue({ data: pools } as never)
-    vi.mocked(listProvisioningBindings).mockResolvedValue({ data: bindings } as never)
+    vi.mocked(listDedicatedPools).mockResolvedValue({
+      data: { items: pools, total: pools.length, offset: 0, limit: 20 },
+    } as never)
+    vi.mocked(listProvisioningBindings).mockResolvedValue({
+      data: { items: bindings, total: bindings.length, offset: 0, limit: 20 },
+    } as never)
     vi.mocked(reorderDedicatedProvisioningBindings).mockResolvedValue({
       data: [bindings[1], bindings[0]],
     } as never)

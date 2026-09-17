@@ -38,7 +38,7 @@ PAS 动态开放工具。Agent 只能看到有效绑定和资源所有权允许�
 `list_branches`、`create_branch` 和 `delete_branch`。Agent 不应假定这些工具
 一定存在。具有可见 PolarRAG 资源的已认证用户还会获得
 `list_knowledge_resources`、`kb_search`、`kb_fetch_context`、
-`doc_find_by_name`、`doc_status`、`doc_recall`、`doc_get_original`、
+`doc_list_chunks`、`doc_find_by_name`、`doc_status`、`doc_recall`、`doc_get_original`、
 `doc_delete` 和 `doc_rechunk`。当所选 Space 已可上传时，工具目录还会包含
 `prepare_document_upload` 和 `complete_document_upload`。机器 `pas_agent_`
 Token 永远不会获得 PolarRAG Tool。`pas_user_agent_` Token 同时应用被分配用户

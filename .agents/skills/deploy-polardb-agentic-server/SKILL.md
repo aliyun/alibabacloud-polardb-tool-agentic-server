@@ -39,17 +39,34 @@ Supply non-secret inputs as environment variables:
 
 | Variable | Required | Default |
 |---|---:|---|
-| `POLARDB_HOST` | yes | none |
-| `POLARDB_USER` | yes | none |
-| `POLARDB_PORT` | no | `3306` |
-| `PAS_DB_NAME` | no | `pas_meta` |
+| `PAS_DATABASE_ENGINE` | no | `mysql` |
+| `POLARDB_HOST` | MySQL only | none |
+| `POLARDB_USER` | MySQL only | none |
+| `POLARDB_PORT` | MySQL only | `3306` |
+| `PAS_DB_NAME` | MySQL only | `pas_meta` |
+| `PAS_SQLITE_VOLUME` | SQLite only | `${PAS_COMPOSE_PROJECT}-sqlite-data` |
+| `PAS_PORT` | no | `18760` |
 | `PAS_HOME` | no | `/data/polar-mcp` |
 | `PAS_VERSION` | no | bundled release |
 | `PAS_REF` | no | `v${PAS_VERSION}` |
 | `PAS_REPO` | no | official GitHub repository |
 | `PAS_UPDATE_REPO` | no | `1` |
 
-For the secret, prefer `POLARDB_PASSWORD_FILE=/path/to/mode-0600-file`. An interactive terminal prompt is the fallback. `POLARDB_PASSWORD` is supported for non-interactive automation but must not be placed in a command line or agent conversation.
+`PAS_DATABASE_ENGINE` is Docker-only. Its default `mysql` preserves the existing
+external-MySQL contract, including `POLARDB_PASSWORD_FILE=/path/to/mode-0600-file`
+or an interactive password prompt. `POLARDB_PASSWORD` is supported for
+non-interactive MySQL automation but must not be placed in a command line or
+agent conversation.
+
+Set `PAS_DATABASE_ENGINE=sqlite` explicitly only for a clean single-host
+deployment that does not use MySQL. SQLite mode rejects every `POLARDB_*`
+input, needs no database password or host SQLite installation, and stores its
+database and root key in the persistent Docker named volume
+`PAS_SQLITE_VOLUME`. The volume is external to Compose, so both `docker compose
+down` and `docker compose down -v` retain it; deletion requires a separate,
+explicit Docker volume action. Initialization holds an exclusive volume lock
+and never replaces an existing root key. Do not use the SQLite mode for Source
+deployment.
 
 The default path fetches and checks out the immutable release selected by `PAS_REF` in detached-HEAD mode. An existing checkout must be clean and its `origin` must match `PAS_REPO`. Set `PAS_UPDATE_REPO=0` only for a deliberately pre-positioned PAS checkout; this expert override keeps the current commit but still verifies PAS project markers.
 
@@ -67,6 +84,13 @@ Resolve this skill's directory first; script paths below are relative to that di
      bash scripts/deploy-docker.sh --validate-only
    ```
 
+   Explicit Docker SQLite with an optional alternate host port:
+
+   ```bash
+   PAS_DATABASE_ENGINE=sqlite PAS_PORT=18782 \
+     bash scripts/deploy-docker.sh --validate-only
+   ```
+
    Source (`SKIP_WEB=1` is optional):
 
    ```bash
@@ -75,7 +99,9 @@ Resolve this skill's directory first; script paths below are relative to that di
    ```
 
 3. Report non-secret validation results. Continue only if the target and chosen mode are correct and validation passed.
-4. On the target host, set `POLARDB_PASSWORD_FILE` or let the selected script prompt on its TTY. Remove `--validate-only` from the validated command; do not switch scripts.
+4. In MySQL mode, on the target host, set `POLARDB_PASSWORD_FILE` or let the
+   selected script prompt on its TTY. SQLite mode has no database password.
+   Remove `--validate-only` from the validated command; do not switch scripts.
 5. Verify the selected mode:
 
    - Docker: verify `http://127.0.0.1:${PAS_PORT:-18760}/readyz` and inspect Compose service status.
@@ -103,7 +129,12 @@ branch for that immutable ref.
 For a source deployment, explicitly set that immutable `PAS_REF`. For Docker,
 also set an approved `PAS_IMAGE` built from the same ref, or explicitly set
 `PAS_ALLOW_LOCAL_BUILD=1` to force a local build of that checked-out ref; this
-does not inspect or pull the default image. On the target, stop
+does not inspect or pull the default image. Local builds require Docker Buildx:
+the script checks it before it creates or updates `PAS_HOME`. If unavailable,
+install a trusted Docker Buildx plugin, or use an approved `PAS_IMAGE` with
+`PAS_ALLOW_LOCAL_BUILD=0`; the script never downloads or installs Buildx. When
+Docker is already available, `--validate-only` performs this check without host
+changes. On the target, stop
 before onboarding if the required document file is absent or the MCP catalog
 does not match the current onboarding upload contract.
 
@@ -144,8 +175,12 @@ Report PAS deployment and PolarRAG MCP delivery as separate statuses. If this op
 
 ## Mode-specific result
 
-- Docker packages the web console, API, and MCP endpoint on `${PAS_PORT:-18760}`. From `$PAS_HOME`, inspect the generated Compose project with `docker compose --env-file .secrets/pas-compose.env -f deploy/compose/compose.external-mysql.yaml ps`.
-- Docker pulls the image matching the bundled release by default and fails closed if it is unavailable. Use an approved fully qualified `PAS_IMAGE`, or explicitly set `PAS_ALLOW_LOCAL_BUILD=1` to force a local build of the checked-out `PAS_REF` without pulling the default image.
+- Docker packages the web console, API, and MCP endpoint on `${PAS_PORT:-18760}`.
+  MySQL mode uses `deploy/compose/compose.external-mysql.yaml` and the protected
+  `$PAS_HOME/.secrets/pas-compose.env`; SQLite mode uses
+  `deploy/compose/compose.sqlite.yaml` and has no host-side database/key env
+  file. Both modes run the migration before starting the server.
+- Docker pulls the image matching the bundled release by default and fails closed if it is unavailable. Use an approved fully qualified `PAS_IMAGE`, or explicitly set `PAS_ALLOW_LOCAL_BUILD=1` to force a local Buildx build of the checked-out `PAS_REF` without pulling the default image.
 - Source serves backend/MCP on `18760` and the optional web console on `18761`. Inspect `$PAS_HOME/run/backend.out` and `$PAS_HOME/run/web.out`.
 - The bootstrap-token file is mode `0600` and is created only while PAS is in `SETUP` mode.
 - Restrict any inbound console or MCP ports to required sources rather than opening them globally.

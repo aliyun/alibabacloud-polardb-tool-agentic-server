@@ -1,54 +1,50 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Modal, Select, Space, Table, Tag, Typography } from 'antd'
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Typography,
+} from 'antd'
 import { useTranslation } from 'react-i18next'
 
 import {
   createAgentGroupAssignment,
   createAgentPolarRAGBinding,
   createAgentUserAssignment,
+  createAllAgentUserAssignments,
   deleteAgentGroupAssignment,
   deleteAgentUserAssignment,
   forceRevokeAgentUserToken,
   listAgentGroupAssignments,
   listAgentGroupOptions,
+  listAgentPolarRAGBindings,
   listAgentUserAssignments,
-  type AgentGroupAssignment,
+  listAgentUserOptions,
   type AgentGroupOption,
+  type AgentGroupAssignment,
   type AgentPolarRAGBinding,
+  type AgentUserOption,
   type AgentUserAssignment,
 } from '../../api/agents'
-import api, { getAPIErrorMessage } from '../../api/client'
+import { getAPIErrorMessage } from '../../api/client'
 import { formatDateTime } from '../../i18n/format'
 import {
   listPolarRAGInstances,
   type PolarRAGInstance,
 } from '../../api/polarrag'
 import EnterpriseAccessDrawer from './EnterpriseAccessDrawer'
+import KnowledgeBindingsPanel from './KnowledgeBindingsPanel'
 
 const { Text, Title } = Typography
 
-interface UserOption {
-  id: string
-  display_name: string
-  external_id: string
-  status: string
-}
-
-async function listAllUsers(): Promise<UserOption[]> {
-  const users: UserOption[] = []
-  let offset = 0
-  while (true) {
-    const response = await api.get<{
-      items: UserOption[]
-      total: number
-    }>('/api/users', { params: { offset, limit: 100 } })
-    users.push(...response.data.items)
-    offset += response.data.items.length
-    if (offset >= response.data.total || response.data.items.length === 0) {
-      return users
-    }
-  }
-}
+const ASSIGNMENT_PAGE_SIZE = 20
+const CANDIDATE_PAGE_SIZE = 50
 
 function groupKey(group: AgentGroupOption): string {
   if (group.group_kind === 'department') {
@@ -74,16 +70,36 @@ export default function PolarRAGAccessPanel({
 }) {
   const { t, i18n } = useTranslation()
   const [instances, setInstances] = useState<PolarRAGInstance[]>([])
-  const [users, setUsers] = useState<UserOption[]>([])
   const [assignments, setAssignments] = useState<AgentUserAssignment[]>([])
-  const [groupOptions, setGroupOptions] = useState<AgentGroupOption[]>([])
+  const [assignmentTotal, setAssignmentTotal] = useState(0)
+  const [assignmentOffset, setAssignmentOffset] = useState(0)
+  const [assignmentSearch, setAssignmentSearch] = useState('')
   const [groupAssignments, setGroupAssignments] = useState<
     AgentGroupAssignment[]
   >([])
-  const [selectedInstance, setSelectedInstance] = useState<string>()
+  const [groupAssignmentTotal, setGroupAssignmentTotal] = useState(0)
+  const [groupAssignmentOffset, setGroupAssignmentOffset] = useState(0)
+  const [groupAssignmentSearch, setGroupAssignmentSearch] = useState('')
+  const [userOptions, setUserOptions] = useState<AgentUserOption[]>([])
+  const [userOptionTotal, setUserOptionTotal] = useState(0)
+  const [userOptionOffset, setUserOptionOffset] = useState(0)
+  const [userOptionSearch, setUserOptionSearch] = useState('')
+  const [groupOptions, setGroupOptions] = useState<AgentGroupOption[]>([])
+  const [groupOptionTotal, setGroupOptionTotal] = useState(0)
+  const [groupOptionOffset, setGroupOptionOffset] = useState(0)
+  const [groupOptionSearch, setGroupOptionSearch] = useState('')
   const [selectedUsers, setSelectedUsers] = useState<string[]>([])
+  const [selectedUserOptions, setSelectedUserOptions] = useState<
+    AgentUserOption[]
+  >([])
   const [selectedGroups, setSelectedGroups] = useState<string[]>([])
+  const [selectedGroupOptions, setSelectedGroupOptions] = useState<
+    AgentGroupOption[]
+  >([])
+  const [allUsersSelected, setAllUsersSelected] = useState(false)
+  const [selectedInstance, setSelectedInstance] = useState<string>()
   const [loading, setLoading] = useState(true)
+  const [candidateLoading, setCandidateLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [enterpriseAccessOpen, setEnterpriseAccessOpen] = useState(false)
@@ -94,23 +110,27 @@ export default function PolarRAGAccessPanel({
     try {
       const [
         instanceResponse,
-        userResponse,
         assignmentResponse,
-        groupOptionResponse,
         groupAssignmentResponse,
       ] =
         await Promise.all([
           listPolarRAGInstances(),
-          listAllUsers(),
-          listAgentUserAssignments(agentId),
-          listAgentGroupOptions(agentId),
-          listAgentGroupAssignments(agentId),
+          listAgentUserAssignments(agentId, {
+            search: assignmentSearch || undefined,
+            offset: assignmentOffset,
+            limit: ASSIGNMENT_PAGE_SIZE,
+          }),
+          listAgentGroupAssignments(agentId, {
+            search: groupAssignmentSearch || undefined,
+            offset: groupAssignmentOffset,
+            limit: ASSIGNMENT_PAGE_SIZE,
+          }),
         ])
       setInstances(instanceResponse.data.items)
-      setUsers(userResponse)
-      setAssignments(assignmentResponse.data)
-      setGroupOptions(groupOptionResponse.data)
-      setGroupAssignments(groupAssignmentResponse.data)
+      setAssignments(assignmentResponse.data.items)
+      setAssignmentTotal(assignmentResponse.data.total)
+      setGroupAssignments(groupAssignmentResponse.data.items)
+      setGroupAssignmentTotal(groupAssignmentResponse.data.total)
     } catch (requestError) {
       setError(
         getAPIErrorMessage(requestError, t('polarragAccess.loadFailed')),
@@ -118,35 +138,81 @@ export default function PolarRAGAccessPanel({
     } finally {
       setLoading(false)
     }
-  }, [agentId, t])
+  }, [
+    agentId,
+    assignmentSearch,
+    assignmentOffset,
+    groupAssignmentSearch,
+    groupAssignmentOffset,
+    t,
+  ])
 
   useEffect(() => {
     void load()
   }, [load])
 
+  const loadUserOptions = useCallback(async () => {
+    setCandidateLoading(true)
+    try {
+      const response = await listAgentUserOptions(agentId, {
+        search: userOptionSearch || undefined,
+        offset: userOptionOffset,
+        limit: CANDIDATE_PAGE_SIZE,
+      })
+      setUserOptions(response.data.items)
+      setUserOptionTotal(response.data.total)
+    } catch (requestError) {
+      setError(
+        getAPIErrorMessage(requestError, t('polarragAccess.loadFailed')),
+      )
+    } finally {
+      setCandidateLoading(false)
+    }
+  }, [agentId, t, userOptionOffset, userOptionSearch])
+
+  const loadGroupOptions = useCallback(async () => {
+    setCandidateLoading(true)
+    try {
+      const response = await listAgentGroupOptions(agentId, {
+        search: groupOptionSearch || undefined,
+        offset: groupOptionOffset,
+        limit: CANDIDATE_PAGE_SIZE,
+      })
+      setGroupOptions(response.data.items)
+      setGroupOptionTotal(response.data.total)
+    } catch (requestError) {
+      setError(
+        getAPIErrorMessage(requestError, t('polarragAccess.loadFailed')),
+      )
+    } finally {
+      setCandidateLoading(false)
+    }
+  }, [agentId, groupOptionOffset, groupOptionSearch, t])
+
+  useEffect(() => {
+    void loadUserOptions()
+  }, [loadUserOptions])
+
+  useEffect(() => {
+    void loadGroupOptions()
+  }, [loadGroupOptions])
+
   const availableInstances = useMemo(() => {
     const bound = new Set(bindings.map((row) => row.polarrag_instance_id))
     return instances.filter((instance) => !bound.has(instance.id))
   }, [bindings, instances])
-  const availableUsers = useMemo(() => {
-    const assigned = new Set(assignments.map((row) => row.user_id))
-    return users.filter((user) => !assigned.has(user.id))
-  }, [assignments, users])
-  const allAvailableUsersSelected =
-    availableUsers.length > 0 &&
-    availableUsers.every((user) => selectedUsers.includes(user.id))
-  const availableGroups = useMemo(() => {
-    const assigned = new Set(groupAssignments.map(groupKey))
-    return groupOptions.filter((group) => !assigned.has(groupKey(group)))
-  }, [groupAssignments, groupOptions])
-  const selectableGroups = useMemo(
-    () =>
-      availableGroups.filter(
-        (group) => group.group_kind !== 'identity_source_all',
-      ),
-    [availableGroups],
-  )
-
+  const candidateUsers = useMemo(() => {
+    const byId = new Map(selectedUserOptions.map((user) => [user.id, user]))
+    for (const user of userOptions) byId.set(user.id, user)
+    return [...byId.values()]
+  }, [selectedUserOptions, userOptions])
+  const candidateGroups = useMemo(() => {
+    const byKey = new Map(
+      selectedGroupOptions.map((group) => [groupKey(group), group]),
+    )
+    for (const group of groupOptions) byKey.set(groupKey(group), group)
+    return [...byKey.values()]
+  }, [groupOptions, selectedGroupOptions])
   const groupLabel = (group: AgentGroupOption): string => {
     const members = t('polarragAccess.memberCount', {
       count: group.member_count,
@@ -163,6 +229,30 @@ export default function PolarRAGAccessPanel({
     return `${t('polarragAccess.enterprise')} · ${group.provider} · ${group.principal_id} · ${group.identity_domain} (${members})`
   }
 
+  const changeSelectedUsers = (ids: string[]) => {
+    const byId = new Map(candidateUsers.map((user) => [user.id, user]))
+    setSelectedUsers(ids)
+    setSelectedUserOptions(
+      ids.flatMap((id) => {
+        const user = byId.get(id)
+        return user ? [user] : []
+      }),
+    )
+  }
+
+  const changeSelectedGroups = (keys: string[]) => {
+    const byKey = new Map(
+      candidateGroups.map((group) => [groupKey(group), group]),
+    )
+    setSelectedGroups(keys)
+    setSelectedGroupOptions(
+      keys.flatMap((key) => {
+        const group = byKey.get(key)
+        return group ? [group] : []
+      }),
+    )
+  }
+
   const mutate = async (operation: () => Promise<unknown>) => {
     setBusy(true)
     setError(null)
@@ -175,6 +265,18 @@ export default function PolarRAGAccessPanel({
       )
     } finally {
       setBusy(false)
+    }
+  }
+
+  const refreshAfterEnterpriseAccess = async () => {
+    await load()
+    try {
+      const bindingResponse = await listAgentPolarRAGBindings(agentId)
+      onBindingsChange(bindingResponse.data.items)
+    } catch (requestError) {
+      setError(
+        getAPIErrorMessage(requestError, t('polarragAccess.loadFailed')),
+      )
     }
   }
 
@@ -235,6 +337,7 @@ export default function PolarRAGAccessPanel({
           {t('polarragAccess.bindInstance')}
         </Button>
       </Space.Compact>
+      <KnowledgeBindingsPanel agentId={agentId} />
       <div>
         <Title level={4} style={{ marginBlock: 0 }}>
           {t('polarragAccess.assignedGroups')}
@@ -244,49 +347,123 @@ export default function PolarRAGAccessPanel({
         </Text>
       </div>
       <Space.Compact style={{ width: '100%' }}>
+        <Checkbox
+          aria-label={t('polarragAccess.selectCurrentGroupPage')}
+          checked={
+            groupOptions.length > 0 &&
+            groupOptions
+              .filter((group) => group.group_kind !== 'identity_source_all')
+              .every((group) => selectedGroups.includes(groupKey(group)))
+          }
+          onChange={(event) => {
+            const pageKeys = groupOptions
+              .filter((group) => group.group_kind !== 'identity_source_all')
+              .map(groupKey)
+            changeSelectedGroups(
+              event.target.checked
+                ? [...new Set([...selectedGroups, ...pageKeys])]
+                : selectedGroups.filter((key) => !pageKeys.includes(key)),
+            )
+          }}
+          style={{ alignSelf: 'center', paddingInline: 8 }}
+        >
+          {t('polarragAccess.selectCurrentGroupPage')}
+        </Checkbox>
         <Select
           aria-label={t('polarragAccess.group')}
           mode="multiple"
           value={selectedGroups}
-          onChange={setSelectedGroups}
           placeholder={t('polarragAccess.selectGroup')}
-          showSearch
-          optionFilterProp="label"
-          options={availableGroups.map((group) => ({
+          options={candidateGroups.map((group) => ({
             value: groupKey(group),
             label: groupLabel(group),
           }))}
+          onChange={changeSelectedGroups}
+          showSearch
+          filterOption={false}
+          loading={candidateLoading}
+          onSearch={(search) => {
+            setGroupOptionSearch(search)
+            setGroupOptionOffset(0)
+          }}
+          popupRender={(menu) => (
+            <>
+              {menu}
+              <Space style={{ display: 'flex', justifyContent: 'center', padding: 8 }}>
+                <Button
+                  aria-label={t('polarragAccess.previousCandidatePage')}
+                  disabled={groupOptionOffset === 0}
+                  size="small"
+                  type="text"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() =>
+                    setGroupOptionOffset(
+                      Math.max(0, groupOptionOffset - CANDIDATE_PAGE_SIZE),
+                    )
+                  }
+                >
+                  ‹
+                </Button>
+                <Text type="secondary">
+                  {Math.floor(groupOptionOffset / CANDIDATE_PAGE_SIZE) + 1} /{' '}
+                  {Math.max(1, Math.ceil(groupOptionTotal / CANDIDATE_PAGE_SIZE))}
+                </Text>
+                <Button
+                  aria-label={t('polarragAccess.nextCandidatePage')}
+                  disabled={groupOptionOffset + CANDIDATE_PAGE_SIZE >= groupOptionTotal}
+                  size="small"
+                  type="text"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() =>
+                    setGroupOptionOffset(groupOptionOffset + CANDIDATE_PAGE_SIZE)
+                  }
+                >
+                  ›
+                </Button>
+              </Space>
+            </>
+          )}
           style={{ flex: 1 }}
         />
         <Button
-          disabled={selectableGroups.length === 0 || busy}
-          onClick={() => setSelectedGroups(selectableGroups.map(groupKey))}
-        >
-          {t('polarragAccess.selectAllGroups')}
-        </Button>
-        <Button
           type="primary"
-          disabled={selectedGroups.length === 0}
+          disabled={selectedGroups.length === 0 || busy}
           loading={busy}
           onClick={() => {
-            const groups = availableGroups.filter((option) =>
-              selectedGroups.includes(groupKey(option)),
-            )
+            const groups = selectedGroupOptions
             if (groups.length === 0) return
             void mutate(() =>
               Promise.all(
                 groups.map((group) => createAgentGroupAssignment(agentId, group)),
               ),
-            ).then(() => setSelectedGroups([]))
+            ).then(() => changeSelectedGroups([]))
           }}
         >
           {t('polarragAccess.assignGroups')}
         </Button>
       </Space.Compact>
+      <Input.Search
+        allowClear
+        aria-label={t('polarragAccess.searchAssignedGroups')}
+        placeholder={t('polarragAccess.searchAssignedGroups')}
+        value={groupAssignmentSearch}
+        onChange={(event) => {
+          setGroupAssignmentSearch(event.target.value)
+          setGroupAssignmentOffset(0)
+        }}
+      />
       <Table
         rowKey="id"
         loading={loading}
-        pagination={false}
+        pagination={{
+          current:
+            Math.floor(groupAssignmentOffset / ASSIGNMENT_PAGE_SIZE) + 1,
+          pageSize: ASSIGNMENT_PAGE_SIZE,
+          total: groupAssignmentTotal,
+          showSizeChanger: false,
+          onChange: (page) =>
+            setGroupAssignmentOffset((page - 1) * ASSIGNMENT_PAGE_SIZE),
+        }}
         dataSource={groupAssignments}
         locale={{ emptyText: t('polarragAccess.noGroups') }}
         columns={[
@@ -350,57 +527,138 @@ export default function PolarRAGAccessPanel({
         </Text>
       </div>
       <Space.Compact style={{ width: '100%' }}>
+        <Checkbox
+          aria-label={t('polarragAccess.selectCurrentUserPage')}
+          checked={
+            userOptions.length > 0 &&
+            userOptions.every((user) => selectedUsers.includes(user.id))
+          }
+          disabled={allUsersSelected}
+          onChange={(event) => {
+            const pageIds = userOptions.map((user) => user.id)
+            changeSelectedUsers(
+              event.target.checked
+                ? [...new Set([...selectedUsers, ...pageIds])]
+                : selectedUsers.filter((id) => !pageIds.includes(id)),
+            )
+          }}
+          style={{ alignSelf: 'center', paddingInline: 8 }}
+        >
+          {t('polarragAccess.selectCurrentUserPage')}
+        </Checkbox>
         <Select
           aria-label={t('polarragAccess.user')}
           mode="multiple"
           value={selectedUsers}
-          onChange={setSelectedUsers}
           placeholder={t('polarragAccess.selectUser')}
-          showSearch
-          optionFilterProp="label"
-          options={availableUsers.map((user) => ({
+          options={candidateUsers.map((user) => ({
             value: user.id,
             label: `${user.display_name} (${user.external_id})`,
           }))}
+          onChange={changeSelectedUsers}
+          showSearch
+          filterOption={false}
+          disabled={allUsersSelected}
+          loading={candidateLoading}
+          onSearch={(search) => {
+            setUserOptionSearch(search)
+            setUserOptionOffset(0)
+          }}
+          popupRender={(menu) => (
+            <>
+              {menu}
+              <Space style={{ display: 'flex', justifyContent: 'center', padding: 8 }}>
+                <Button
+                  aria-label={t('polarragAccess.previousCandidatePage')}
+                  disabled={userOptionOffset === 0}
+                  size="small"
+                  type="text"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() =>
+                    setUserOptionOffset(
+                      Math.max(0, userOptionOffset - CANDIDATE_PAGE_SIZE),
+                    )
+                  }
+                >
+                  ‹
+                </Button>
+                <Text type="secondary">
+                  {Math.floor(userOptionOffset / CANDIDATE_PAGE_SIZE) + 1} /{' '}
+                  {Math.max(1, Math.ceil(userOptionTotal / CANDIDATE_PAGE_SIZE))}
+                </Text>
+                <Button
+                  aria-label={t('polarragAccess.nextCandidatePage')}
+                  disabled={userOptionOffset + CANDIDATE_PAGE_SIZE >= userOptionTotal}
+                  size="small"
+                  type="text"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() =>
+                    setUserOptionOffset(userOptionOffset + CANDIDATE_PAGE_SIZE)
+                  }
+                >
+                  ›
+                </Button>
+              </Space>
+            </>
+          )}
           style={{ flex: 1 }}
         />
         <Button
-          disabled={availableUsers.length === 0 || busy}
-          onClick={() =>
-            setSelectedUsers(
-              allAvailableUsersSelected
-                ? []
-                : availableUsers.map((user) => user.id),
-            )
-          }
+          disabled={busy}
+          onClick={() => {
+            setAllUsersSelected((current) => !current)
+            changeSelectedUsers([])
+          }}
         >
           {t(
-            allAvailableUsersSelected
+            allUsersSelected
               ? 'polarragAccess.clearAllUsers'
               : 'polarragAccess.selectAllUsers',
           )}
         </Button>
         <Button
           type="primary"
-          disabled={selectedUsers.length === 0}
+          disabled={(!allUsersSelected && selectedUsers.length === 0) || busy}
           loading={busy}
           onClick={() => {
             void mutate(() =>
-              Promise.all(
-                selectedUsers.map((userId) =>
-                  createAgentUserAssignment(agentId, userId),
-                ),
-              ),
-            ).then(() => setSelectedUsers([]))
+              allUsersSelected
+                ? createAllAgentUserAssignments(agentId)
+                : Promise.all(
+                    selectedUsers.map((userId) =>
+                      createAgentUserAssignment(agentId, userId),
+                    ),
+                  ),
+            ).then(() => {
+              setAllUsersSelected(false)
+              changeSelectedUsers([])
+            })
           }}
         >
           {t('polarragAccess.assignUsers')}
         </Button>
       </Space.Compact>
+      <Input.Search
+        allowClear
+        aria-label={t('polarragAccess.searchAssignedUsers')}
+        placeholder={t('polarragAccess.searchAssignedUsers')}
+        value={assignmentSearch}
+        onChange={(event) => {
+          setAssignmentSearch(event.target.value)
+          setAssignmentOffset(0)
+        }}
+      />
       <Table
         rowKey="id"
         loading={loading}
-        pagination={false}
+        pagination={{
+          current: Math.floor(assignmentOffset / ASSIGNMENT_PAGE_SIZE) + 1,
+          pageSize: ASSIGNMENT_PAGE_SIZE,
+          total: assignmentTotal,
+          showSizeChanger: false,
+          onChange: (page) =>
+            setAssignmentOffset((page - 1) * ASSIGNMENT_PAGE_SIZE),
+        }}
         dataSource={assignments}
         locale={{ emptyText: t('polarragAccess.noUsers') }}
         columns={[
@@ -478,9 +736,10 @@ export default function PolarRAGAccessPanel({
       <EnterpriseAccessDrawer
         agentId={agentId}
         bindings={bindings}
+        instances={instances}
         open={enterpriseAccessOpen}
         onClose={() => setEnterpriseAccessOpen(false)}
-        onApplied={load}
+        onApplied={refreshAfterEnterpriseAccess}
       />
     </Space>
   )

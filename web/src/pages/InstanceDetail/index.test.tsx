@@ -111,16 +111,18 @@ function renderPage() {
   )
 }
 
+function pagedResponse(items: unknown[]) {
+  return {
+    data: { items, total: items.length, offset: 0, limit: 20 },
+  } as never
+}
+
 describe('Instance detail administration', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(api.get).mockResolvedValue({ data: instance } as never)
-    vi.mocked(listInstanceCredentials).mockResolvedValue({
-      data: [credential],
-    } as never)
-    vi.mocked(listProvisioningBackends).mockResolvedValue({
-      data: [backend],
-    } as never)
+    vi.mocked(listInstanceCredentials).mockResolvedValue(pagedResponse([credential]))
+    vi.mocked(listProvisioningBackends).mockResolvedValue(pagedResponse([backend]))
   })
 
   it('separates credential and provisioning backend administration', async () => {
@@ -353,9 +355,7 @@ describe('Instance detail administration', () => {
 
   it('creates a backend with bounded capacity settings', async () => {
     const user = userEvent.setup()
-    vi.mocked(listProvisioningBackends).mockResolvedValue({
-      data: [],
-    } as never)
+    vi.mocked(listProvisioningBackends).mockResolvedValue(pagedResponse([]))
     vi.mocked(createProvisioningBackend).mockResolvedValue({
       data: backend,
     } as never)

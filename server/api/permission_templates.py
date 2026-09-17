@@ -4,13 +4,14 @@ import json
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
+from server.api.pagination import Page
 from server.core.audit_logger import log_audit
 from server.core.permission_template_service import (
     PermissionSyncConfirmationRequired,
@@ -163,20 +164,47 @@ class PermissionSyncJobResponse(BaseModel):
 
 @router.get(
     "/permission-templates",
-    response_model=list[PermissionTemplateResponse],
+    response_model=Page[PermissionTemplateResponse],
 )
 async def list_permission_templates(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    filters = []
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                PermissionTemplate.name.ilike(pattern),
+                PermissionTemplate.description.ilike(pattern),
+            )
+        )
+    total = (
+        await session.scalar(
+            select(func.count(PermissionTemplate.id)).where(*filters)
+        )
+        or 0
+    )
     templates = list(
         (
             await session.scalars(
-                select(PermissionTemplate).order_by(PermissionTemplate.name)
+                select(PermissionTemplate)
+                .where(*filters)
+                .order_by(PermissionTemplate.name, PermissionTemplate.id)
+                .offset(offset)
+                .limit(limit)
             )
         ).all()
     )
-    return [PermissionTemplateResponse.from_model(row) for row in templates]
+    return Page(
+        items=[PermissionTemplateResponse.from_model(row) for row in templates],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post(

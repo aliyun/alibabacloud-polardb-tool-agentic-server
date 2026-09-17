@@ -2,6 +2,8 @@
 
 [English](../../en/agents/sql-access-model.md)
 
+控制台将员工归入**访问管理 → 个人账号**，Agent 归入**服务账号**。通过**资源**管理数据库授权，通过**连接 MCP**直接以个人身份访问，无需 Agent。下文的既有高级配置和 Agent 连接继续支持。参见[账号与资源](../administration/accounts-and-resources.md)。
+
 Agent SQL-over-HTTP 按实例直连绑定选择性启用。仅选择 `readwrite` 权限不会在
 SQL 代理能力关闭时开放 SQL 工具。
 

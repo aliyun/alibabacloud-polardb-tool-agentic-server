@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.access_control import validate_capability_set
@@ -277,6 +277,8 @@ async def _validate_backend(
         return backend
     instance = backend.instance
     credential = backend.admin_credential
+    assert instance is not None
+    assert credential is not None
     try:
         validate_backend_definition(backend, instance, credential)
     except BackendValidationError as exc:
@@ -314,6 +316,52 @@ async def list_agent_provisioning_bindings(session: AsyncSession, agent_id: str)
             binding.id,
         ),
     )
+
+
+async def list_agent_provisioning_bindings_page(
+    session: AsyncSession,
+    agent_id: str,
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[AgentProvisioningBinding], int]:
+    await _require_agent(session, agent_id)
+    total = (
+        await session.scalar(
+            select(func.count(AgentProvisioningBinding.id)).where(
+                AgentProvisioningBinding.agent_id == agent_id
+            )
+        )
+        or 0
+    )
+    dedicated_rank = case(
+        (
+            ProvisioningBackend.backend_type
+            == ProvisioningBackendType.DEDICATED_POOL,
+            0,
+        ),
+        else_=1,
+    )
+    rows = (
+        await session.execute(
+            select(AgentProvisioningBinding)
+            .join(
+                ProvisioningBackend,
+                AgentProvisioningBinding.backend_id == ProvisioningBackend.id,
+            )
+            .where(AgentProvisioningBinding.agent_id == agent_id)
+            .order_by(
+                dedicated_rank,
+                AgentProvisioningBinding.routing_order.is_(None),
+                AgentProvisioningBinding.routing_order,
+                AgentProvisioningBinding.created_at,
+                AgentProvisioningBinding.id,
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    return list(rows), total
 
 
 async def _enabled_dedicated_bindings(
@@ -511,6 +559,36 @@ async def list_agent_resources(session: AsyncSession, agent_id: str) -> list[DBI
         .scalars()
         .all()
     )
+
+
+async def list_agent_resources_page(
+    session: AsyncSession,
+    agent_id: str,
+    *,
+    offset: int,
+    limit: int,
+) -> tuple[list[DBInstanceResource], int]:
+    await _require_agent(session, agent_id)
+    filters = [
+        DBInstanceResource.owner_agent_id == agent_id,
+        DBInstanceResource.status != DBInstanceStatus.DELETED,
+    ]
+    total = (
+        await session.scalar(
+            select(func.count(DBInstanceResource.id)).where(*filters)
+        )
+        or 0
+    )
+    rows = (
+        await session.execute(
+            select(DBInstanceResource)
+            .where(*filters)
+            .order_by(DBInstanceResource.created_at, DBInstanceResource.id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).scalars()
+    return list(rows), total
 
 
 async def get_user_instance_access(session: AsyncSession, *, user_id: str, instance_id: str) -> UserInstanceBinding:

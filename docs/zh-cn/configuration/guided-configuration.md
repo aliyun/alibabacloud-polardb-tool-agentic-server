@@ -4,6 +4,8 @@
 
 本文介绍服务启动后的可选模块和安全配置变更。
 
+知识库使用独立的[功能管理启停流程](../knowledge/activation.md)，需要重启生效。
+
 ## 开始之前
 
 请先完成[初始化设置](../setup/initial-setup.md)。该指南定义
@@ -58,6 +60,47 @@ pas config show runtime_policy
 
 每次编辑都会创建草稿。验证会检查语法、依赖和外部连通性，但不改变当前有效
 配置。激活必须携带新的验证凭据和预期 revision，从而避免多个管理员静默覆盖。
+
+## 配置企业 SSO
+
+打开**服务配置 > 用户单点登录**。填写 IdP 前，先把
+`runtime_policy.external_base_url` 配置为可信、外部可访问的 HTTPS Origin。
+页面会展示唯一需要在 IdP 注册的回调地址：
+
+```text
+EXTERNAL_BASE_URL/auth/oidc/callback
+```
+
+使用同机 Mock Provider 时，以 `pas serve --local-sso-dev` 启动 PAS，并使用
+类似 `http://127.0.0.1:18760` 的精确回环 HTTP Origin。该开关会把 PAS
+所有 Listener 绑定到 `127.0.0.1`，因此外部基础 Origin 必须使用
+`localhost` 或 `127.0.0.1`；Provider HTTP URL 还可以使用 `::1`。它不是
+私网或生产 HTTP 模式。
+
+身份提供方发布 OIDC Discovery Metadata 时优先使用 **Discovery URL** 模式。
+手工 `issuer`、授权端点和 Token 端点位于高级模式；UserInfo、JWKS、Claim
+名称、允许的 ID Token 算法、IdP PKCE 和 UserInfo Token 传递方式也归入高级
+设置。
+
+激活固定分为三个阶段：
+
+1. 保存草稿，并校验 Discovery、Issuer、端点和 JWKS。
+2. 启动**测试浏览器登录**，由当前管理员完成 IdP 登录。
+3. 携带成功的测试证明激活。
+
+证明与管理员、配置 revision、摘要及短有效期绑定。编辑草稿会使证明失效。
+激活会原子消费证明，并把测试得到的 Provider Subject 绑定到当前管理员；
+该身份已经属于其他用户时，PAS 会阻止激活。
+
+如果服务间只使用 Token Exchange，不需要浏览器登录，请关闭**启用浏览器 SSO
+登录**。只配置外部 Token 验证 Provider，然后保存、校验并激活；该流程不需要
+回调地址、浏览器端点、浏览器 Client 凭证或浏览器登录测试，但仍须配置 HTTPS
+External Base URL 以标识 Token Exchange Resource；普通控制台继续使用内置登录。
+飞书 Provider 由调用方在每次 Token Exchange 请求中传入已验证身份源 ID、飞书
+用户 ID 与 union ID，表单不要求固定选择身份源。
+
+编辑已有配置时，将**客户端密钥**留空即可沿用 PAS 已加密保存的值。响应和
+日志不会返回密钥。
 
 ## 声明式流程与 dry run
 
@@ -166,6 +209,9 @@ pas config export --module runtime_policy --file runtime-policy.yaml
 仍然可用，但服务不会在这个不安全的 origin 上发布交互式 MCP OAuth 元数据。
 启用 OAuth 或 OIDC 前，必须配置可信、外部可访问的 HTTPS origin。服务不会
 从不可信代理请求头推断该地址。
+
+交互式 OAuth 或 OIDC 唯一允许的 HTTP 例外，是上文所述显式
+`pas serve --local-sso-dev` 同机模式。
 
 有效配置会投影为进程内不可变快照。每个副本默认每 5 秒轮询全局版本（可配置
 范围 1–60 秒），按依赖顺序加载变更；必要适配器失败时继续使用最后一个已知

@@ -6,9 +6,15 @@ This guide takes an administrator from a ready PAS installation to a working Pol
 
 For the API and authorization contract, see [PolarRAG MCP integration](polarrag-mcp.md). For the complete PAS installation procedure, use the repository's `deploy-polardb-agentic-server` Skill.
 
+New installations start with knowledge disabled. First follow [Enable and disable knowledge](activation.md).
+
 ## Outcome and prerequisites
 
-At the end, the user can connect an MCP client with a `pas_user_agent_` token, discover authorized knowledge resources, search or fetch documents, and upload a local document through an approved upload client.
+At the end, the user can connect an OAuth-capable MCP client by using only the
+PAS URL, complete enterprise SSO in the browser, discover authorized knowledge
+resources, search or fetch documents, and upload a local document through an
+approved upload client. A static `pas_user_agent_` Token remains available for
+clients without browser OAuth.
 
 This guide uses the upload contract available in PAS `v0.0.8` and later: the
 MCP catalog exposes
@@ -47,7 +53,7 @@ Before continuing, request `/readyz` and require HTTP 200 with both:
 
 An open console or a running container alone is not sufficient. If PAS remains in `SETUP`, finish initialization. If `config_status` is not `CURRENT`, apply the required PAS configuration or migration before registering PolarRAG.
 
-## 2. Register PolarRAG and enable a Space
+## 2. Register PolarRAG and verify its Spaces
 
 In **Administration > Instances**, choose **Register Instance > PolarRAG** and enter:
 
@@ -56,7 +62,7 @@ In **Administration > Instances**, choose **Register Instance > PolarRAG** and e
 - The OpenSearch account and password.
 - TLS verification settings appropriate for the endpoint certificate.
 
-Do not embed credentials in the endpoint URL. After registration, require the instance to be active. Open its **Spaces** drawer, enable the intended Space, and synchronize its catalog.
+Do not embed credentials in the endpoint URL. After registration, require the instance to be active. PAS automatically enables each newly discovered active Space and performs its first catalog synchronization. Open the **Spaces** drawer to verify the target Space and its resources. A Space that an administrator explicitly disabled remains disabled; use **Enable** only to restore that Space.
 
 PAS validates the upstream routes it needs. If the instance or Space reports `capability_missing`, stop the delivery and give the PolarRAG operator the missing capability name. Do not work around the failure by broadening PAS authorization. The detailed [integration reference](polarrag-mcp.md) lists the required catalog, document, and upload capabilities.
 
@@ -93,35 +99,47 @@ If the probe fails, fix the exact OSS endpoint, bucket, prefix, or policy error.
 
 In **Administration > Agents**, create an Agent. Its machine token begins with `pas_agent_`; store it if another PAS automation needs it, but do not use it for PolarRAG because machine tokens do not receive PolarRAG tools.
 
-Open the Agent's PolarRAG settings and:
+Open **Configure enterprise access** in the Agent's PolarRAG settings and:
 
-1. Bind the registered PolarRAG instance.
-2. Configure the allowed `PUBLIC` scope: all, selected resources, or none.
-3. Assign the PAS user created above.
+1. Select the active PolarRAG instance and at least one enabled Space from it.
+2. Select the identity source and assign the PAS user created above.
+3. Preview and confirm. PAS creates a missing Agent-instance binding in the same transaction.
+4. If needed, use the advanced controls to narrow the binding's `PUBLIC` scope to all, selected resources, or none.
 
 The user assignment, native principal, active Space, resource ACL, and Agent binding must all agree. The Agent binding cannot widen PolarRAG authorization or grant a `PERSONAL` resource to a different owner.
 
-## 7. Issue and connect the user Agent Token
+## 7. Select the Agent and connect
 
-Have the user sign in. Under **My Instances > MCP connections**, the user chooses the assigned Agent and issues a user Agent Token, optionally with an expiration. It begins with `pas_user_agent_`. A built-in user can reveal an existing token after confirming their password; an SSO user receives newly issued or regenerated plaintext once. An administrator can inspect status and force-revoke the token but cannot retrieve its plaintext.
-
-Copy the generated MCP configuration into the intended client. A typical HTTP connection has this shape:
+Have the user sign in and select the assigned Agent under **My Instances**.
+The selection becomes the User Workspace's default Agent. An OAuth-capable MCP
+client then needs only the PAS URL:
 
 ```json
 {
   "mcpServers": {
     "pas-polarrag": {
       "type": "http",
-      "url": "https://pas.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer pas_user_agent_REDACTED"
-      }
+      "url": "https://pas.example.com/mcp"
     }
   }
 }
 ```
 
-Use the URL generated by PAS; reverse-proxy path prefixes may differ. Revoke the token immediately if it is exposed, and issue a replacement rather than attempting to edit it.
+The client opens the browser for enterprise SSO and automatically obtains and
+refreshes a PAS access token. The final `/mcp` request uses that PAS Bearer
+Token; an external provider token is not used directly.
+
+For a client without browser OAuth, the user can still issue a
+`pas_user_agent_` Token under **My Instances > MCP connections**, optionally
+with an expiration, and copy the generated static Bearer configuration. A
+built-in user can reveal an existing token after confirming their password;
+an SSO user receives newly issued or regenerated plaintext once. An
+administrator can inspect status and force-revoke the token but cannot
+retrieve its plaintext.
+
+Use the URL generated by PAS; reverse-proxy path prefixes may differ. Revoke a
+static token immediately if it is exposed, and issue a replacement rather than
+attempting to edit it.
 
 ## 8. Upload through the Agent
 
@@ -139,11 +157,13 @@ For a file larger than this PAS limit, use the enterprise knowledge space automa
 
 ## Available MCP tools
 
-A correctly authorized `pas_user_agent_` connection can expose these PolarRAG tools:
+A correctly authorized workspace OAuth or `pas_user_agent_` connection can
+expose these PolarRAG tools:
 
 - `list_knowledge_resources`: list the caller's authorized opaque resource handles.
 - `kb_search`: search one resource and return ranked document summaries.
 - `kb_fetch_context`: fetch grounded context from selected search results.
+- `doc_list_chunks`: list authorized document chunks with offset pagination.
 - `doc_find_by_name`: find documents without exposing an upstream knowledge-base ID.
 - `doc_status`: inspect ingestion or processing state.
 - `doc_recall`: recall indexed chunks from a document.

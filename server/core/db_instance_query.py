@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -44,6 +45,8 @@ from server.models import (
     BindingOrigin,
     DBInstanceResource,
     DBInstanceStatus,
+    DepartmentInstanceBinding,
+    UserDepartment,
     Instance,
     InstanceCredential,
     InstanceEngine,
@@ -159,6 +162,33 @@ def _physical_source_expression():
         ),
         else_=literal("bound"),
     )
+
+
+def personal_instance_ids(user_id: str):
+    """Candidate resources, including existing department SQL inheritance."""
+    direct = select(UserInstanceBinding.instance_id).where(UserInstanceBinding.user_id == user_id)
+    inherited = (select(DepartmentInstanceBinding.instance_id)
+                 .join(UserDepartment, UserDepartment.department_id == DepartmentInstanceBinding.department_id)
+                 .where(UserDepartment.user_id == user_id))
+    return direct.union(inherited)
+
+
+def _personal_rows(principal: Principal, *, db_type, source, status):
+    source_expression = _physical_source_expression()
+    statement = select(
+        literal("physical").label("row_kind"), Instance.id.label("db_instance_id"),
+        Instance.created_at.label("created_at"), source_expression.label("source"),
+    ).where(Instance.id.in_(personal_instance_ids(principal.id)))
+    if db_type is not None:
+        statement = statement.where(Instance.engine == InstanceEngine.POLARDB_MYSQL)
+    if source is not None:
+        statement = statement.where(source_expression == source if source in ("auto_provisioned", "bound") else false())
+    if status is not None:
+        try:
+            statement = statement.where(Instance.status == InstanceStatus(status.lower()))
+        except ValueError:
+            statement = statement.where(false())
+    return statement
 
 
 def _user_rows(
@@ -332,6 +362,7 @@ async def _physical_view(
     principal: Principal,
     db_instance_id: str,
     source: str,
+    *, personal: bool = False,
 ) -> DBInstanceView | None:
     if principal.kind == PrincipalKind.USER:
         access = await resolve_user_instance_access(
@@ -343,8 +374,9 @@ async def _physical_view(
         )
     if (
         access is None
-        or BindingCapability.DB_INSTANCE_LIST
-        not in access.capabilities
+        or not (BindingCapability.DB_INSTANCE_LIST in access.capabilities
+                or (personal and access.permission is not None
+                    and BindingCapability.SQL_READ in access.capabilities))
     ):
         return None
     instance = access.instance
@@ -403,6 +435,7 @@ async def query_db_instances(
     db_type: str | None = None,
     source: str | None = None,
     status: str | None = None,
+    personal: bool = False,
 ) -> DBInstancePage:
     if isinstance(limit, bool) or not 1 <= limit <= 200:
         raise ValueError("limit must be between 1 and 200")
@@ -411,8 +444,10 @@ async def query_db_instances(
         db_type, source, status
     )
     filter_hash = hash_filters(
-        db_type=db_type, source=source, status=status
+        db_type=db_type, source=source, status=status,
     )
+    if personal:
+        filter_hash = hashlib.sha256(f"personal:{principal.id}:{filter_hash}".encode()).hexdigest()
     codec = SignedCursorCodec()
     decoded_cursor = (
         codec.decode(cursor, expected_filter_hash=filter_hash)
@@ -421,7 +456,7 @@ async def query_db_instances(
     )
 
     if principal.kind == PrincipalKind.USER:
-        physical = _user_rows(
+        physical = (_personal_rows if personal else _user_rows)(
             principal,
             db_type=db_type,
             source=source,
@@ -481,18 +516,19 @@ async def query_db_instances(
                 principal,
                 row.db_instance_id,
                 row.source,
+                personal=personal,
             )
         if view is not None:
             instances.append(view)
 
     next_cursor = None
-    if has_more and instances:
-        last = instances[-1]
+    last = rows[-1] if personal and rows else (instances[-1] if instances else None)
+    if has_more and last is not None:
         next_cursor = codec.encode(
             CursorPayload(
                 version=1,
                 issued_at=int(time.time()),
-                created_at=last.created_at.isoformat(),
+                created_at=_normalized_datetime(last.created_at).isoformat(),
                 db_instance_id=last.db_instance_id,
                 filter_hash=filter_hash,
             )

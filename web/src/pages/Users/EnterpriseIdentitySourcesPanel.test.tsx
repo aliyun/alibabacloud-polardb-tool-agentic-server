@@ -136,6 +136,49 @@ describe('Enterprise identity sources', () => {
     })
   })
 
+  it('shows the persisted partial membership warning separately from status', async () => {
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/identity-sources') {
+        return Promise.resolve({
+          data: {
+            items: [{
+              id: 'source-warning', name: 'Feishu warning', provider: 'feishu', tenant_id: 'tenant-1',
+              status: 'active', last_synced_at: null, last_error: null, sync_supported: true,
+              sync_warning: {
+                code: 'MEMBERSHIPS_PARTIAL',
+                skipped_count: 2,
+                provider_errors: { '99991672': 2 },
+              },
+              acl_membership_snapshot_configured: true, space_bindings: [],
+            }],
+          },
+        } as never)
+      }
+      if (url === '/api/identity-sources/spaces') {
+        return Promise.resolve({ data: { items: [] } } as never)
+      }
+      return Promise.resolve({ data: {} } as never)
+    })
+
+    render(<EnterpriseIdentitySourcesPanel />)
+
+    expect(await screen.findByText(
+      'The latest sync skipped 2 users with unavailable memberships and preserved their previous authorization snapshot.',
+    )).toBeInTheDocument()
+    expect(screen.getByText('active')).toBeInTheDocument()
+  })
+
+  it('shows and copies an identity source ID below its name', async () => {
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()
+    render(<EnterpriseIdentitySourcesPanel />)
+
+    expect(await screen.findByText('ID: source-1')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Copy identity source ID' }))
+
+    expect(writeText).toHaveBeenCalledWith('source-1')
+  })
+
   it('loads each synced directory entry type through server pagination', async () => {
     vi.mocked(api.get).mockImplementation((url: string) => {
       if (url === '/api/identity-sources') {

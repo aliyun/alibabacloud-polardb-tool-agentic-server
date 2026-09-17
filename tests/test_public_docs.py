@@ -81,6 +81,7 @@ POLARRAG_MCP_TOOLS = {
     "list_knowledge_resources",
     "kb_search",
     "kb_fetch_context",
+    "doc_list_chunks",
     "doc_find_by_name",
     "doc_status",
     "doc_recall",
@@ -103,6 +104,49 @@ def test_polarrag_guides_cover_atomic_enterprise_access_workflow(path: str):
     text = _read(path)
     assert "/enterprise-access/preview" in text
     assert "all_synced_users" in text
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/reference/enterprise-identity-sources-api.md",
+        "docs/zh-cn/reference/enterprise-identity-sources-api.md",
+    ),
+)
+def test_identity_source_api_guides_cover_backend_pagination(path: str):
+    text = _read(path)
+    required = {
+        "entry_type=users|groups|all",
+        "offset",
+        "limit",
+        "search",
+        "{items, total, offset, limit}",
+        "SYNC_IN_PROGRESS",
+    }
+    assert not [term for term in required if term not in text]
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/knowledge/polarrag-mcp.md",
+        "docs/zh-cn/knowledge/polarrag-mcp.md",
+    ),
+)
+def test_polarrag_guides_cover_background_space_sync(path: str):
+    text = _read(path)
+    required = {
+        "/instances/{id}/spaces/{space_id}/sync",
+        "HTTP `202`",
+        "`idle`",
+        "`running`",
+        "`completed`",
+        "`failed`",
+        "`next_cursor`",
+        "PERSONAL",
+        "owner",
+    }
+    assert not [term for term in required if term not in text]
 
 
 @pytest.mark.parametrize(
@@ -244,6 +288,36 @@ def test_polarrag_onboarding_is_linked_from_public_indexes() -> None:
     }
     for path, link in expected.items():
         assert link in _read(path)
+
+
+def test_platform_http_api_is_bilingual_and_linked_from_public_indexes() -> None:
+    expected = {
+        "README.md": "docs/en/knowledge/polarrag-platform-http-api.md",
+        "docs/en/README.md": "knowledge/polarrag-platform-http-api.md",
+        "docs/zh-cn/README.md": "knowledge/polarrag-platform-http-api.md",
+    }
+    for path, link in expected.items():
+        assert link in _read(path)
+
+    english = _read("docs/en/knowledge/polarrag-platform-http-api.md")
+    chinese = _read("docs/zh-cn/knowledge/polarrag-platform-http-api.md")
+    assert "简体中文" in "\n".join(english.splitlines()[:8])
+    assert "English" in "\n".join(chinese.splitlines()[:8])
+    assert "polarrag-platform-http-api.md" in english
+    assert "polarrag-platform-http-api.md" in chinese
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "docs/en/knowledge/polarrag-platform-http-api.md",
+        "docs/zh-cn/knowledge/polarrag-platform-http-api.md",
+    ),
+)
+def test_platform_http_api_documents_actual_search_contract(path: str) -> None:
+    text = _read(path)
+    assert '"chunk_index"' in text
+    assert '"chunk_id"' not in text
 
 
 def test_polarrag_onboarding_directs_large_files_to_enterprise_knowledge_space() -> None:
@@ -563,16 +637,28 @@ def test_mcp_identity_and_authentication_contract_is_public_and_stable():
         client_guide = _read(
             f"docs/{locale}/agents/connect-mcp-client.md"
         )
-        example = re.search(
+        examples = re.findall(
             r"```json\n(?P<payload>.*?)```",
             client_guide,
             flags=re.DOTALL,
         )
-        assert example is not None
-        configuration = json.loads(example.group("payload"))
-        server = next(iter(configuration["mcpServers"].values()))
-        assert set(server) == {"url", "headers"}
-        assert set(server["headers"]) == {"Authorization"}
+        configurations = [json.loads(payload) for payload in examples]
+        servers = [
+            next(iter(configuration["mcpServers"].values()))
+            for configuration in configurations
+            if "mcpServers" in configuration
+        ]
+        assert any(set(server) == {"type", "url"} for server in servers)
+        static_servers = [
+            server
+            for server in servers
+            if set(server) == {"url", "headers"}
+        ]
+        assert static_servers
+        assert all(
+            set(server["headers"]) == {"Authorization"}
+            for server in static_servers
+        )
 
         polarrag = _read(f"docs/{locale}/knowledge/polarrag-mcp.md")
         assert "acl_context" in polarrag
@@ -862,6 +948,59 @@ def test_initial_setup_covers_container_token_delivery(path: str):
         for term in required - {"15 minutes", "15 分钟"}
         if term not in text
     ]
+
+
+@pytest.mark.parametrize(
+    ("path", "required"),
+    (
+        (
+            "docs/en/deployment/prerequisites.md",
+            {"PAS_MANAGEMENT_PORT", "trusted-network", "bearer-token", "OpenAPI"},
+        ),
+        (
+            "docs/zh-cn/deployment/prerequisites.md",
+            {"PAS_MANAGEMENT_PORT", "trusted-network", "bearer-token", "OpenAPI"},
+        ),
+        (
+            "docs/en/deployment/kubernetes-helm.md",
+            {"management.port", "trusted-network", "bearer-token", "RESET_REQUIRED"},
+        ),
+        (
+            "docs/zh-cn/deployment/kubernetes-helm.md",
+            {"management.port", "trusted-network", "bearer-token", "RESET_REQUIRED"},
+        ),
+        (
+            "docs/en/reference/rest-api.md",
+            {"/api/internal/v1", "set_initial_password", "RESET_REQUIRED", "OpenAPI"},
+        ),
+        (
+            "docs/zh-cn/reference/rest-api.md",
+            {"/api/internal/v1", "set_initial_password", "RESET_REQUIRED", "OpenAPI"},
+        ),
+    ),
+)
+def test_managed_listener_contract_is_public_and_fail_closed(
+    path: str,
+    required: set[str],
+):
+    text = _read(path)
+    assert not [term for term in required if term not in text]
+
+
+def test_deployment_templates_keep_management_disabled_and_ports_dynamic():
+    values = _read("deploy/helm/polardb-agentic-server/values.yaml")
+    deployment = _read(
+        "deploy/helm/polardb-agentic-server/templates/deployment.yaml"
+    )
+    service = _read(
+        "deploy/helm/polardb-agentic-server/templates/service.yaml"
+    )
+    assert re.search(r"management:\n  enabled: false\n  port: null", values)
+    assert "PAS_SERVER_PORT" in deployment
+    assert "PAS_MANAGEMENT_PORT" in deployment
+    assert "management.port and service.port must be distinct" in deployment
+    assert "management.service.enabled" in service
+    assert "18761" not in values + deployment + service
 
 
 @pytest.mark.parametrize(

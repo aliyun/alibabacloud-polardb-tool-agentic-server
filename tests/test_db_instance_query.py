@@ -666,3 +666,64 @@ async def test_cursor_accepts_canonical_equivalent_filter_case(session):
         first.instances[0].db_instance_id
         != second.instances[0].db_instance_id
     )
+
+
+async def test_personal_catalog_includes_inherited_and_owned_system_but_honors_deny(session):
+    from server.models import Department, DepartmentInstanceBinding, UserDepartment
+
+    user = User(external_id="personal-catalog", display_name="Personal catalog")
+    department = Department(name="Catalog group")
+    session.add_all([user, department])
+    await session.flush()
+    owned = Instance(
+        cluster_id="owned-catalog",
+        name="Owned",
+        allocation_mode=AllocationMode.AUTO_PROVISIONED,
+        status=InstanceStatus.ACTIVE,
+        owner_user_id=user.id,
+    )
+    inherited = Instance(
+        cluster_id="inherited-catalog",
+        name="Inherited",
+        allocation_mode=AllocationMode.REGISTERED,
+        status=InstanceStatus.ACTIVE,
+    )
+    session.add_all([owned, inherited])
+    await session.flush()
+    session.add_all(
+        [
+            UserInstanceBinding(
+                user_id=user.id,
+                instance_id=owned.id,
+                origin=BindingOrigin.SYSTEM,
+                permission=Permission.READONLY,
+            ),
+            DepartmentInstanceBinding(
+                department_id=department.id,
+                instance_id=inherited.id,
+                default_permission=Permission.READONLY,
+            ),
+            UserDepartment(user_id=user.id, department_id=department.id),
+        ]
+    )
+    await session.commit()
+
+    principal = Principal(PrincipalKind.USER, user.id)
+    page = await query_db_instances(session, principal, personal=True)
+    assert {item.db_instance_id for item in page.instances} == {
+        owned.id,
+        inherited.id,
+    }
+    assert (await query_db_instances(session, principal)).instances == []
+
+    session.add(
+        UserInstanceBinding(
+            user_id=user.id,
+            instance_id=inherited.id,
+            origin=BindingOrigin.ADMIN,
+            enabled=False,
+        )
+    )
+    await session.commit()
+    page = await query_db_instances(session, principal, personal=True)
+    assert [x.db_instance_id for x in page.instances] == [owned.id]

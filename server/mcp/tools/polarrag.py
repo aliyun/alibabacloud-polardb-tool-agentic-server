@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import re
 import time
 from collections.abc import Awaitable, Callable
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -19,11 +21,23 @@ from server.auth.principal import (
     PrincipalKind,
     require_current_actor,
 )
+from server.auth.token_claims import access_token_agent_id
+from server.auth.personal_access import is_personal_access
 from server.core.audit_logger import log_audit
+from server.core.polarrag_governance import (
+    PolarRAGGovernanceError,
+    PolarRAGToolGovernor,
+    get_polarrag_tool_governor,
+)
 from server.db.engine import get_session_factory
 from server.mcp.agent_user_context import (
     current_agent_user_context,
     current_polarrag_resource_scope,
+    resolve_polarrag_resource_scope_for_agent,
+)
+from server.mcp.workspace_context import (
+    MCPWorkspaceUnavailable,
+    resolve_mcp_workspace_context,
 )
 from server.models import (
     AuditStatus,
@@ -37,7 +51,8 @@ from server.models import (
 from server.polarrag.access import (
     KnowledgeAccessError,
     KnowledgeResourceScope,
-    list_visible_knowledge_resources,
+    list_visible_knowledge_resources_page,
+    plan_exhaustive_knowledge_access,
     plan_knowledge_access,
 )
 from server.polarrag.client import client_from_instance
@@ -52,26 +67,9 @@ from server.polarrag.mcp_upload import (
     prepare_upload,
 )
 from server.polarrag.upload import object_store_from_space
+from server.polarrag.write_policy import require_pas_managed_resource
 
-POLARRAG_UPLOAD_TOOL_NAMES = frozenset(
-    {
-        "prepare_document_upload",
-        "complete_document_upload",
-    }
-)
-POLARRAG_TOOL_NAMES = frozenset(
-    {
-        "list_knowledge_resources",
-        "kb_search",
-        "kb_fetch_context",
-        "doc_find_by_name",
-        "doc_status",
-        "doc_recall",
-        "doc_get_original",
-        "doc_delete",
-        "doc_rechunk",
-    }
-) | POLARRAG_UPLOAD_TOOL_NAMES
+from server.mcp.knowledge_tools import POLARRAG_TOOL_NAMES, POLARRAG_UPLOAD_TOOL_NAMES  # noqa: F401
 
 
 ClientFactory = Callable[[PolarRAGInstance], PolarRAGClient]
@@ -87,8 +85,7 @@ _SENSITIVE_KEY_PARTS = (
 )
 _SAFE_ERROR_MESSAGES = {
     PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE.value: (
-        "PolarRAG credentials are unavailable. Ask an administrator to "
-        "verify the instance configuration."
+        "PolarRAG credentials are unavailable. Ask an administrator to verify the instance configuration."
     ),
     PolarRAGErrorCode.RERANKER_NOT_CONFIGURED.value: (
         "Reranking is not configured for this knowledge Space. "
@@ -99,7 +96,13 @@ _SAFE_ERROR_MESSAGES = {
         "Ask an administrator to verify the Space identity domain and "
         "canonical PAS user ownership."
     ),
+    PolarRAGErrorCode.EXTERNAL_SYNC_RESOURCE_READ_ONLY.value: (
+        "Externally synchronized knowledge resources are read-only in PAS."
+    ),
 }
+_governance_audit_error: ContextVar[PolarRAGGovernanceError | None] = ContextVar(
+    "polarrag_governance_audit_error", default=None
+)
 
 
 def _result(payload: dict[str, Any], *, error: bool = False) -> CallToolResult:
@@ -124,6 +127,11 @@ def _error(code: str, message: str | None = None) -> CallToolResult:
     )
 
 
+def _governance_error(error: PolarRAGGovernanceError) -> CallToolResult:
+    _governance_audit_error.set(error)
+    return _result(error.public_payload(), error=True)
+
+
 def _partial_failure_code(
     error: BaseException,
     *,
@@ -131,11 +139,7 @@ def _partial_failure_code(
 ) -> str | None:
     if not isinstance(error, PolarRAGUpstreamError):
         return None
-    if (
-        include_inaccessible
-        and error.code
-        == PolarRAGErrorCode.KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE
-    ):
+    if include_inaccessible and error.code == PolarRAGErrorCode.KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE:
         return cast(str, error.code.value)
     return PolarRAGErrorCode.UNAVAILABLE.value if error.retryable else None
 
@@ -166,6 +170,39 @@ def _metadata_hints(source: dict[str, Any]) -> dict[str, Any]:
             part in str(key).lower() for part in _SENSITIVE_KEY_PARTS
         )
     }
+
+
+def _image_resources(source: dict[str, Any]) -> list[dict[str, Any]]:
+    resources = source.get("image_resources")
+    if not isinstance(resources, list):
+        return []
+    return [dict(resource) for resource in resources if isinstance(resource, dict)]
+
+
+def _with_image_resources(payload: dict[str, Any]) -> dict[str, Any]:
+    hits = payload.get("hits")
+    if not isinstance(hits, dict):
+        return payload
+    raw_hits = hits.get("hits")
+    if not isinstance(raw_hits, list):
+        return payload
+    normalized_hits = []
+    for raw_hit in raw_hits:
+        if not isinstance(raw_hit, dict):
+            normalized_hits.append(raw_hit)
+            continue
+        source = raw_hit.get("_source")
+        if not isinstance(source, dict):
+            normalized_hits.append(raw_hit)
+            continue
+        normalized_source = dict(source)
+        normalized_source["image_resources"] = _image_resources(source)
+        normalized_hit = dict(raw_hit)
+        normalized_hit["_source"] = normalized_source
+        normalized_hits.append(normalized_hit)
+    normalized_payload = dict(payload)
+    normalized_payload["hits"] = {**hits, "hits": normalized_hits}
+    return normalized_payload
 
 
 async def _build_audit_client_info(
@@ -287,10 +324,67 @@ def _search_hits(
                 "headings": source.get("headings") or [],
                 "captions": source.get("captions") or [],
                 "doc_items": source.get("doc_items") or [],
+                "image_resources": _image_resources(source),
                 "metadata_hints": _metadata_hints(source),
             }
         )
     return normalized
+
+
+def _supports_multi_kb_search(version: str | None) -> bool:
+    if version is None:
+        return False
+    match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", version.strip())
+    return bool(match and tuple(int(value) for value in match.groups()) >= (1, 0, 7))
+
+
+def _search_hits_many(
+    response: dict[str, Any],
+    resources_by_kb_id: dict[str, Any],
+) -> list[dict[str, Any]]:
+    hits_container = response.get("hits")
+    raw_hits = hits_container.get("hits") if isinstance(hits_container, dict) else None
+    if not isinstance(raw_hits, list):
+        raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+    normalized: list[dict[str, Any]] = []
+    for raw in raw_hits:
+        source = raw.get("_source") if isinstance(raw, dict) else None
+        kb_id = source.get("kb_id") if isinstance(source, dict) else None
+        if not isinstance(kb_id, str):
+            raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+        resource = resources_by_kb_id.get(kb_id)
+        if resource is None:
+            raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+        single_response = {"hits": {"hits": [raw]}}
+        normalized.extend(_search_hits(single_response, resource))
+    return normalized
+
+
+async def _run_search_calls_in_waves(
+    governor: PolarRAGToolGovernor,
+    instance_id: str,
+    calls: list[
+        tuple[list[Any], Callable[[], Awaitable[dict[str, Any]]]]
+    ],
+) -> list[tuple[list[Any], dict[str, Any] | BaseException]]:
+    wave_limit = await governor.upstream_wave_limit()
+    completed: list[tuple[list[Any], dict[str, Any] | BaseException]] = []
+    for offset in range(0, len(calls), wave_limit):
+        wave = calls[offset : offset + wave_limit]
+        async with governor.reserve_instance(
+            "kb_search",
+            instance_id,
+            len(wave),
+        ):
+            responses = await asyncio.gather(
+                *(call() for _resources, call in wave),
+                return_exceptions=True,
+            )
+        completed.extend(
+            (resources, cast(dict[str, Any] | BaseException, response))
+            for (resources, _call), response in zip(wave, responses)
+        )
+    return completed
 
 
 async def handle_list_knowledge_resources(
@@ -303,24 +397,20 @@ async def handle_list_knowledge_resources(
 ) -> CallToolResult:
     if limit < 1 or limit > 200:
         return _error("INVALID_ARGUMENT")
-    resources = await list_visible_knowledge_resources(
+    try:
+        offset = 0 if cursor is None else int(cursor)
+    except ValueError:
+        return _error("INVALID_CURSOR")
+    if offset < 0:
+        return _error("INVALID_CURSOR")
+    page, total = await list_visible_knowledge_resources_page(
         session,
         user,
         resource_scope=resource_scope,
+        offset=offset,
+        limit=limit,
     )
-    if cursor is not None:
-        positions = [
-            index
-            for index, resource in enumerate(resources)
-            if resource.id == cursor
-        ]
-        if not positions:
-            return _error("INVALID_CURSOR")
-        resources = resources[positions[0] + 1 :]
-    page = resources[:limit]
-    next_cursor = (
-        page[-1].id if len(resources) > len(page) and page else None
-    )
+    next_cursor = str(offset + len(page)) if offset + len(page) < total else None
     return _result(
         {
             "items": [
@@ -344,17 +434,16 @@ async def handle_kb_search(
     user: User,
     *,
     query: str,
-    knowledge_resource_ids: list[str],
+    knowledge_resource_ids: list[str] | None = None,
     search_mode: str = "balanced",
     top_k: int = 10,
     min_score: float | None = None,
     reranker: bool = False,
     resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
+    governor: PolarRAGToolGovernor | None = None,
 ) -> CallToolResult:
-    normalized_mode = (
-        "balanced" if search_mode.lower() == "auto" else search_mode.lower()
-    )
+    normalized_mode = "balanced" if search_mode.lower() == "auto" else search_mode.lower()
     if (
         not query.strip()
         or top_k < 1
@@ -366,7 +455,7 @@ async def handle_kb_search(
     ):
         return _error("INVALID_ARGUMENT")
     try:
-        plan = await plan_knowledge_access(
+        exhaustive_plan = await plan_exhaustive_knowledge_access(
             session,
             user,
             knowledge_resource_ids,
@@ -374,57 +463,128 @@ async def handle_kb_search(
         )
     except KnowledgeAccessError as exc:
         return _error(exc.code.value)
+    governor = governor or get_polarrag_tool_governor()
+    results: list[dict[str, Any]] = []
+    partial_failures = list(exhaustive_plan.partial_failures)
+    successful = 0
     try:
-        client = client_factory(plan.instance)
+        for plan in exhaustive_plan.plans:
+            client = client_factory(plan.instance)
+            multi_kb = _supports_multi_kb_search(plan.instance.plugin_version)
+            calls: list[
+                tuple[
+                    list[Any],
+                    Callable[[], Awaitable[dict[str, Any]]],
+                ]
+            ]
+            if multi_kb:
+                try:
+                    async with governor.reserve_instance(
+                        "kb_search",
+                        plan.instance.id,
+                        1,
+                    ):
+                        capabilities = await client.get_search_capabilities()
+                except PolarRAGUpstreamError as exc:
+                    if exc.status_code not in {400, 404, 501}:
+                        raise
+                    multi_kb = False
+            if multi_kb:
+                batch_size = capabilities.max_kb_ids
+                batches = [
+                    plan.resources[offset : offset + batch_size]
+                    for offset in range(0, len(plan.resources), batch_size)
+                ]
+                calls = [
+                    (
+                        batch,
+                        cast(
+                            Callable[[], Awaitable[dict[str, Any]]],
+                            lambda batch=batch: client.search_many(
+                                plan.space.space_id,
+                                [resource.kb_id for resource in batch],
+                                query=query.strip(),
+                                search_mode=normalized_mode,
+                                top_k=top_k,
+                                min_score=min_score,
+                                reranker=reranker,
+                                acl_context=plan.acl_context,
+                            ),
+                        ),
+                    )
+                    for batch in batches
+                ]
+            else:
+                calls = [
+                    (
+                        [resource],
+                        cast(
+                            Callable[[], Awaitable[dict[str, Any]]],
+                            lambda resource=resource: client.search(
+                                plan.space.space_id,
+                                resource.kb_id,
+                                query=query.strip(),
+                                search_mode=normalized_mode,
+                                top_k=top_k,
+                                min_score=min_score,
+                                reranker=reranker,
+                                acl_context=plan.acl_context,
+                            ),
+                        ),
+                    )
+                    for resource in plan.resources
+                ]
+            completed = await _run_search_calls_in_waves(
+                governor,
+                plan.instance.id,
+                calls,
+            )
+            for resources, response in completed:
+                if isinstance(response, BaseException):
+                    partial_code = _partial_failure_code(
+                        response,
+                        include_inaccessible=True,
+                    )
+                    if partial_code is not None:
+                        partial_failures.extend(
+                            {
+                                "knowledge_resource_id": resource.id,
+                                "error": partial_code,
+                            }
+                            for resource in resources
+                        )
+                        continue
+                    return _error(
+                        response.code.value
+                        if isinstance(response, PolarRAGUpstreamError)
+                        else PolarRAGErrorCode.UNAVAILABLE.value
+                    )
+                hits = (
+                    _search_hits_many(
+                        response,
+                        {resource.kb_id: resource for resource in resources},
+                    )
+                    if multi_kb
+                    else _search_hits(response, resources[0])
+                )
+                successful += len(resources)
+                results.extend(hits)
+    except PolarRAGGovernanceError as exc:
+        return _governance_error(exc)
     except PolarRAGUpstreamError as exc:
         return _error(exc.code.value)
-    calls = [
-        client.search(
-            plan.space.space_id,
-            resource.kb_id,
-            query=query.strip(),
-            search_mode=normalized_mode,
-            top_k=top_k,
-            min_score=min_score,
-            reranker=reranker,
-            acl_context=plan.acl_context,
-        )
-        for resource in plan.resources
-    ]
-    responses = await asyncio.gather(*calls, return_exceptions=True)
-    results: list[dict[str, Any]] = []
-    partial_failures = list(plan.partial_failures)
-    successful = 0
-    for resource, response in zip(plan.resources, responses):
-        if isinstance(response, BaseException):
-            partial_code = _partial_failure_code(
-                response,
-                include_inaccessible=True,
-            )
-            if partial_code is not None:
-                partial_failures.append(
-                    {
-                        "knowledge_resource_id": resource.id,
-                        "error": partial_code,
-                    }
-                )
-                continue
-            return _error(
-                response.code.value
-                if isinstance(response, PolarRAGUpstreamError)
-                else PolarRAGErrorCode.UNAVAILABLE.value
-            )
-        try:
-            hits = _search_hits(
-                cast(dict[str, Any], response),
-                resource,
-            )
-        except PolarRAGUpstreamError as exc:
-            return _error(exc.code.value)
-        successful += 1
-        results.extend(hits)
     if successful == 0:
         return _error(PolarRAGErrorCode.UNAVAILABLE.value)
+    deduplicated: dict[tuple[str, str, int], dict[str, Any]] = {}
+    for item in results:
+        key = (
+            item["knowledge_resource_id"],
+            item["doc_id"],
+            item["chunk_index"],
+        )
+        if key not in deduplicated or item["score"] > deduplicated[key]["score"]:
+            deduplicated[key] = item
+    results = list(deduplicated.values())
     results.sort(key=lambda item: item["score"], reverse=True)
     results = results[:top_k]
     return _result(
@@ -434,7 +594,7 @@ async def handle_kb_search(
             "returned_count": len(results),
             "max_score": results[0]["score"] if results else None,
             "successful_searches": successful,
-            "failed_searches": len(plan.resources) - successful,
+            "failed_searches": exhaustive_plan.requested_count - successful,
             "partial_failures": partial_failures,
         }
     )
@@ -444,12 +604,12 @@ async def _single_resource_call(
     session: AsyncSession,
     user: User,
     knowledge_resource_id: str,
-    operation: Callable[
-        [PolarRAGClient, Any, dict[str, Any]], Any
-    ],
+    operation: Callable[[PolarRAGClient, Any, dict[str, Any]], Any],
     *,
+    tool_name: str,
     client_factory: ClientFactory,
     resource_scope: KnowledgeResourceScope | None = None,
+    governor: PolarRAGToolGovernor | None = None,
 ) -> CallToolResult:
     try:
         plan = await plan_knowledge_access(
@@ -461,12 +621,20 @@ async def _single_resource_call(
     except KnowledgeAccessError as exc:
         return _error(exc.code.value)
     resource = plan.resources[0]
+    governor = governor or get_polarrag_tool_governor()
     try:
-        payload = await operation(
-            client_factory(plan.instance),
-            resource,
-            plan.acl_context,
-        )
+        async with governor.reserve_instance(
+            tool_name,
+            plan.instance.id,
+            1,
+        ):
+            payload = await operation(
+                client_factory(plan.instance),
+                resource,
+                plan.acl_context,
+            )
+    except PolarRAGGovernanceError as exc:
+        return _governance_error(exc)
     except PolarRAGUpstreamError as exc:
         return _error(exc.code.value)
     return _result(
@@ -521,19 +689,60 @@ async def handle_kb_fetch_context(
             doc_id,
             acl_context,
         )
-        return await client.fetch_context(
+        return _with_image_resources(await client.fetch_context(
             resource.space_id,
             doc_id,
             chunk_index=chunk_index,
             window_size=window_size,
             acl_context=acl_context,
-        )
+        ))
 
     return await _single_resource_call(
         session,
         user,
         knowledge_resource_id,
         operation,
+        tool_name="kb_fetch_context",
+        client_factory=client_factory,
+        resource_scope=resource_scope,
+    )
+
+
+async def handle_doc_list_chunks(
+    session: AsyncSession,
+    user: User,
+    *,
+    knowledge_resource_id: str,
+    doc_id: str,
+    offset: int = 0,
+    limit: int = 100,
+    resource_scope: KnowledgeResourceScope | None = None,
+    client_factory: ClientFactory = client_from_instance,
+) -> CallToolResult:
+    if not doc_id or offset < 0 or limit < 1 or limit > 1000:
+        return _error("INVALID_ARGUMENT")
+
+    async def operation(client, resource, acl_context):
+        await _authorized_document_info(
+            client,
+            resource,
+            doc_id,
+            acl_context,
+        )
+        return _with_image_resources(await client.list_document_chunks(
+            resource.space_id,
+            doc_id,
+            offset=offset,
+            limit=limit,
+            acl_context=acl_context,
+        ))
+
+    return await _single_resource_call(
+        session,
+        user,
+        knowledge_resource_id,
+        operation,
+        tool_name="doc_list_chunks",
         client_factory=client_factory,
         resource_scope=resource_scope,
     )
@@ -548,6 +757,7 @@ async def handle_doc_find_by_name(
     limit: int = 20,
     resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
+    governor: PolarRAGToolGovernor | None = None,
 ) -> CallToolResult:
     if not filename.strip() or limit < 1 or limit > 1000:
         return _error("INVALID_ARGUMENT")
@@ -560,23 +770,31 @@ async def handle_doc_find_by_name(
         )
     except KnowledgeAccessError as exc:
         return _error(exc.code.value)
+    governor = governor or get_polarrag_tool_governor()
     try:
-        client = client_factory(plan.instance)
+        async with governor.reserve_instance(
+            "doc_find_by_name",
+            plan.instance.id,
+            len(plan.resources),
+        ):
+            client = client_factory(plan.instance)
+            responses = await asyncio.gather(
+                *[
+                    client.find_by_name(
+                        resource.space_id,
+                        kb_id=resource.kb_id,
+                        filename=filename.strip(),
+                        limit=limit,
+                        acl_context=plan.acl_context,
+                    )
+                    for resource in plan.resources
+                ],
+                return_exceptions=True,
+            )
+    except PolarRAGGovernanceError as exc:
+        return _governance_error(exc)
     except PolarRAGUpstreamError as exc:
         return _error(exc.code.value)
-    responses = await asyncio.gather(
-        *[
-            client.find_by_name(
-                resource.space_id,
-                kb_id=resource.kb_id,
-                filename=filename.strip(),
-                limit=limit,
-                acl_context=plan.acl_context,
-            )
-            for resource in plan.resources
-        ],
-        return_exceptions=True,
-    )
     items: list[dict[str, Any]] = []
     partial_failures = list(plan.partial_failures)
     successful = 0
@@ -599,11 +817,7 @@ async def handle_doc_find_by_name(
             return _error(code)
         successful += 1
         sanitized = _sanitize_payload(response)
-        matches = (
-            sanitized.get("items")
-            if isinstance(sanitized, dict)
-            else None
-        )
+        matches = sanitized.get("items") if isinstance(sanitized, dict) else None
         if not isinstance(matches, list):
             matches = [sanitized]
         items.extend(
@@ -644,6 +858,7 @@ async def handle_doc_status(
             "doc_id",
             "kb_id",
             "filename",
+            "source",
             "status",
             "chunk_count",
             "created_at",
@@ -659,6 +874,7 @@ async def handle_doc_status(
         user,
         knowledge_resource_id,
         operation,
+        tool_name="doc_status",
         client_factory=client_factory,
         resource_scope=resource_scope,
     )
@@ -679,20 +895,21 @@ async def handle_doc_recall(
         return _error("INVALID_ARGUMENT")
 
     async def operation(client, resource, acl_context):
-        return await client.recall_document(
+        return _with_image_resources(await client.recall_document(
             resource.space_id,
             doc_id,
             kb_id=resource.kb_id,
             query=query.strip(),
             top_k=top_k,
             acl_context=acl_context,
-        )
+        ))
 
     return await _single_resource_call(
         session,
         user,
         knowledge_resource_id,
         operation,
+        tool_name="doc_recall",
         client_factory=client_factory,
         resource_scope=resource_scope,
     )
@@ -719,7 +936,7 @@ async def handle_doc_get_original(
         )
         result = {
             key: payload[key]
-            for key in ("doc_id", "filename", "file_type", "oss_path")
+            for key in ("doc_id", "filename", "source", "file_type", "oss_path")
             if key in payload
         }
         size = payload.get(
@@ -738,6 +955,7 @@ async def handle_doc_get_original(
         user,
         knowledge_resource_id,
         operation,
+        tool_name="doc_get_original",
         client_factory=client_factory,
         resource_scope=resource_scope,
     )
@@ -756,6 +974,7 @@ async def handle_doc_delete(
         return _error("INVALID_ARGUMENT")
 
     async def operation(client, resource, acl_context):
+        require_pas_managed_resource(resource)
         await _authorized_document_info(
             client,
             resource,
@@ -770,16 +989,14 @@ async def handle_doc_delete(
         if payload.get("doc_id") != doc_id:
             raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
         return {
-            key: payload[key]
-            for key in ("doc_id", "task_id", "status")
-            if key in payload
-        }
+            key: payload[key] for key in ("doc_id", "task_id", "status") if key in payload}
 
     return await _single_resource_call(
         session,
         user,
         knowledge_resource_id,
         operation,
+        tool_name="doc_delete",
         client_factory=client_factory,
         resource_scope=resource_scope,
     )
@@ -808,6 +1025,7 @@ async def handle_doc_rechunk(
         return _error("INVALID_ARGUMENT")
 
     async def operation(client, resource, acl_context):
+        require_pas_managed_resource(resource)
         await _authorized_document_info(
             client,
             resource,
@@ -841,6 +1059,7 @@ async def handle_doc_rechunk(
         user,
         knowledge_resource_id,
         operation,
+        tool_name="doc_rechunk",
         client_factory=client_factory,
         resource_scope=resource_scope,
     )
@@ -901,6 +1120,7 @@ async def handle_complete_document_upload(
     resource_scope: KnowledgeResourceScope | None = None,
     object_store_factory=object_store_from_space,
     client_factory: ClientFactory = client_from_instance,
+    governor: PolarRAGToolGovernor | None = None,
 ) -> CallToolResult:
     try:
         resource, payload = await complete_upload(
@@ -911,7 +1131,10 @@ async def handle_complete_document_upload(
             resource_scope=resource_scope,
             object_store_factory=object_store_factory,
             client_factory=client_factory,
+            governor=governor,
         )
+    except PolarRAGGovernanceError as exc:
+        return _governance_error(exc)
     except UploadSessionError as exc:
         return _error(exc.code)
     return _upload_tool_result(resource, payload)
@@ -940,36 +1163,71 @@ async def _execute_tool(
     **kwargs: Any,
 ) -> CallToolResult:
     started_at = time.perf_counter()
+    _governance_audit_error.set(None)
     async with get_session_factory()() as session:
-        agent_context = None
-        if require_agent_user_token:
-            agent_context = await current_agent_user_context(session)
-            if agent_context is None:
-                return _error("USER_AGENT_TOKEN_REQUIRED")
+        agent_context = await current_agent_user_context(session)
+        if require_agent_user_token and agent_context is None:
+            return _error("USER_AGENT_TOKEN_REQUIRED")
+        if agent_context is not None:
             user = agent_context.user
         else:
-            current_user = await _current_user(session)
-            if current_user is None:
+            token = get_access_token()
+            if token is None or not token.subject:
                 return _error("AUTH_REQUIRED")
-            user = current_user
-        resource_scope = await current_polarrag_resource_scope(
-            session,
-            context=agent_context,
-        )
+            try:
+                workspace = await resolve_mcp_workspace_context(
+                    session,
+                    token.subject,
+                    access_token_agent_id(token),
+                    personal=is_personal_access(token),
+                )
+            except MCPWorkspaceUnavailable as exc:
+                return _error(exc.code)
+            if workspace.user is None:
+                return _error("AUTH_REQUIRED")
+            user = workspace.user
         if agent_context is not None:
-            kwargs["agent_id"] = agent_context.agent.id
-        result = await handler(
-            session,
-            user,
-            resource_scope=resource_scope,
-            **kwargs,
-        )
+            resource_scope = await current_polarrag_resource_scope(
+                session,
+                context=agent_context,
+            )
+            agent_id = agent_context.agent.id
+        elif workspace.agent is None:
+            resource_scope = None
+            agent_id = None
+        else:
+            resource_scope = await resolve_polarrag_resource_scope_for_agent(
+                session,
+                workspace.agent.id,
+                user.id,
+            )
+            agent_id = workspace.agent.id
+        governance_error: PolarRAGGovernanceError | None
+        try:
+            await get_polarrag_tool_governor().check_rate(
+                tool_name,
+                user.id,
+                agent_id,
+            )
+        except PolarRAGGovernanceError as exc:
+            governance_error = exc
+            result = _governance_error(exc)
+        else:
+            governance_error = None
+            if require_agent_user_token and agent_context is not None:
+                kwargs["agent_id"] = agent_context.agent.id
+            result = await handler(
+                session,
+                user,
+                resource_scope=resource_scope,
+                **kwargs,
+            )
+            governance_error = _governance_audit_error.get()
         error_code = None
         result_payload: dict[str, Any] = {}
         if result.content:
             try:
-                decoded = json.loads(
-                    cast(TextContent, result.content[0]).text
+                decoded = json.loads(cast(TextContent, result.content[0]).text
                 )
                 if isinstance(decoded, dict):
                     result_payload = decoded
@@ -979,12 +1237,11 @@ async def _execute_tool(
             except (AttributeError, TypeError, ValueError):
                 if result.isError:
                     error_code = "POLARRAG_TOOL_FAILED"
-        resource_ids = kwargs.get("knowledge_resource_ids")
+        governance_rejected = error_code == "POLARRAG_TOOL_LIMITED"
+        resource_ids = [] if governance_rejected else kwargs.get("knowledge_resource_ids")
         if resource_ids is None:
             single_resource = kwargs.get("knowledge_resource_id")
-            resource_ids = (
-                [single_resource] if single_resource is not None else []
-            )
+            resource_ids = [single_resource] if single_resource is not None else []
         if not resource_ids:
             result_resource_id = result_payload.get("knowledge_resource_id")
             if isinstance(result_resource_id, str):
@@ -995,21 +1252,28 @@ async def _execute_tool(
                 resource_ids = [
                     item["knowledge_resource_id"]
                     for item in items
-                    if isinstance(item, dict)
-                    and isinstance(
-                        item.get("knowledge_resource_id"), str
-                    )
+                    if isinstance(item, dict) and isinstance(item.get("knowledge_resource_id"), str)
                 ]
-        normalized_resource_ids = (
-            resource_ids if isinstance(resource_ids, list) else []
-        )
-        audit_info = await _build_audit_client_info(
-            session,
-            user,
-            normalized_resource_ids,
-            result_payload,
-            error_code=error_code,
-        )
+        normalized_resource_ids = resource_ids if isinstance(resource_ids, list) else []
+        if governance_rejected:
+            audit_info = {
+                "polarrag_status": error_code,
+                "governance_reason": result_payload.get("reason"),
+                "retry_after_seconds": result_payload.get("retry_after_seconds"),
+            }
+            if governance_error is not None:
+                if governance_error.requested_fanout is not None:
+                    audit_info["requested_fanout"] = governance_error.requested_fanout
+                if governance_error.current_inflight is not None:
+                    audit_info["current_inflight"] = governance_error.current_inflight
+        else:
+            audit_info = await _build_audit_client_info(
+                session,
+                user,
+                normalized_resource_ids,
+                result_payload,
+                error_code=error_code,
+            )
         await log_audit(
             session,
             user_id=user.id,
@@ -1087,10 +1351,10 @@ def register_polarrag_tools(mcp) -> None:
     @mcp.tool(
         description=(
             "Search across one or more accessible PolarRAG knowledge bases. "
-            "Pass only opaque knowledge_resource_ids returned by "
-            "list_knowledge_resources; every ID in one call must belong to the "
-            "same PolarRAG instance and Space. Results are merged and ranked "
-            "across KBs. Always inspect partial_failures because an unavailable "
+            "Omit knowledge_resource_ids to search every knowledge base in the "
+            "effective Agent and user scope, or pass opaque IDs returned by "
+            "list_knowledge_resources. Results are merged and ranked across "
+            "instances, Spaces, and KBs. Always inspect partial_failures because an unavailable "
             "or inaccessible KB does not discard successful KB results. Use "
             "doc_recall instead when the doc_id is already known. If reranker "
             "is true but the Space has no reranker configuration, the tool "
@@ -1102,8 +1366,8 @@ def register_polarrag_tools(mcp) -> None:
         query: Annotated[str, Field(min_length=1, max_length=10000)],
         knowledge_resource_ids: Annotated[
             list[Annotated[str, Field(min_length=36, max_length=36)]],
-            Field(min_length=1, max_length=50),
-        ],
+            Field(min_length=1, max_length=1000),
+        ] | None = None,
         search_mode: str = "balanced",
         top_k: Annotated[int, Field(ge=1, le=1000)] = 10,
         min_score: Annotated[float | None, Field(ge=0)] = None,
@@ -1143,6 +1407,32 @@ def register_polarrag_tools(mcp) -> None:
             doc_id=doc_id,
             chunk_index=chunk_index,
             window_size=window_size,
+        )
+
+    @mcp.tool(
+        description=(
+            "List ACL-authorized chunks from one PolarRAG document in chunk "
+            "index order. Pass the knowledge_resource_id and doc_id from "
+            "document discovery, then continue with offset and limit until "
+            "the result has no more hits. Each chunk source includes "
+            "image_resources when the source document contains extracted "
+            "images."
+        ),
+        annotations=annotations,
+    )
+    async def doc_list_chunks(
+        knowledge_resource_id: Annotated[str, Field(min_length=36, max_length=36)],
+        doc_id: Annotated[str, Field(min_length=1, max_length=512)],
+        offset: Annotated[int, Field(ge=0)] = 0,
+        limit: Annotated[int, Field(ge=1, le=1000)] = 100,
+    ) -> CallToolResult:
+        return await _execute_tool(
+            "doc_list_chunks",
+            handle_doc_list_chunks,
+            knowledge_resource_id=knowledge_resource_id,
+            doc_id=doc_id,
+            offset=offset,
+            limit=limit,
         )
 
     @mcp.tool(

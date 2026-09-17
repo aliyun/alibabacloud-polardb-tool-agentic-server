@@ -25,39 +25,49 @@ class BootstrapSettings:
     encryption_key: bytes
 
 
-def _read_key_source(value: str) -> str:
-    if not value.startswith("file:"):
-        return value.strip()
-
-    raw_path = value.removeprefix("file:")
+def read_restricted_secret_file(
+    raw_path: str,
+    *,
+    setting_name: str,
+    max_bytes: int = _MAX_KEY_FILE_BYTES,
+) -> str:
     path = Path(raw_path)
     if not path.is_absolute():
         raise BootstrapConfigError(
-            "PAS_ENCRYPTION_KEY file reference must use an absolute path"
+            f"{setting_name} must use an absolute path"
         )
     try:
         resolved = path.resolve(strict=True)
         metadata = resolved.stat()
     except OSError as error:
         raise BootstrapConfigError(
-            "PAS_ENCRYPTION_KEY file is not readable"
+            f"{setting_name} is not readable"
         ) from error
     if not stat.S_ISREG(metadata.st_mode):
         raise BootstrapConfigError(
-            "PAS_ENCRYPTION_KEY file must resolve to a regular file"
+            f"{setting_name} must resolve to a regular file"
         )
-    if metadata.st_size > _MAX_KEY_FILE_BYTES:
-        raise BootstrapConfigError("PAS_ENCRYPTION_KEY file is too large")
+    if metadata.st_size > max_bytes:
+        raise BootstrapConfigError(f"{setting_name} is too large")
     if metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
         raise BootstrapConfigError(
-            "PAS_ENCRYPTION_KEY file permissions must not allow group or other access"
+            f"{setting_name} permissions must not allow group or other access"
         )
     try:
         return resolved.read_text(encoding="utf-8").strip()
-    except OSError as error:
+    except (OSError, UnicodeError) as error:
         raise BootstrapConfigError(
-            "PAS_ENCRYPTION_KEY file is not readable"
+            f"{setting_name} is not readable"
         ) from error
+
+
+def _read_key_source(value: str) -> str:
+    if not value.startswith("file:"):
+        return value.strip()
+    return read_restricted_secret_file(
+        value.removeprefix("file:"),
+        setting_name="PAS_ENCRYPTION_KEY file reference",
+    )
 
 
 def load_bootstrap_settings(

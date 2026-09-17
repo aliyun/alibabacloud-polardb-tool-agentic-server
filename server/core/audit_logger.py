@@ -39,7 +39,7 @@ async def log_audit(
     commit: bool = True,
 ) -> AuditLog | None:
     """Record an audit log entry."""
-    config = get_config().sql_security.audit
+    config = get_config().audit
 
     if not config.enabled and not required:
         return None

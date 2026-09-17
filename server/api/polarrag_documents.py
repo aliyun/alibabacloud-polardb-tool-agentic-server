@@ -37,6 +37,7 @@ from server.polarrag.upload import (
     object_store_from_space,
     validate_filename,
 )
+from server.polarrag.write_policy import require_pas_managed_resource
 
 router = APIRouter(prefix="/me/polarrag", tags=["polarrag-documents"])
 
@@ -94,7 +95,7 @@ async def _member_access(
                 KnowledgeAccessErrorCode.NO_ACCESSIBLE_RESOURCE
             )
         resource_scope = await resolve_polarrag_resource_scope_for_agent(
-            session, agent_id
+            session, agent_id, user.id
         )
         return await plan_knowledge_access(
             session,
@@ -113,6 +114,14 @@ async def _member_access(
 
 
 def _upstream_error(exc: PolarRAGUpstreamError) -> HTTPException:
+    if exc.code == PolarRAGErrorCode.EXTERNAL_SYNC_RESOURCE_READ_ONLY:
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": exc.code.value,
+                "message": "Externally synchronized knowledge resources are read-only in PAS.",
+            },
+        )
     if exc.status_code == 403:
         return HTTPException(
             status_code=403,
@@ -200,6 +209,7 @@ def _visible_documents(
         "doc_id",
         "kb_id",
         "filename",
+        "source",
         "file_size_bytes",
         "created_at",
         "status",
@@ -259,6 +269,10 @@ async def upload_document(
     )
     resource = access.resources[0]
     space = access.space
+    try:
+        require_pas_managed_resource(resource)
+    except PolarRAGUpstreamError as exc:
+        raise _upstream_error(exc) from exc
     if (
         not space.oss_config_validated
         or not space.oss_bucket
@@ -444,6 +458,7 @@ def _visible_document_page(
         "doc_id",
         "kb_id",
         "filename",
+        "source",
         "file_size_bytes",
         "created_at",
         "status",
@@ -486,6 +501,10 @@ async def delete_document(
         body.knowledge_resource_id,
     )
     resource = access.resources[0]
+    try:
+        require_pas_managed_resource(resource)
+    except PolarRAGUpstreamError as exc:
+        raise _upstream_error(exc) from exc
     client = client_from_instance(access.instance)
     await _authorized_document(client, resource, doc_id, access.acl_context)
     try:
@@ -536,6 +555,10 @@ async def rechunk_document(
         body.knowledge_resource_id,
     )
     resource = access.resources[0]
+    try:
+        require_pas_managed_resource(resource)
+    except PolarRAGUpstreamError as exc:
+        raise _upstream_error(exc) from exc
     client = client_from_instance(access.instance)
     await _authorized_document(client, resource, doc_id, access.acl_context)
     strategy = None if body.chunk_strategy == "inherit" else body.chunk_strategy

@@ -7,6 +7,7 @@ import {
   Modal,
   Skeleton,
   Space,
+  Steps,
   Tag,
   Typography,
   message,
@@ -23,6 +24,8 @@ import { useTranslation } from 'react-i18next'
 import api, { getAPIErrorMessage } from '../../api/client'
 import {
   executeConfig,
+  getUserSSOTest,
+  startUserSSOTest,
   type AliyunAccessMutation,
   type ConfigModule,
   type ConfigResponse,
@@ -30,10 +33,14 @@ import {
 import AliyunAccessForm from '../../components/AliyunAccessForm'
 import ConfigModuleForm from '../../components/ConfigModuleForm'
 import LanguageSwitcher from '../../components/LanguageSwitcher'
+import UserSSOForm from '../../components/UserSSOForm'
 import { formatDateTime } from '../../i18n/format'
 import {
   isConfirmableExternalFailure,
   normalizeDryRunDetails,
+  parseActivationProof,
+  createIdempotencyKey,
+  type ActivationProof,
   type SafeDryRunDetails,
 } from './workflowSafety'
 import {
@@ -70,6 +77,13 @@ interface SetupProps {
   onEnterConsole?: () => void
 }
 
+interface UserSSOActivation {
+  proof: ActivationProof
+  browserLoginEnabled: boolean
+  testId?: string
+  status: 'validated' | 'testing' | 'passed'
+}
+
 export default function Setup({
   mode = 'bootstrap',
   onEnterConsole,
@@ -86,6 +100,8 @@ export default function Setup({
   const [planDetails, setPlanDetails] = useState<SafeDryRunDetails>()
   const [checkedCandidate, setCheckedCandidate] =
     useState<ActivationCandidate>()
+  const [userSSOActivation, setUserSSOActivation] =
+    useState<UserSSOActivation>()
   const [completed, setCompleted] = useState(false)
   const [confirmationOpen, setConfirmationOpen] = useState(false)
   const [focusTarget, setFocusTarget] = useState<'dryRun' | 'heading'>()
@@ -96,6 +112,14 @@ export default function Setup({
     () => modules?.find((module) => module.name === selectedName),
     [modules, selectedName],
   )
+  const externalBaseUrl = useMemo(() => {
+    const runtimePolicy = modules?.find(
+      (module) => module.name === 'runtime_policy',
+    )
+    const value = runtimePolicy?.effective?.config.external_base_url
+      ?? runtimePolicy?.draft?.external_base_url
+    return typeof value === 'string' ? value : undefined
+  }, [modules])
 
   const moduleDisplayName = useCallback((name: string) => (
     t(`setup.moduleNames.${name}`, {
@@ -105,7 +129,8 @@ export default function Setup({
 
   const loadModules = useCallback(async (token?: string) => {
     const response = await executeConfig({ action: 'describe' }, token)
-    setModules(response.modules ?? [])
+    const knowledgeEnabled = response.modules?.find(module => module.name === 'knowledge')?.effective?.config.enabled !== false
+    setModules((response.modules ?? []).filter(module => module.name !== 'knowledge' && (module.name !== 'polarrag_tool_limits' || knowledgeEnabled)))
     setCompleted(response.system_state === 'READY')
     return response
   }, [])
@@ -178,7 +203,158 @@ export default function Setup({
     setPlan(undefined)
     setPlanDetails(undefined)
     setCheckedCandidate(undefined)
+    setUserSSOActivation(undefined)
     setConfirmationOpen(false)
+  }
+
+  async function saveAndValidateUserSSO() {
+    if (
+      !selected
+      || selected.name !== 'user_sso'
+      || !checkedCandidate
+      || checkedCandidate.moduleName !== selected.name
+      || checkedCandidate.revision !== selected.revision
+    ) return
+    setBusy(true)
+    try {
+      const saved = await executeConfig({
+        action: 'save_draft',
+        module: selected.name,
+        expected_revision: selected.revision,
+        config: checkedCandidate.config,
+      }, verifiedToken)
+      const savedRevision = saved.module?.revision
+      if (savedRevision === undefined) {
+        throw new Error('invalid activation proof')
+      }
+      const validated = await executeConfig({
+        action: 'validate',
+        module: selected.name,
+        expected_revision: savedRevision,
+      }, verifiedToken)
+      const proof = parseActivationProof(saved, validated)
+      if (!proof) {
+        throw new Error('invalid activation proof')
+      }
+      setUserSSOActivation({
+        proof,
+        browserLoginEnabled:
+          checkedCandidate.config.browser_login_enabled !== false,
+        status: 'validated',
+      })
+      setCheckedCandidate(undefined)
+      message.success(t('setup.userSSO.validationPassed'))
+    } catch (error) {
+      invalidatePlan()
+      message.error(getAPIErrorMessage(error, t('setup.activateFailed')))
+      try {
+        await loadModules(verifiedToken)
+      } catch (refreshError) {
+        message.error(getAPIErrorMessage(refreshError, t('setup.refreshFailed')))
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function testUserSSOLogin() {
+    if (!userSSOActivation || userSSOActivation.status !== 'validated') return
+    setBusy(true)
+    try {
+      const test = await startUserSSOTest()
+      if (!test.authorize_url) {
+        throw new Error(t('setup.userSSO.testStartFailed'))
+      }
+      const popup = window.open(
+        test.authorize_url,
+        'pas-user-sso-test',
+        'popup,width=720,height=760',
+      )
+      if (!popup) {
+        throw new Error(t('setup.userSSO.popupBlocked'))
+      }
+      setUserSSOActivation({
+        ...userSSOActivation,
+        testId: test.id,
+        status: 'testing',
+      })
+      let result = await getUserSSOTest(test.id)
+      for (let attempt = 0; attempt < 120 && (
+        result.status === 'pending' || result.status === 'exchanging'
+      ); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000))
+        result = await getUserSSOTest(test.id)
+      }
+      if (result.status !== 'passed') {
+        throw new Error(result.error_code || t('setup.userSSO.testFailed'))
+      }
+      popup.close()
+      setUserSSOActivation({
+        ...userSSOActivation,
+        testId: test.id,
+        status: 'passed',
+      })
+      message.success(t('setup.userSSO.testPassed'))
+    } catch (error) {
+      setUserSSOActivation((current) => current
+        ? {
+            proof: current.proof,
+            browserLoginEnabled: current.browserLoginEnabled,
+            status: 'validated',
+          }
+        : current)
+      message.error(getAPIErrorMessage(error, t('setup.userSSO.testFailed')))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function activateUserSSO() {
+    if (
+      !selected
+      || selected.name !== 'user_sso'
+      || !userSSOActivation
+      || (
+        userSSOActivation.browserLoginEnabled
+        && (
+          !userSSOActivation.testId
+          || userSSOActivation.status !== 'passed'
+        )
+      )
+      || (
+        !userSSOActivation.browserLoginEnabled
+        && userSSOActivation.status !== 'validated'
+      )
+    ) return
+    setBusy(true)
+    try {
+      await executeConfig({
+        action: 'activate',
+        module: selected.name,
+        expected_revision: userSSOActivation.proof.validatedRevision,
+        validation_id: userSSOActivation.proof.validationId,
+        ...(userSSOActivation.testId
+          ? { sso_test_id: userSSOActivation.testId }
+          : {}),
+        idempotency_key: createIdempotencyKey(),
+      }, verifiedToken)
+      message.success(t('setup.activeSuccess', {
+        module: moduleDisplayName(selected.name),
+      }))
+      invalidatePlan()
+      await loadModules(verifiedToken)
+      setFocusTarget('heading')
+    } catch (error) {
+      message.error(getAPIErrorMessage(error, t('setup.activateFailed')))
+      invalidatePlan()
+      try {
+        await loadModules(verifiedToken)
+      } catch (refreshError) {
+        message.error(getAPIErrorMessage(refreshError, t('setup.refreshFailed')))
+      }
+    } finally {
+      setBusy(false)
+    }
   }
 
   useEffect(() => {
@@ -558,11 +734,50 @@ export default function Setup({
               description={t('setup.builtInModuleActiveDescription')}
             />
           )}
+          {selected.name === 'user_sso' && (
+            <Steps
+              size="small"
+              current={
+                userSSOActivation?.status === 'passed'
+                  ? 2
+                  : userSSOActivation
+                    ? 1
+                    : 0
+              }
+              status={
+                userSSOActivation?.status === 'testing'
+                  ? 'process'
+                  : 'wait'
+              }
+              items={userSSOActivation?.browserLoginEnabled === false
+                ? [
+                    { title: t('setup.userSSO.steps.validate') },
+                    { title: t('setup.userSSO.steps.activate') },
+                  ]
+                : [
+                    { title: t('setup.userSSO.steps.validate') },
+                    { title: t('setup.userSSO.steps.test') },
+                    { title: t('setup.userSSO.steps.activate') },
+                  ]}
+              style={{ marginBottom: 20 }}
+            />
+          )}
 
           {!builtInModuleLocked && (selected.name === 'aliyun_access' ? (
             <AliyunAccessForm
               key={`${selected.name}:${selected.revision}`}
               module={selected}
+              disabled={busy || moduleLocked}
+              onSubmit={runDryRun}
+              onValuesChange={invalidatePlan}
+              formId="selected-module-form"
+            />
+          ) : selected.name === 'user_sso' ? (
+            <UserSSOForm
+              key={`${selected.name}:${selected.revision}`}
+              module={selected}
+              externalBaseUrl={externalBaseUrl}
+              initialSection={searchParams.get('section') ?? undefined}
               disabled={busy || moduleLocked}
               onSubmit={runDryRun}
               onValuesChange={invalidatePlan}
@@ -581,12 +796,39 @@ export default function Setup({
           ))}
 
           <div className="setup-actions">
-            {!moduleLocked && !checkedCandidate && (
+            {!moduleLocked
+              && !checkedCandidate
+              && !userSSOActivation
+              && (
               <Button ref={dryRunButtonRef} type="primary" htmlType="submit" form="selected-module-form" loading={busy}>
                 {t('setup.runDryRun')}
               </Button>
             )}
-            {!moduleLocked && checkedCandidate && (
+            {!moduleLocked
+              && checkedCandidate
+              && selected.name === 'user_sso'
+              && (
+              <>
+                <Button
+                  type="primary"
+                  loading={busy}
+                  onClick={() => void saveAndValidateUserSSO()}
+                >
+                  {t('setup.userSSO.saveAndValidate')}
+                </Button>
+                <Button
+                  htmlType="submit"
+                  form="selected-module-form"
+                  disabled={busy}
+                >
+                  {t('setup.runDryRunAgain')}
+                </Button>
+              </>
+            )}
+            {!moduleLocked
+              && checkedCandidate
+              && selected.name !== 'user_sso'
+              && (
               <>
                 <Button
                   type="primary"
@@ -605,6 +847,52 @@ export default function Setup({
                   {t('setup.runDryRunAgain')}
                 </Button>
               </>
+            )}
+            {!moduleLocked
+              && selected.name === 'user_sso'
+              && userSSOActivation?.status === 'validated'
+              && userSSOActivation.browserLoginEnabled
+              && (
+              <Button
+                type="primary"
+                loading={busy}
+                onClick={() => void testUserSSOLogin()}
+              >
+                {t('setup.userSSO.testLogin')}
+              </Button>
+            )}
+            {!moduleLocked
+              && selected.name === 'user_sso'
+              && userSSOActivation?.status === 'validated'
+              && !userSSOActivation.browserLoginEnabled
+              && (
+              <Button
+                type="primary"
+                loading={busy}
+                onClick={() => void activateUserSSO()}
+              >
+                {t('setup.userSSO.activateTokenExchange')}
+              </Button>
+            )}
+            {!moduleLocked
+              && selected.name === 'user_sso'
+              && userSSOActivation?.status === 'testing'
+              && (
+              <Button type="primary" loading>
+                {t('setup.userSSO.waitingForLogin')}
+              </Button>
+            )}
+            {!moduleLocked
+              && selected.name === 'user_sso'
+              && userSSOActivation?.status === 'passed'
+              && (
+              <Button
+                type="primary"
+                loading={busy}
+                onClick={() => void activateUserSSO()}
+              >
+                {t('setup.userSSO.activate')}
+              </Button>
             )}
             {!moduleLocked && selected.name !== 'core_admin' && selected.workflow_state !== 'ACTIVE' && (
               <Button onClick={skipModule} disabled={busy}>

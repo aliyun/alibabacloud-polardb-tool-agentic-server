@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
+from server.api.pagination import Page
 from server.core.audit_logger import log_audit
 from server.core.db_instance_service import (
     DBInstanceNotFound,
@@ -100,24 +101,59 @@ class DBInstanceResourceAdminResponse(BaseModel):
         )
 
 
-@router.get("", response_model=list[DBInstanceResourceAdminResponse])
+@router.get("", response_model=Page[DBInstanceResourceAdminResponse])
 async def list_db_instance_resources(
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
+    provisioning_mode: str | None = Query(default=None, max_length=32),
+    resource_statuses: list[str] = Query(default=[], alias="status"),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    filters = []
+    if provisioning_mode:
+        filters.append(DBInstanceResource.provisioning_mode == provisioning_mode)
+    if resource_statuses:
+        filters.append(DBInstanceResource.status.in_(resource_statuses))
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        filters.append(
+            or_(
+                DBInstanceResource.id.ilike(pattern),
+                DBInstanceResource.name.ilike(pattern),
+                DBInstanceResource.owner_agent_id.ilike(pattern),
+            )
+        )
+    total = (
+        await session.scalar(
+            select(func.count(DBInstanceResource.id)).where(*filters)
+        )
+        or 0
+    )
     resources = list(
         (
             await session.scalars(
-                select(DBInstanceResource).order_by(
-                    DBInstanceResource.created_at.desc()
+                select(DBInstanceResource)
+                .where(*filters)
+                .order_by(
+                    DBInstanceResource.created_at.desc(),
+                    DBInstanceResource.id,
                 )
+                .offset(offset)
+                .limit(limit)
             )
         ).all()
     )
-    return [
-        DBInstanceResourceAdminResponse.from_model(resource)
-        for resource in resources
-    ]
+    return Page(
+        items=[
+            DBInstanceResourceAdminResponse.from_model(resource)
+            for resource in resources
+        ],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.get(

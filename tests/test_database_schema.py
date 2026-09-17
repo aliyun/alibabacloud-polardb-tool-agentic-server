@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 
@@ -94,14 +95,32 @@ async def test_check_database_schema_rejects_uninitialized_database(
 async def test_check_database_schema_accepts_current_revision(
     tmp_path: Path,
 ) -> None:
-    from server.db.schema import check_database_schema, required_schema_head
+    from server.db.schema import (
+        check_database_schema,
+        migrate_database,
+        required_schema_head,
+    )
 
     database = tmp_path / "current.db"
-    _stamp(database, required_schema_head())
+    await asyncio.to_thread(migrate_database, _database_url(database))
 
     assert await check_database_schema(_database_url(database)) == (
         required_schema_head()
     )
+
+
+async def test_check_database_schema_rejects_same_head_physical_drift(
+    tmp_path: Path,
+) -> None:
+    from server.db.schema import DatabaseSchemaError, check_database_schema
+
+    database = tmp_path / "drifted.db"
+    _stamp(database, "f6a7b8c9d0e1")
+
+    with pytest.raises(DatabaseSchemaError) as captured:
+        await check_database_schema(_database_url(database))
+
+    assert captured.value.code == "DATABASE_SCHEMA_PHYSICAL_STATE_UNKNOWN"
 
 
 async def test_check_database_schema_rejects_known_older_revision(
@@ -215,6 +234,108 @@ def test_database_compatibility_accepts_matching_root_key(
     assert asyncio.run(
         check_database_compatibility(database_url, root_key)
     ) == required_schema_head()
+
+
+def _downgrade_audit_modules_to_v1(
+    database: Path,
+    *,
+    audit_enabled: object = False,
+    audit_retention_days: object = 45,
+) -> None:
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            "SELECT config_key, config_value FROM system_config "
+            "WHERE config_key IN (?, ?)",
+            ("module.sql_security", "module.observability"),
+        ).fetchall()
+        assert len(rows) == 2
+        documents = {key: json.loads(value) for key, value in rows}
+        sql = documents["module.sql_security"]
+        observability = documents["module.observability"]
+        sql["schema_version"] = 1
+        sql["effective"]["config"].update(
+            {
+                "audit_enabled": audit_enabled,
+                "audit_retention_days": audit_retention_days,
+            }
+        )
+        observability["schema_version"] = 1
+        observability["effective"]["config"].pop("audit_enabled")
+        observability["effective"]["config"].pop(
+            "audit_retention_days"
+        )
+        connection.executemany(
+            "UPDATE system_config SET config_value = ? "
+            "WHERE config_key = ?",
+            (
+                (
+                    json.dumps(sql, separators=(",", ":")),
+                    "module.sql_security",
+                ),
+                (
+                    json.dumps(observability, separators=(",", ":")),
+                    "module.observability",
+                ),
+            ),
+        )
+
+
+def test_database_compatibility_projects_legacy_audit_without_writing(
+    tmp_path: Path,
+) -> None:
+    from server.db.schema import (
+        check_database_compatibility,
+        migrate_database,
+        required_schema_head,
+    )
+
+    root_key = b"d" * 32
+    database = tmp_path / "legacy-audit.db"
+    database_url = _database_url(database)
+    migrate_database(database_url)
+    asyncio.run(_initialize_configuration(database_url, root_key))
+    _downgrade_audit_modules_to_v1(database)
+
+    assert asyncio.run(
+        check_database_compatibility(database_url, root_key)
+    ) == required_schema_head()
+
+    with sqlite3.connect(database) as connection:
+        versions = connection.execute(
+            "SELECT json_extract(config_value, '$.schema_version') "
+            "FROM system_config WHERE config_key IN (?, ?) "
+            "ORDER BY config_key",
+            ("module.sql_security", "module.observability"),
+        ).fetchall()
+    assert versions == [(1,), (1,)]
+
+
+def test_database_compatibility_rejects_invalid_legacy_audit(
+    tmp_path: Path,
+) -> None:
+    from server.db.schema import (
+        DatabaseSchemaError,
+        check_database_compatibility,
+        migrate_database,
+    )
+
+    root_key = b"e" * 32
+    database = tmp_path / "invalid-legacy-audit.db"
+    database_url = _database_url(database)
+    migrate_database(database_url)
+    asyncio.run(_initialize_configuration(database_url, root_key))
+    _downgrade_audit_modules_to_v1(
+        database,
+        audit_retention_days="invalid",
+    )
+
+    with pytest.raises(DatabaseSchemaError) as captured:
+        asyncio.run(
+            check_database_compatibility(database_url, root_key)
+        )
+
+    assert captured.value.code == "DATABASE_CONFIGURATION_INCOMPATIBLE"
+    assert captured.value.__cause__ is None
 
 
 def test_database_compatibility_rejects_mismatched_root_key(

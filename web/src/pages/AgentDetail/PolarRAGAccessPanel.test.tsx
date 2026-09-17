@@ -6,12 +6,13 @@ import {
   createAgentGroupAssignment,
   createAgentPolarRAGBinding,
   createAgentUserAssignment,
+  createAllAgentUserAssignments,
   listAgentGroupAssignments,
   listAgentGroupOptions,
   listAgentPolarRAGBindings,
   listAgentUserAssignments,
+  listAgentUserOptions,
 } from '../../api/agents'
-import api from '../../api/client'
 import { listPolarRAGInstances } from '../../api/polarrag'
 import PolarRAGAccessPanel from './PolarRAGAccessPanel'
 
@@ -19,20 +20,33 @@ vi.mock('../../api/agents', () => ({
   createAgentGroupAssignment: vi.fn(),
   createAgentPolarRAGBinding: vi.fn(),
   createAgentUserAssignment: vi.fn(),
+  createAllAgentUserAssignments: vi.fn(),
   deleteAgentPolarRAGBinding: vi.fn(),
   deleteAgentUserAssignment: vi.fn(),
   forceRevokeAgentUserToken: vi.fn(),
+  getAllAgentUserAssignmentStatus: vi.fn(),
   listAgentGroupAssignments: vi.fn(),
   listAgentGroupOptions: vi.fn(),
   listAgentPolarRAGBindings: vi.fn(),
   listAgentUserAssignments: vi.fn(),
+  listAgentUserOptions: vi.fn(),
 }))
-vi.mock('../../api/client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../api/client')>()
-  return { ...actual, default: { get: vi.fn() } }
-})
 vi.mock('../../api/polarrag', () => ({
   listPolarRAGInstances: vi.fn(),
+}))
+vi.mock('./EnterpriseAccessDrawer', () => ({
+  default: (props: {
+    open: boolean
+    onApplied: () => void | Promise<void>
+  }) =>
+    props.open ? (
+      <button onClick={() => void props.onApplied()}>
+        Apply enterprise drawer
+      </button>
+    ) : null,
+}))
+vi.mock('./KnowledgeBindingsPanel', () => ({
+  default: () => <div>Knowledge bindings</div>,
 }))
 
 describe('Agent PolarRAG access panel', () => {
@@ -41,7 +55,7 @@ describe('Agent PolarRAG access panel', () => {
     vi.mocked(listPolarRAGInstances).mockResolvedValue({
       data: { items: [{ id: 'rag-1', name: 'Primary RAG' }] },
     } as never)
-    vi.mocked(api.get).mockResolvedValue({
+    vi.mocked(listAgentUserOptions).mockResolvedValue({
       data: {
         total: 1,
         items: [
@@ -55,9 +69,15 @@ describe('Agent PolarRAG access panel', () => {
       },
     } as never)
     vi.mocked(listAgentPolarRAGBindings).mockResolvedValue({ data: [] } as never)
-    vi.mocked(listAgentUserAssignments).mockResolvedValue({ data: [] } as never)
-    vi.mocked(listAgentGroupOptions).mockResolvedValue({ data: [] } as never)
-    vi.mocked(listAgentGroupAssignments).mockResolvedValue({ data: [] } as never)
+    vi.mocked(listAgentUserAssignments).mockResolvedValue({
+      data: { items: [], total: 0, offset: 0, limit: 20 },
+    } as never)
+    vi.mocked(listAgentGroupOptions).mockResolvedValue({
+      data: { items: [], total: 0, offset: 0, limit: 50 },
+    } as never)
+    vi.mocked(listAgentGroupAssignments).mockResolvedValue({
+      data: { items: [], total: 0, offset: 0, limit: 20 },
+    } as never)
     vi.mocked(createAgentPolarRAGBinding).mockResolvedValue({
       data: {
         id: 'binding-1',
@@ -68,6 +88,9 @@ describe('Agent PolarRAG access panel', () => {
       },
     } as never)
     vi.mocked(createAgentUserAssignment).mockResolvedValue({ data: {} } as never)
+    vi.mocked(createAllAgentUserAssignments).mockResolvedValue({
+      data: { status: 'completed', created_count: 1, error: null },
+    } as never)
     vi.mocked(createAgentGroupAssignment).mockResolvedValue({ data: {} } as never)
   })
 
@@ -90,6 +113,23 @@ describe('Agent PolarRAG access panel', () => {
       configure.compareDocumentPosition(instance) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
+  })
+
+  it('keeps PAS user and Department candidates available beside assigned-list search', async () => {
+    render(
+      <PolarRAGAccessPanel
+        agentId="agent-1"
+        bindings={[]}
+        onBindingsChange={vi.fn()}
+      />,
+    )
+
+    expect(await screen.findByPlaceholderText('Search assigned users')).toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: 'PAS user' })).toBeInTheDocument()
+    expect(
+      screen.getByRole('combobox', { name: 'PAS or enterprise group' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select all users' })).toBeInTheDocument()
   })
 
   it('binds an instance and assigns a PAS user without exposing a token', async () => {
@@ -127,7 +167,7 @@ describe('Agent PolarRAG access panel', () => {
 
   it('assigns a Department or registered enterprise group', async () => {
     vi.mocked(listAgentGroupOptions).mockResolvedValue({
-      data: [
+      data: { items: [
         {
           group_kind: 'department',
           department_id: 'department-1',
@@ -146,7 +186,7 @@ describe('Agent PolarRAG access panel', () => {
           principal_id: 'finance-e2e',
           member_count: 1,
         },
-      ],
+      ], total: 2, offset: 0, limit: 50 },
     } as never)
     const user = userEvent.setup()
     render(
@@ -181,7 +221,7 @@ describe('Agent PolarRAG access panel', () => {
 
   it('assigns every synchronized identity-source user explicitly', async () => {
     vi.mocked(listAgentGroupOptions).mockResolvedValue({
-      data: [
+      data: { items: [
         {
           group_kind: 'identity_source_all',
           department_id: null,
@@ -195,7 +235,7 @@ describe('Agent PolarRAG access panel', () => {
           principal_id: null,
           member_count: 1,
         },
-      ],
+      ], total: 1, offset: 0, limit: 50 },
     } as never)
     const user = userEvent.setup()
     render(
@@ -230,7 +270,7 @@ describe('Agent PolarRAG access panel', () => {
   })
 
   it('selects all currently unassigned PAS users', async () => {
-    vi.mocked(api.get).mockResolvedValue({
+    vi.mocked(listAgentUserOptions).mockResolvedValue({
       data: {
         total: 2,
         items: [
@@ -265,12 +305,11 @@ describe('Agent PolarRAG access panel', () => {
       screen.getByRole('button', { name: 'Assign selected users' }),
     )
 
-    expect(createAgentUserAssignment).toHaveBeenCalledWith('agent-1', 'user-1')
-    expect(createAgentUserAssignment).toHaveBeenCalledWith('agent-1', 'user-2')
+    expect(createAllAgentUserAssignments).toHaveBeenCalledWith('agent-1')
   })
 
   it('clears the selected users when the select-all toggle is clicked again', async () => {
-    vi.mocked(api.get).mockResolvedValue({
+    vi.mocked(listAgentUserOptions).mockResolvedValue({
       data: {
         total: 2,
         items: [
@@ -312,7 +351,7 @@ describe('Agent PolarRAG access panel', () => {
 
   it('selects all group options without expanding source-wide access', async () => {
     vi.mocked(listAgentGroupOptions).mockResolvedValue({
-      data: [
+      data: { items: [
         {
           group_kind: 'department',
           department_id: 'department-1',
@@ -339,7 +378,7 @@ describe('Agent PolarRAG access panel', () => {
           principal_id: null,
           member_count: 1,
         },
-      ],
+      ], total: 2, offset: 0, limit: 50 },
     } as never)
     const user = userEvent.setup()
     render(
@@ -351,7 +390,7 @@ describe('Agent PolarRAG access panel', () => {
     )
 
     await user.click(
-      await screen.findByRole('button', { name: 'Select all groups' }),
+      await screen.findByRole('checkbox', { name: 'Select current page groups' }),
     )
     await user.click(
       screen.getByRole('button', { name: 'Assign selected groups' }),

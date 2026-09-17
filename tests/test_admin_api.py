@@ -1,6 +1,9 @@
 
+from datetime import UTC, datetime
+
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from server.aliyun.polardb_client import MockPolarDBClient, set_polardb_client, reset_polardb_client
@@ -10,7 +13,15 @@ from server.auth.jwt_manager import create_access_token, reset_keys
 from server.config import reset_config
 from tests._helpers import init_test_jwt_keys
 from server.db import engine as engine_mod
-from server.models import Base, User, AuthProvider, UserRole
+from server.models import (
+    AuditLog,
+    AuditStatus,
+    Base,
+    User,
+    AuthProvider,
+    UserRefreshToken,
+    UserRole,
+)
 
 _REGISTERED_CONNECTION = {
     "host": "db.example.invalid",
@@ -81,7 +92,7 @@ async def client(admin_user):
 
 @pytest.fixture
 def admin_headers(admin_user):
-    token = create_access_token({"sub": admin_user.id, "role": "admin"})
+    token = create_access_token({"sub": admin_user.id, "role": "admin", "credential_epoch": admin_user.credential_epoch})
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -95,7 +106,7 @@ class TestDepartmentAPI:
         # List
         resp = await client.get("/api/departments", headers=admin_headers)
         assert resp.status_code == 200
-        assert any(d["id"] == dept_id for d in resp.json())
+        assert any(d["id"] == dept_id for d in resp.json()["items"])
 
     async def test_update_department(self, client, admin_headers):
         resp = await client.post("/api/departments", json={"name": "Sales"}, headers=admin_headers)
@@ -139,7 +150,9 @@ class TestDepartmentAPI:
 
         resp = await client.get("/api/departments", headers=admin_headers)
         assert resp.status_code == 200
-        dept = next(d for d in resp.json() if d["name"] == "AgenticList")
+        dept = next(
+            d for d in resp.json()["items"] if d["name"] == "AgenticList"
+        )
         assert "agentic_db_cluster_id" in dept
         assert "agentic_db_cluster_description" in dept
 
@@ -183,6 +196,59 @@ class TestInstanceAPI:
 
 
 class TestUserAPI:
+    async def test_delete_user_with_audit_history_requires_disable(
+        self, client, admin_headers
+    ):
+        async with engine_mod._session_factory() as session:
+            await session.execute(text("PRAGMA foreign_keys=ON"))
+            assert await session.scalar(text("PRAGMA foreign_keys")) == 1
+            member = User(
+                external_id="delete-with-history",
+                display_name="Delete With History",
+                auth_provider=AuthProvider.BUILTIN,
+                password_hash=hash_password("delete-password-123"),
+                role=UserRole.MEMBER,
+            )
+            session.add(member)
+            await session.flush()
+            session.add_all(
+                [
+                    UserRefreshToken(
+                        user_id=member.id,
+                        token_hash="delete-user-refresh-token",
+                        token_family="delete-user-family",
+                        expires_at=datetime.now(UTC),
+                    ),
+                    AuditLog(
+                        actor_user_id=member.id,
+                        action="user.test",
+                        status=AuditStatus.SUCCESS,
+                    ),
+                ]
+            )
+            await session.commit()
+            member_id = member.id
+
+        response = await client.delete(
+            f"/api/users/{member_id}", headers=admin_headers
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == {
+            "error": "USER_HAS_AUDIT_HISTORY",
+            "message": "User has audit history. Disable the user instead.",
+        }
+        async with engine_mod._session_factory() as session:
+            assert await session.get(User, member_id) is not None
+            assert await session.scalar(
+                select(UserRefreshToken).where(
+                    UserRefreshToken.user_id == member_id
+                )
+            )
+            assert await session.scalar(
+                select(AuditLog).where(AuditLog.actor_user_id == member_id)
+            )
+
     async def test_list_users(self, client, admin_headers):
         resp = await client.get("/api/users", headers=admin_headers)
         assert resp.status_code == 200
@@ -192,6 +258,118 @@ class TestUserAPI:
         resp = await client.get(f"/api/users/{admin_user.id}", headers=admin_headers)
         assert resp.status_code == 200
         assert resp.json()["external_id"] == "admin"
+
+    async def test_create_user_rejects_password_shorter_than_shared_policy(
+        self, client, admin_headers
+    ):
+        resp = await client.post(
+            "/api/users",
+            json={"username": "short-password", "password": "short123"},
+            headers=admin_headers,
+        )
+
+        assert resp.status_code == 400
+        assert "12 characters" in resp.json()["detail"]
+
+    async def test_reset_password_rejects_password_shorter_than_shared_policy(
+        self, client, admin_headers, admin_user
+    ):
+        resp = await client.put(
+            f"/api/users/{admin_user.id}/reset-password",
+            json={"new_password": "short123"},
+            headers=admin_headers,
+        )
+
+        assert resp.status_code == 400
+        assert "12 characters" in resp.json()["detail"]
+
+    async def test_reset_password_invalidates_only_target_user_sessions(
+        self,
+        client,
+        admin_user,
+    ):
+        async with engine_mod._session_factory() as session:
+            member = User(
+                external_id="reset-target",
+                display_name="Reset Target",
+                auth_provider=AuthProvider.BUILTIN,
+                password_hash=hash_password("old-password-123"),
+                role=UserRole.MEMBER,
+            )
+            session.add(member)
+            await session.commit()
+            member_id = member.id
+
+        app = create_app()
+        async with (
+            AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as admin_client,
+            AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as member_client,
+        ):
+            admin_login = await admin_client.post(
+                "/auth/login",
+                json={"username": "admin", "password": "password"},
+            )
+            member_login = await member_client.post(
+                "/auth/login",
+                json={
+                    "username": "reset-target",
+                    "password": "old-password-123",
+                },
+            )
+            assert admin_login.status_code == 200
+            assert member_login.status_code == 200
+            admin_token = admin_login.json()["access_token"]
+            member_token = member_login.json()["access_token"]
+
+            response = await admin_client.put(
+                f"/api/users/{member_id}/reset-password",
+                json={"new_password": "reset-password-123"},
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+
+            assert response.status_code == 200
+            assert (
+                await member_client.get(
+                    "/auth/me",
+                    headers={"Authorization": f"Bearer {member_token}"},
+                )
+            ).status_code == 401
+            assert (await member_client.post("/auth/refresh")).status_code == 401
+            assert (
+                await admin_client.get(
+                    "/auth/me",
+                    headers={"Authorization": f"Bearer {admin_token}"},
+                )
+            ).status_code == 200
+            assert (await admin_client.post("/auth/refresh")).status_code == 200
+
+        async with engine_mod._session_factory() as session:
+            member = await session.get(User, member_id)
+            assert member is not None
+            assert member.credential_epoch == 2
+            assert admin_user.credential_epoch == 1
+            target_active = await session.scalar(
+                select(func.count())
+                .select_from(UserRefreshToken)
+                .where(
+                    UserRefreshToken.user_id == member_id,
+                    UserRefreshToken.revoked_at.is_(None),
+                )
+            )
+            admin_active = await session.scalar(
+                select(func.count())
+                .select_from(UserRefreshToken)
+                .where(
+                    UserRefreshToken.user_id == admin_user.id,
+                    UserRefreshToken.revoked_at.is_(None),
+                )
+            )
+            assert target_active == 0
+            assert admin_active == 1
 
 
 class TestBindingAPI:

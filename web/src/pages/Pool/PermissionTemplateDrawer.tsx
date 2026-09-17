@@ -98,7 +98,7 @@ export default function PermissionTemplateDrawer({
     setError(null)
     setLoading(true)
     void listPermissionTemplates()
-      .then((response) => setTemplates(response.data))
+      .then((response) => setTemplates(response.data.items))
       .catch((requestError) =>
         setError(
           getAPIErrorMessage(

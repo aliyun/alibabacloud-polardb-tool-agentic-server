@@ -1,4 +1,5 @@
 import api from './client'
+import type { Page, PageParams } from './pagination'
 
 export interface DBInstanceResourceAdmin {
   id: string
@@ -21,8 +22,10 @@ export interface DBInstanceResourceAdmin {
   actions: { restore: boolean }
 }
 
-export const listDBInstanceResources = () =>
-  api.get<DBInstanceResourceAdmin[]>('/api/db-instance-resources')
+export const listDBInstanceResources = (
+  params: PageParams & { provisioning_mode?: string; status?: string[] } = {},
+) =>
+  api.get<Page<DBInstanceResourceAdmin>>('/api/db-instance-resources', { params })
 
 export const restoreDBInstanceResource = (resourceId: string) =>
   api.post<DBInstanceResourceAdmin>(

@@ -10,10 +10,22 @@ export interface UserInfo {
   status: string
 }
 
+export interface AuthModeInfo {
+  mode: 'builtin' | 'oidc'
+  provider_name: string | null
+  sso_login_url: string | null
+  recovery_login_path: string | null
+}
+
 export function useAuth() {
   const [user, setUser] = useState<UserInfo | null>(null)
   const [loading, setLoading] = useState(true)
-  const [authMode, setAuthMode] = useState<string>('builtin')
+  const [authModeInfo, setAuthModeInfo] = useState<AuthModeInfo>({
+    mode: 'builtin',
+    provider_name: null,
+    sso_login_url: null,
+    recovery_login_path: null,
+  })
 
   const fetchUser = useCallback(async () => {
     try {
@@ -28,7 +40,7 @@ export function useAuth() {
 
   useEffect(() => {
     fetchUser()
-    api.get('/auth/mode').then(r => setAuthMode(r.data.mode)).catch(() => {})
+    api.get('/auth/mode').then(r => setAuthModeInfo(r.data)).catch(() => {})
   }, [fetchUser])
 
   const login = async (username: string, password: string) => {
@@ -42,5 +54,13 @@ export function useAuth() {
     setUser(null)
   }
 
-  return { user, loading, login, logout, isAdmin: user?.role === 'admin', authMode }
+  return {
+    user,
+    loading,
+    login,
+    logout,
+    isAdmin: user?.role === 'admin',
+    authMode: authModeInfo.mode,
+    authModeInfo,
+  }
 }

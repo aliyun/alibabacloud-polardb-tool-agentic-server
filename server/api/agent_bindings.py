@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.auth.dependencies import require_admin
+from server.api.pagination import Page
 from server.core import admin_binding_service
 from server.core import agent_instance_access_service
 from server.core.audit_logger import log_audit
@@ -201,23 +202,33 @@ def _binding_error(exc: Exception) -> HTTPException:
 
 @router.get(
     "/instance-bindings",
-    response_model=list[AgentInstanceAccessResponse],
+    response_model=Page[AgentInstanceAccessResponse],
 )
 async def list_direct_bindings(
     agent_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        rows = (
+        rows, total = (
             await agent_instance_access_service
-            .list_agent_instance_access(session, agent_id)
+            .list_agent_instance_access_page(
+                session,
+                agent_id,
+                offset=offset,
+                limit=limit,
+            )
         )
     except admin_binding_service.BindingNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return [
-        AgentInstanceAccessResponse.from_view(row) for row in rows
-    ]
+    return Page(
+        items=[AgentInstanceAccessResponse.from_view(row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post(
@@ -332,18 +343,30 @@ async def delete_direct_binding(
 
 @router.get(
     "/provisioning-bindings",
-    response_model=list[ProvisioningBindingResponse],
+    response_model=Page[ProvisioningBindingResponse],
 )
 async def list_provisioning_bindings(
     agent_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        rows = await admin_binding_service.list_agent_provisioning_bindings(session, agent_id)
+        rows, total = await admin_binding_service.list_agent_provisioning_bindings_page(
+            session,
+            agent_id,
+            offset=offset,
+            limit=limit,
+        )
     except admin_binding_service.BindingNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return [ProvisioningBindingResponse.from_model(row) for row in rows]
+    return Page(
+        items=[ProvisioningBindingResponse.from_model(row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )
 
 
 @router.post(
@@ -462,14 +485,26 @@ async def delete_provisioning_binding(
         raise _binding_error(exc) from exc
 
 
-@router.get("/resources", response_model=list[AgentResourceResponse])
+@router.get("/resources", response_model=Page[AgentResourceResponse])
 async def list_resources(
     agent_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        rows = await admin_binding_service.list_agent_resources(session, agent_id)
+        rows, total = await admin_binding_service.list_agent_resources_page(
+            session,
+            agent_id,
+            offset=offset,
+            limit=limit,
+        )
     except admin_binding_service.BindingNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return [AgentResourceResponse.from_model(row) for row in rows]
+    return Page(
+        items=[AgentResourceResponse.from_model(row) for row in rows],
+        total=total,
+        offset=offset,
+        limit=limit,
+    )

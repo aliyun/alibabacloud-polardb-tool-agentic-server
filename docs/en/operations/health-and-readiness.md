@@ -25,6 +25,14 @@ swaps its runtime snapshot, and becomes ready only when its loaded version is
 current. The default interval is five seconds. Optional module reload failures
 are reported separately from required failures.
 
+## Schema compatibility
+
+Service readiness and schema migration success are related but distinct.
+Application startup runs a read-only compatibility check before routes and
+workers activate. Managed upgrades run mutation in an independent one-shot
+Pod and require its `migrate -> check -> migrate -> check` command to exit
+successfully before evaluating the target application Pod.
+
 ## Dedicated member readiness
 
 The application readiness endpoint does not mean every hot-pool member is
@@ -40,7 +48,7 @@ least twice the check interval.
 
 ## Alerting
 
-Alert on sustained readiness failure, restart loops, migration Job failure,
+Alert on sustained readiness failure, restart loops, migration executor failure,
 database connection exhaustion, provisioning failures, and repeated
 authentication rejection. For auto-provisioning pools also alert on sustained
 planning deficit, stale/checking or quarantined growth, failed verification,

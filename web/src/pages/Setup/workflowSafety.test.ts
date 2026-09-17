@@ -185,6 +185,50 @@ describe('normalizeDryRunDetails', () => {
     expect(details.checks).toHaveLength(6)
   })
 
+  it('keeps reviewed HTTPS OIDC checks and fixed OIDC error guidance', () => {
+    const details = normalizeDryRunDetails({
+      valid: false,
+      error_code: 'OIDC_ISSUER_MISMATCH',
+      external_validation: {
+        checks: [
+          {
+            service: 'oidc_discovery',
+            endpoint: 'https://idp.example.com/.well-known/openid-configuration',
+            status: 'REACHABLE',
+          },
+          {
+            service: 'oidc_jwks',
+            endpoint: 'https://idp.example.com/jwks',
+            status: 'PASSED',
+          },
+          {
+            service: 'oidc_jwks',
+            endpoint: 'https://user:secret@idp.example.com/jwks',
+            status: 'PASSED',
+          },
+        ],
+      },
+    }, undefined)
+
+    expect(details).toMatchObject({
+      valid: false,
+      errorCode: 'OIDC_ISSUER_MISMATCH',
+      guidance: 'external',
+    })
+    expect(details.checks).toEqual([
+      {
+        service: 'oidc_discovery',
+        endpoint: 'https://idp.example.com/.well-known/openid-configuration',
+        status: 'REACHABLE',
+      },
+      {
+        service: 'oidc_jwks',
+        endpoint: 'https://idp.example.com/jwks',
+        status: 'PASSED',
+      },
+    ])
+  })
+
   it.each([
     ['INVALID_ADMIN_PASSWORD', 'adminPassword'],
     ['INVALID_MODULE_CONFIG', 'moduleConfig'],

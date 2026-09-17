@@ -360,15 +360,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="pas")
     root = parser.add_subparsers(dest="root_command", required=True)
     serve = root.add_parser("serve")
+    serve.add_argument(
+        "--local-sso-dev",
+        action="store_true",
+        help=(
+            "bind all listeners to 127.0.0.1 and allow exact loopback HTTP "
+            "URLs for local SSO testing"
+        ),
+    )
     serve.set_defaults(handler=_handle_serve)
     database = root.add_parser("database")
     database_commands = database.add_subparsers(
         dest="database_command", required=True
     )
     database_check = database_commands.add_parser("check")
+    database_check.add_argument("--format", choices=("human", "json"), default="human")
     database_check.set_defaults(handler=_handle_database_check)
     database_migrate = database_commands.add_parser("migrate")
+    database_migrate.add_argument("--operation-id")
     database_migrate.set_defaults(handler=_handle_database_migrate)
+    database_inspect = database_commands.add_parser("inspect")
+    database_inspect.add_argument("--format", choices=("human", "json"), default="json")
+    database_inspect.set_defaults(handler=_handle_database_inspect)
     database_create_env = database_commands.add_parser("create-env")
     database_create_env.add_argument("--output", required=True)
     database_create_env.add_argument(
@@ -434,23 +447,36 @@ def _client(args: argparse.Namespace) -> ConfigProtocolClient:
     )
 
 
-def _handle_serve(_args: argparse.Namespace) -> Any:
-    from server.__main__ import main as serve
+def _handle_serve(args: argparse.Namespace) -> Any:
+    from server.serve import serve
 
-    return serve()
+    return asyncio.run(
+        serve(local_sso_dev_mode=args.local_sso_dev)
+    )
 
 
 def _handle_database_check(_args: argparse.Namespace) -> None:
     from server.db.schema import check_database_compatibility
 
     revision = asyncio.run(check_database_compatibility())
-    print(f"Database schema and encryption key are compatible: {revision}")
+    if getattr(_args, "format", "human") == "json":
+        print(json.dumps({"compatible": True, "current_head": revision}))
+    else:
+        print(f"Database schema and encryption key are compatible: {revision}")
+
+
+def _handle_database_inspect(args: argparse.Namespace) -> None:
+    from server.db.schema import inspect_database
+    print_output(asyncio.run(inspect_database()), output=args.format)
 
 
 def _handle_database_migrate(_args: argparse.Namespace) -> None:
     from server.db.schema import migrate_database
 
-    migrate_database()
+    if getattr(_args, "operation_id", None) is None:
+        migrate_database()
+    else:
+        migrate_database(operation_id=_args.operation_id)
     print("Database migration completed.")
 
 

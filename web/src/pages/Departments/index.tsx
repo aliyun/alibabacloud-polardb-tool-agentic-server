@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Table, Button, Modal, Form, Input, Space, message, Popconfirm, Tag, Descriptions, Select } from 'antd'
+import { Table, Button, Modal, Form, Input, Space, message, Popconfirm, Tag, Descriptions, Select, Pagination } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import api from '../../api/client'
@@ -33,6 +33,8 @@ interface TenantItem {
 export default function Departments() {
   const { t, i18n } = useTranslation()
   const [depts, setDepts] = useState<DeptItem[]>([])
+  const [deptTotal, setDeptTotal] = useState(0)
+  const [deptPage, setDeptPage] = useState(1)
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingDept, setEditingDept] = useState<DeptItem | null>(null)
@@ -47,10 +49,28 @@ export default function Departments() {
   >([])
   const [eligibleMtLoading, setEligibleMtLoading] = useState(false)
   const [tenants, setTenants] = useState<Record<string, TenantItem[]>>({})
+  const [tenantTotals, setTenantTotals] = useState<Record<string, number>>({})
+  const [tenantPages, setTenantPages] = useState<Record<string, number>>({})
   const [addUserModalOpen, setAddUserModalOpen] = useState(false)
   const [addUserInstanceId, setAddUserInstanceId] = useState<string | null>(null)
-  const [users, setUsers] = useState<{ id: string; display_name: string }[]>([])
+  const [users, setUsers] = useState<{
+    id: string
+    display_name: string
+    external_id: string
+  }[]>([])
+  const [userTotal, setUserTotal] = useState(0)
+  const [userOffset, setUserOffset] = useState(0)
+  const [userSearch, setUserSearch] = useState('')
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null)
+
+  const fetchTenants = useCallback(async (instanceId: string, page = 1) => {
+    const response = await api.get(`/api/instances/${instanceId}/tenants`, {
+      params: { offset: (page - 1) * 20, limit: 20 },
+    })
+    setTenants((current) => ({ ...current, [instanceId]: response.data.items }))
+    setTenantTotals((current) => ({ ...current, [instanceId]: response.data.total }))
+    setTenantPages((current) => ({ ...current, [instanceId]: page }))
+  }, [])
 
   const fetchMtInstance = useCallback(async (deptId: string) => {
     try {
@@ -58,25 +78,28 @@ export default function Departments() {
       const inst = resp.data as MtInstanceInfo | null
       setMtInstances(prev => ({ ...prev, [deptId]: inst }))
       if (inst) {
-        const tenantResp = await api.get(`/api/instances/${inst.id}/tenants`)
-        setTenants(prev => ({ ...prev, [inst.id]: tenantResp.data }))
+        await fetchTenants(inst.id)
       }
     } catch {
       setMtInstances(prev => ({ ...prev, [deptId]: null }))
     }
-  }, [])
+  }, [fetchTenants])
 
-  const fetchDepts = async () => {
+  const fetchDepts = useCallback(async (page = 1) => {
     setLoading(true)
     try {
-      const resp = await api.get('/api/departments')
-      setDepts(resp.data)
+      const resp = await api.get('/api/departments', {
+        params: { offset: (page - 1) * 20, limit: 20 },
+      })
+      setDepts(resp.data.items)
+      setDeptTotal(resp.data.total)
+      setDeptPage(page)
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  useEffect(() => { fetchDepts() }, [])
+  useEffect(() => { void fetchDepts() }, [fetchDepts])
 
   useEffect(() => {
     depts.forEach(d => fetchMtInstance(d.id))
@@ -93,14 +116,14 @@ export default function Departments() {
     setModalOpen(false)
     setEditingDept(null)
     form.resetFields()
-    fetchDepts()
+    void fetchDepts(deptPage)
   }
 
   const handleDelete = async (id: string) => {
     try {
       await api.delete(`/api/departments/${id}`)
       message.success(t('departments.deleted'))
-      fetchDepts()
+      void fetchDepts(deptPage)
     } catch (err: unknown) {
       const error = err as { response?: { data?: { detail?: { message?: string } } } }
       message.error(error.response?.data?.detail?.message || t('departments.deleteFailed'))
@@ -171,8 +194,7 @@ export default function Departments() {
       message.success(t('departments.tenantCreated'))
       setAddUserModalOpen(false)
       setSelectedUserId(null)
-      const resp = await api.get(`/api/instances/${addUserInstanceId}/tenants`)
-      setTenants(prev => ({ ...prev, [addUserInstanceId]: resp.data }))
+      await fetchTenants(addUserInstanceId, tenantPages[addUserInstanceId] ?? 1)
     } catch (err: unknown) {
       const error = err as { response?: { data?: { detail?: string } } }
       message.error(error.response?.data?.detail || t('departments.tenantCreationFailed'))
@@ -183,8 +205,7 @@ export default function Departments() {
     try {
       await api.post(`/api/instances/${instanceId}/tenants/${userId}/retry`)
       message.success(t('departments.retrySucceeded'))
-      const resp = await api.get(`/api/instances/${instanceId}/tenants`)
-      setTenants(prev => ({ ...prev, [instanceId]: resp.data }))
+      await fetchTenants(instanceId, tenantPages[instanceId] ?? 1)
     } catch {
       message.error(t('departments.retryFailed'))
     }
@@ -194,22 +215,31 @@ export default function Departments() {
     try {
       await api.delete(`/api/instances/${instanceId}/tenants/${userId}`)
       message.success(t('departments.tenantDeleted'))
-      const resp = await api.get(`/api/instances/${instanceId}/tenants`)
-      setTenants(prev => ({ ...prev, [instanceId]: resp.data }))
+      await fetchTenants(instanceId, tenantPages[instanceId] ?? 1)
     } catch {
       message.error(t('departments.tenantDeleteFailed'))
+    }
+  }
+
+  const loadUsers = async (search = userSearch, offset = userOffset) => {
+    try {
+      const resp = await api.get('/api/users', {
+        params: { search: search || undefined, offset, limit: 50 },
+      })
+      setUsers(resp.data.items)
+      setUserTotal(resp.data.total)
+    } catch {
+      setUsers([])
+      setUserTotal(0)
     }
   }
 
   const openAddUser = async (instanceId: string) => {
     setAddUserInstanceId(instanceId)
     setSelectedUserId(null)
-    try {
-      const resp = await api.get('/api/users', { params: { limit: 100 } })
-      setUsers(resp.data.items)
-    } catch {
-      setUsers([])
-    }
+    setUserSearch('')
+    setUserOffset(0)
+    await loadUsers('', 0)
     setAddUserModalOpen(true)
   }
 
@@ -270,7 +300,19 @@ export default function Departments() {
           </Popconfirm>
           <Button size="small" type="primary" onClick={() => openAddUser(inst.id)}>{t('departments.addUser')}</Button>
         </Space>
-        <Table dataSource={instTenants} columns={tenantColumns(inst.id)} rowKey="user_id" pagination={false} size="small" />
+        <Table
+          dataSource={instTenants}
+          columns={tenantColumns(inst.id)}
+          rowKey="user_id"
+          pagination={{
+            current: tenantPages[inst.id] ?? 1,
+            pageSize: 20,
+            total: tenantTotals[inst.id] ?? 0,
+            showSizeChanger: false,
+            onChange: (page) => void fetchTenants(inst.id, page),
+          }}
+          size="small"
+        />
       </div>
     )
   }
@@ -307,7 +349,13 @@ export default function Departments() {
         columns={columns}
         rowKey="id"
         loading={loading}
-        pagination={false}
+        pagination={{
+          current: deptPage,
+          pageSize: 20,
+          total: deptTotal,
+          showSizeChanger: false,
+          onChange: (page) => void fetchDepts(page),
+        }}
         expandable={{ expandedRowRender }}
       />
       <Modal title={editingDept ? t('departments.editDepartment') : t('departments.newDepartment')} open={modalOpen} onCancel={() => setModalOpen(false)} onOk={() => form.submit()}>
@@ -346,8 +394,26 @@ export default function Departments() {
           style={{ width: '100%' }}
           value={selectedUserId}
           onChange={setSelectedUserId}
-          optionFilterProp="label"
-          options={users.map(u => ({ value: u.id, label: u.display_name }))}
+          filterOption={false}
+          onSearch={(value) => {
+            setUserSearch(value)
+            setUserOffset(0)
+            void loadUsers(value, 0)
+          }}
+          options={users.map(u => ({ value: u.id, label: `${u.display_name} (${u.external_id})` }))}
+        />
+        <Pagination
+          size="small"
+          current={Math.floor(userOffset / 50) + 1}
+          pageSize={50}
+          total={userTotal}
+          showSizeChanger={false}
+          style={{ marginTop: 12 }}
+          onChange={(page) => {
+            const offset = (page - 1) * 50
+            setUserOffset(offset)
+            void loadUsers(userSearch, offset)
+          }}
         />
       </Modal>
     </PageContainer>

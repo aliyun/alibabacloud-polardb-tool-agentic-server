@@ -1,29 +1,41 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import asyncio
 import base64
 import json
 import os
 
+import httpx
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.enterprise_identity.service import (
+    _StreamingDirectorySink,
+    _feishu_sync_concurrency,
     upsert_directory_group,
     upsert_directory_membership,
     upsert_external_user,
     replace_directory_snapshot,
     sync_identity_source,
 )
-from server.enterprise_identity.sync import sync_configured_identity_sources_once
+from server.enterprise_identity.sync import (
+    _retry_delay_seconds,
+    identity_source_sync_loop,
+    schedule_identity_source_sync,
+    sync_configured_identity_sources_once,
+    sync_task,
+)
 from server.models import (
     AuthProvider,
     EnterpriseDirectoryGroup,
+    EnterpriseDirectoryMembership,
     EnterpriseDirectoryUser,
     EnterpriseDirectoryMembershipType,
     EnterpriseDirectoryPrincipalType,
     EnterpriseIdentitySource,
+    EnterpriseIdentitySourceStatus,
     EnterpriseIdentitySourceSpaceBinding,
     IdentitySourceProvider,
     PolarRAGInstance,
@@ -42,7 +54,7 @@ from server.polarrag.identity import (
 )
 from server.polarrag.access import list_visible_knowledge_resources, plan_knowledge_access
 from server.core.crypto import encrypt
-from server.enterprise_identity.feishu import FeishuDirectorySnapshot
+from server.enterprise_identity.feishu import FeishuDirectoryClient, FeishuDirectorySnapshot
 from server.enterprise_identity.sharepoint import SharePointDirectorySnapshot
 
 
@@ -149,6 +161,238 @@ async def test_background_sync_uses_configured_sharepoint_adapter(
             )
         ).scalar_one()
         assert directory_user.external_user_id == "entra-user-1"
+
+
+async def test_streaming_identity_sync_records_completion_time(session, monkeypatch) -> None:
+    monkeypatch.setenv("PAS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode("ascii"))
+    source = await _source(session)
+    source.config_ciphertext = encrypt(json.dumps({"app_id": "app-id", "app_secret": "app-secret"}))
+    await session.commit()
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def sync_to_sink(self, sink):
+            await sink.begin_sync(datetime.now(UTC).isoformat())
+            await sink.upsert_users([
+                {"id": "user-1", "display_name": "Alice", "email": "alice@example.test"}
+            ])
+            await sink.upsert_groups([
+                {"id": "group-1", "display_name": "Engineering", "principal_type": "group"}
+            ])
+            await sink.upsert_memberships([
+                {"group_id": "group-1", "member_type": "user", "member_id": "user-1"}
+            ])
+            await sink.complete_sync()
+
+        async def clear_checkpoint(self):
+            return None
+
+    monkeypatch.setattr("server.enterprise_identity.feishu.FeishuDirectoryClient", lambda **_kwargs: FakeClient())
+
+    await sync_identity_source(session, source)
+
+    assert source.status.value == "active"
+    assert source.last_synced_at is not None
+
+
+async def test_streaming_membership_page_uses_set_based_upsert(
+    session,
+    monkeypatch,
+) -> None:
+    source = await _source(session)
+    await upsert_external_user(
+        session,
+        source,
+        external_user_id="user-1",
+        display_name="User 1",
+        email=None,
+    )
+    await upsert_external_user(
+        session,
+        source,
+        external_user_id="user-2",
+        display_name="User 2",
+        email=None,
+    )
+    await upsert_directory_group(
+        session,
+        source,
+        external_group_id="group-1",
+        display_name="Group 1",
+    )
+    await session.commit()
+
+    async def reject_row_upsert(*_args, **_kwargs):
+        raise AssertionError("membership pages must not use row-by-row upserts")
+
+    monkeypatch.setattr(
+        "server.enterprise_identity.service.upsert_directory_membership",
+        reject_row_upsert,
+    )
+    sink = _StreamingDirectorySink(session, source)
+    await sink.upsert_memberships(
+        [
+            {"group_id": "group-1", "member_type": "user", "member_id": "user-1"},
+            {"group_id": "group-1", "member_type": "user", "member_id": "user-2"},
+        ]
+    )
+
+    rows = list((await session.execute(select(EnterpriseDirectoryMembership))).scalars())
+    assert {row.external_member_id for row in rows} == {"user-1", "user-2"}
+
+
+@pytest.mark.asyncio
+async def test_streaming_identity_sync_rejects_pages_after_worker_takeover(
+    session, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "PAS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode("ascii")
+    )
+    source = await _source(session)
+    source.config_ciphertext = encrypt(
+        json.dumps({"app_id": "app-id", "app_secret": "app-secret"})
+    )
+    source.sync_worker_id = "old-worker"
+    await session.commit()
+    source_id = source.id
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def sync_to_sink(self, sink):
+            await sink.begin_sync(datetime.now(UTC).isoformat())
+            async with factory() as takeover_session:
+                claimed = await takeover_session.get(
+                    EnterpriseIdentitySource, source_id
+                )
+                assert claimed is not None
+                claimed.sync_worker_id = "new-worker"
+                await takeover_session.commit()
+            await sink.upsert_users(
+                [{"id": "late-user", "display_name": "Late user"}]
+            )
+
+    monkeypatch.setattr(
+        "server.enterprise_identity.feishu.FeishuDirectoryClient",
+        lambda **_kwargs: FakeClient(),
+    )
+
+    with pytest.raises(RuntimeError, match="sync ownership was lost"):
+        await sync_identity_source(session, source)
+    await session.rollback()
+
+    async with factory() as verification_session:
+        assert await verification_session.scalar(
+            select(EnterpriseDirectoryUser).where(
+                EnterpriseDirectoryUser.identity_source_id == source_id,
+                EnterpriseDirectoryUser.external_user_id == "late-user",
+            )
+        ) is None
+        claimed = await verification_session.get(
+            EnterpriseIdentitySource, source_id
+        )
+        assert claimed is not None
+        assert claimed.sync_worker_id == "new-worker"
+
+
+@pytest.mark.asyncio
+async def test_feishu_streaming_sync_preserves_memberships_for_unavailable_user(session) -> None:
+    source = await _source(session)
+    user = await upsert_external_user(
+        session,
+        source,
+        external_user_id="u-unavailable",
+        display_name="Unavailable",
+        email=None,
+    )
+    await upsert_external_user(
+        session,
+        source,
+        external_user_id="u-ok",
+        display_name="Available",
+        email=None,
+    )
+    group = await upsert_directory_group(
+        session,
+        source,
+        external_group_id="g-existing",
+        display_name="Existing",
+    )
+    await upsert_directory_membership(
+        session,
+        source,
+        external_group_id=group.external_group_id,
+        member_type=EnterpriseDirectoryMembershipType.USER,
+        external_member_id="u-unavailable",
+    )
+    await session.commit()
+
+    fail_membership = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/open-apis/auth/v3/tenant_access_token/internal":
+            return httpx.Response(200, json={"code": 0, "tenant_access_token": "token"})
+        if request.url.path == "/open-apis/contact/v3/users":
+            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+        if request.url.path == "/open-apis/contact/v3/users/find_by_department":
+            return httpx.Response(200, json={"code": 0, "data": {"items": [
+                {"user_id": "u-ok", "name": "Available"},
+                {"user_id": "u-unavailable", "name": "Unavailable"},
+            ], "has_more": False}})
+        if request.url.path.startswith("/open-apis/contact/v3/departments/"):
+            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+        if request.url.path == "/open-apis/contact/v3/group/simplelist":
+            return httpx.Response(200, json={"code": 0, "data": {"grouplist": [
+                {"group_id": "g-existing", "name": "Existing"}
+            ], "has_more": False}})
+        if request.url.path == "/open-apis/contact/v3/group/member_belong":
+            if fail_membership and request.url.params["member_id"] == "u-unavailable":
+                return httpx.Response(400, json={"code": 99991672}, request=request)
+            return httpx.Response(200, json={"code": 0, "data": {"group_list": [], "has_more": False}})
+        raise AssertionError(request.url)
+
+    async with FeishuDirectoryClient(
+        app_id="app",
+        app_secret="secret",
+        transport=httpx.MockTransport(handler),
+        max_concurrency=1,
+    ) as client:
+        await client.sync_to_sink(_StreamingDirectorySink(session, source))
+
+    memberships = list(
+        (await session.execute(select(EnterpriseDirectoryMembership))).scalars()
+    )
+    assert [(row.external_member_id, row.external_group_id) for row in memberships] == [
+        (user.external_id.rsplit(":", 1)[-1], "g-existing")
+    ]
+    await session.refresh(source)
+    assert json.loads(source.sync_warning_json or "{}") == {
+        "code": "MEMBERSHIPS_PARTIAL",
+        "provider_errors": {"99991672": 1},
+        "skipped_count": 1,
+    }
+
+    fail_membership = False
+    async with FeishuDirectoryClient(
+        app_id="app",
+        app_secret="secret",
+        transport=httpx.MockTransport(handler),
+        max_concurrency=1,
+    ) as client:
+        await client.sync_to_sink(_StreamingDirectorySink(session, source))
+
+    await session.refresh(source)
+    assert source.sync_warning_json is None
 
 
 @pytest.mark.asyncio
@@ -546,10 +790,12 @@ async def test_directory_snapshot_revokes_removed_group_membership(session):
 
 
 @pytest.mark.asyncio
-async def test_stale_source_fails_closed(session):
+async def test_stale_source_uses_last_successful_directory_snapshot(session):
     source = await _source(session)
     source.status = "active"
-    source.last_synced_at = datetime.now(UTC) - timedelta(seconds=source.stale_after_seconds + 1)
+    source.last_synced_at = datetime.now(UTC) - timedelta(
+        seconds=source.stale_after_seconds - 1
+    )
     user = await upsert_external_user(
         session, source, external_user_id="ou_alice", display_name="Alice", email=None
     )
@@ -582,30 +828,58 @@ async def test_stale_source_fails_closed(session):
     )
     await session.commit()
 
+    source.status = "stale"
+    await session.commit()
+
+    context = await resolve_acl_context(session, user.id, space.knowledge_space_id)
+
+    assert context["principals"] == [
+        {"provider": "feishu", "type": "user", "id": "ou_alice"},
+        {"provider": "polarrag", "type": "user", "id": user.external_id},
+    ]
+
+    source.last_synced_at = datetime.now(UTC) - timedelta(
+        seconds=source.stale_after_seconds + 1
+    )
+    await session.commit()
     with pytest.raises(IdentityContextUnavailable):
         await resolve_acl_context(session, user.id, space.knowledge_space_id)
 
 
 @pytest.mark.asyncio
-async def test_feishu_department_acl_principal_keeps_its_type(session):
+async def test_feishu_parent_department_acl_includes_child_department_user(session):
     source = await _source(session)
     source.status = "active"
     user = await upsert_external_user(
         session, source, external_user_id="ou_alice", display_name="Alice", email=None
     )
-    department = await upsert_directory_group(
+    research = await upsert_directory_group(
         session,
         source,
         external_group_id="od_research",
         display_name="Research",
         principal_type=EnterpriseDirectoryPrincipalType.DEPARTMENT,
     )
+    platform = await upsert_directory_group(
+        session,
+        source,
+        external_group_id="od_platform",
+        display_name="Platform",
+        principal_type=EnterpriseDirectoryPrincipalType.DEPARTMENT,
+    )
     await upsert_directory_membership(
         session,
         source,
-        external_group_id=department.external_group_id,
+        external_group_id=platform.external_group_id,
         member_type=EnterpriseDirectoryMembershipType.USER,
         external_member_id="ou_alice",
+    )
+    await upsert_directory_membership(
+        session,
+        source,
+        external_group_id=research.external_group_id,
+        member_type=EnterpriseDirectoryMembershipType.GROUP,
+        external_member_id=platform.external_group_id,
     )
     instance = PolarRAGInstance(
         name="rag-department",
@@ -918,3 +1192,340 @@ async def test_background_sync_isolates_a_failed_source_and_commits_the_others(
         assert bad is not None and bad.status.value == "stale"
         assert bad.last_error == "RuntimeError"
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_identity_source_sync_loop_defaults_to_thirty_minutes(monkeypatch):
+    observed_delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        observed_delays.append(delay)
+        raise asyncio.CancelledError
+
+    async def fake_sync(_session_factory, **_kwargs) -> bool:
+        return False
+
+    async def fake_next_delay(
+        _session_factory,
+        configured_interval: float,
+        **_kwargs,
+    ) -> float:
+        return configured_interval
+
+    monkeypatch.setattr("server.enterprise_identity.sync.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("server.enterprise_identity.sync.sync_configured_identity_sources_once", fake_sync)
+    monkeypatch.setattr(
+        "server.enterprise_identity.sync._next_identity_source_sync_delay",
+        fake_next_delay,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await identity_source_sync_loop(object())
+
+    assert observed_delays == [1800.0]
+
+
+@pytest.mark.asyncio
+async def test_identity_source_sync_loop_wakes_at_persisted_retry(
+    session,
+    monkeypatch,
+) -> None:
+    fixed_now = datetime(2026, 9, 7, 8, 0, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is not None else fixed_now.replace(tzinfo=None)
+
+    source = await _source(session, "tenant-persisted-retry")
+    source.config_ciphertext = "configured"
+    source.status = EnterpriseIdentitySourceStatus.STALE
+    source.sync_next_retry_at = fixed_now + timedelta(seconds=60)
+    await session.commit()
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    observed_delays: list[float] = []
+
+    async def fake_sync(_session_factory, **_kwargs) -> bool:
+        return False
+
+    async def fake_sleep(delay: float) -> None:
+        observed_delays.append(delay)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("server.enterprise_identity.sync.datetime", FrozenDateTime)
+    monkeypatch.setattr(
+        "server.enterprise_identity.sync.sync_configured_identity_sources_once",
+        fake_sync,
+    )
+    monkeypatch.setattr("server.enterprise_identity.sync.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await identity_source_sync_loop(factory, interval_seconds=1800)
+
+    assert observed_delays == [60.0]
+
+
+@pytest.mark.asyncio
+async def test_retry_deadline_crossed_during_cycle_wakes_next_pass(
+    session,
+    monkeypatch,
+) -> None:
+    selection_time = datetime(2026, 9, 7, 8, 0, tzinfo=UTC)
+    delay_time = selection_time + timedelta(seconds=2)
+    source = await _source(session, "tenant-crossed-retry")
+    source.config_ciphertext = "configured"
+    source.status = EnterpriseIdentitySourceStatus.STALE
+    source.sync_next_retry_at = selection_time + timedelta(seconds=1)
+    await session.commit()
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+
+    class FrozenDateTime(datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            cls.calls += 1
+            current = selection_time if cls.calls == 1 else delay_time
+            return current if tz is not None else current.replace(tzinfo=None)
+
+    scheduled: list[str] = []
+    observed_delays: list[float] = []
+
+    async def fake_schedule(_session_factory, source_id: str, **_kwargs) -> bool:
+        scheduled.append(source_id)
+        return False
+
+    async def fake_sleep(delay: float) -> None:
+        observed_delays.append(delay)
+        if len(observed_delays) == 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr("server.enterprise_identity.sync.datetime", FrozenDateTime)
+    monkeypatch.setattr(
+        "server.enterprise_identity.sync.schedule_identity_source_sync",
+        fake_schedule,
+    )
+    monkeypatch.setattr("server.enterprise_identity.sync.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await identity_source_sync_loop(factory, interval_seconds=1800)
+
+    assert observed_delays == [0.0, 5.0]
+    assert scheduled == [source.id]
+
+
+@pytest.mark.asyncio
+async def test_identity_source_sync_loop_retries_when_retry_query_fails(
+    monkeypatch,
+) -> None:
+    observed_delays: list[float] = []
+
+    async def fake_sync(_session_factory, **_kwargs) -> bool:
+        return False
+
+    async def failing_next_delay(*_args, **_kwargs) -> float:
+        raise RuntimeError("database unavailable")
+
+    async def fake_sleep(delay: float) -> None:
+        observed_delays.append(delay)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        "server.enterprise_identity.sync.sync_configured_identity_sources_once",
+        fake_sync,
+    )
+    monkeypatch.setattr(
+        "server.enterprise_identity.sync._next_identity_source_sync_delay",
+        failing_next_delay,
+    )
+    monkeypatch.setattr("server.enterprise_identity.sync.asyncio.sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await identity_source_sync_loop(object(), interval_seconds=1800)
+
+    assert observed_delays == [5.0]
+
+
+@pytest.mark.asyncio
+async def test_configured_sync_interval_controls_active_source_due_time(
+    session, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "PAS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode("ascii")
+    )
+    source = await _source(session, "tenant-custom-interval")
+    source.config_ciphertext = encrypt(
+        json.dumps({"app_id": "app-id", "app_secret": "secret"})
+    )
+    source.status = "active"
+    source.last_synced_at = datetime.now(UTC) - timedelta(seconds=90)
+    await session.commit()
+    calls = 0
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def fetch_snapshot(self):
+            nonlocal calls
+            calls += 1
+            return FeishuDirectorySnapshot(users=[], groups=[], memberships=[])
+
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    await sync_configured_identity_sources_once(
+        factory,
+        interval_seconds=1800,
+        feishu_client_factory=FakeClient,
+    )
+    assert calls == 0
+
+    await sync_configured_identity_sources_once(
+        factory,
+        interval_seconds=60,
+        feishu_client_factory=FakeClient,
+    )
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_sync_claim_survives_independent_scheduler_state(
+    session,
+) -> None:
+    source = await _source(session, "tenant-shared-lease")
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    source.config_ciphertext = "configured"
+    source.sync_worker_id = "other-process"
+    source.sync_lease_until = datetime.now(UTC) + timedelta(minutes=5)
+    await session.commit()
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+
+    assert await schedule_identity_source_sync(factory, source.id) is False
+
+    async with factory() as database_session:
+        stored = await database_session.get(EnterpriseIdentitySource, source.id)
+        assert stored is not None
+        stored.sync_lease_until = datetime.now(UTC) - timedelta(seconds=1)
+        await database_session.commit()
+
+    calls = 0
+
+    async def fake_sync(_session, _source):
+        nonlocal calls
+        calls += 1
+        _source.status = EnterpriseIdentitySourceStatus.ACTIVE
+
+    assert await schedule_identity_source_sync(
+        factory,
+        source.id,
+        sync_callable=fake_sync,
+    ) is True
+    task = sync_task(source.id)
+    assert task is not None
+    await task
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_503_persists_backoff_and_skips_immediate_retry(
+    session, monkeypatch
+) -> None:
+    monkeypatch.setenv(
+        "PAS_ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode("ascii")
+    )
+    source = EnterpriseIdentitySource.create(
+        name="SharePoint backoff",
+        provider=IdentitySourceProvider.SHAREPOINT,
+        tenant_id="tenant-sharepoint-backoff",
+    )
+    source.config_ciphertext = encrypt(json.dumps({
+        "cloud": "global",
+        "client_id": "client",
+        "client_secret": "secret",
+    }))
+    session.add(source)
+    await session.commit()
+    calls = 0
+
+    class FailingClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def fetch_snapshot(self):
+            nonlocal calls
+            calls += 1
+            request = httpx.Request("GET", "https://graph.microsoft.test/users")
+            raise httpx.HTTPStatusError(
+                "unavailable",
+                request=request,
+                response=httpx.Response(503, request=request),
+            )
+
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    await sync_configured_identity_sources_once(
+        factory,
+        sharepoint_client_factory=FailingClient,
+    )
+    await sync_configured_identity_sources_once(
+        factory,
+        sharepoint_client_factory=FailingClient,
+    )
+
+    async with factory() as database_session:
+        stored = await database_session.get(EnterpriseIdentitySource, source.id)
+        assert stored is not None
+        assert stored.status == EnterpriseIdentitySourceStatus.STALE
+        assert stored.sync_retry_count == 1
+        assert stored.sync_next_retry_at is not None
+    assert calls == 1
+
+
+def test_feishu_sync_defaults_to_two_initial_and_one_incremental_request() -> None:
+    assert _feishu_sync_concurrency(initial_sync=True) == 2
+    assert _feishu_sync_concurrency(initial_sync=False) == 1
+
+
+def test_retryable_500_and_503_failures_back_off_consecutively() -> None:
+    request = httpx.Request("GET", "https://open.feishu.cn/example")
+
+    first = httpx.HTTPStatusError(
+        "unavailable",
+        request=request,
+        response=httpx.Response(500, request=request),
+    )
+    second = httpx.HTTPStatusError(
+        "unavailable",
+        request=request,
+        response=httpx.Response(503, request=request),
+    )
+
+    assert _retry_delay_seconds(first, 1, fallback_seconds=1800) == 60.0
+    assert _retry_delay_seconds(second, 2, fallback_seconds=1800) == 120.0
+
+
+def test_retry_after_and_nonretryable_failures_are_bounded() -> None:
+    request = httpx.Request("GET", "https://graph.microsoft.test/example")
+    throttled = httpx.HTTPStatusError(
+        "throttled",
+        request=request,
+        response=httpx.Response(429, headers={"Retry-After": "90"}, request=request),
+    )
+    forbidden = httpx.HTTPStatusError(
+        "forbidden",
+        request=request,
+        response=httpx.Response(403, request=request),
+    )
+
+    assert _retry_delay_seconds(throttled, 1, fallback_seconds=1800) == 90.0
+    assert _retry_delay_seconds(forbidden, 1, fallback_seconds=1800) == 1800.0
