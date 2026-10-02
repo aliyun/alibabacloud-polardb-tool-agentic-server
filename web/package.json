@@ -15,7 +15,7 @@
   "dependencies": {
     "@ant-design/icons": "^5.6.1",
     "antd": "^5.20.0",
-    "axios": "^1.7.0",
+    "axios": "^1.20.0",
     "i18next": "^26.3.6",
     "prism-react-renderer": "^2.4.1",
     "react": "^18.3.0",
