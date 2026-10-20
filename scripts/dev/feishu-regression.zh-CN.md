@@ -26,9 +26,12 @@ uv run pytest tests/test_mock_feishu_provider.py -q
 uv run python scripts/dev/run_feishu_mock_console.py --confirm-local-development
 ```
 
-在 Chrome 打开 `http://127.0.0.1:18765`，使用 `admin` 和启动器打印的随机密码登录。
+在终端提示中输入并确认临时管理员密码（至少 8 个字符）。输入会隐藏；无法隐藏输入的
+终端会被拒绝。启动器不会打印密码或 Mock App secret，也不会写入明文凭据文件。
+在 Chrome 打开 `http://127.0.0.1:18765`，使用 `admin` 和刚才输入的密码登录。
 可用 `--port 18766` 更换端口。每次启动均新建并迁移临时 SQLite 数据库、创建管理员、
-设置回环公共地址，并将日志和检查点放入临时目录。启动器清除继承的 PAS/云配置，
+设置回环公共地址，并将数据库和检查点放入临时目录。启动日志也可能写入本地 `log/`
+目录。启动器清除继承的 PAS/云配置，
 Ctrl+C 停止服务并删除临时目录，不接受已有数据库。
 
 进入 **访问管理 > 创建 / 管理账户 > 企业身份源**，创建飞书身份源：

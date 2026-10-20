@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import getpass
 import json
 from urllib.parse import parse_qs, urlsplit
 
@@ -27,6 +28,52 @@ from server.models import (
     UserExternalIdentity,
     UserStatus,
 )
+
+
+def test_console_password_is_confirmed_without_printing_credentials(monkeypatch, capsys):
+    from scripts.dev.run_feishu_mock_console import announce_console, read_admin_password
+
+    password = "synthetic-console-login-value"
+    responses = iter([password, password])
+    monkeypatch.setattr(getpass, "getpass", lambda _prompt: next(responses))
+    assert read_admin_password() == password
+    announce_console("http://127.0.0.1:18765", "http://127.0.0.1:18765/__mock/feishu")
+    output = capsys.readouterr()
+    assert password not in output.out + output.err
+    assert APP_SECRET not in output.out + output.err
+    assert "Username: admin" in output.out
+    assert "http://127.0.0.1:18765/__mock/feishu/__mock/scenario" in output.out
+
+
+@pytest.mark.parametrize(
+    ("responses", "message"),
+    [
+        (["short"], "at least 8"),
+        (["synthetic-console-login-value", "different-console-login-value"], "confirmation"),
+    ],
+)
+def test_console_refuses_invalid_password_without_echoing_it(monkeypatch, capsys, responses, message):
+    from scripts.dev.run_feishu_mock_console import read_admin_password
+
+    answers = iter(responses)
+    monkeypatch.setattr(getpass, "getpass", lambda _prompt: next(answers))
+    with pytest.raises(ValueError, match=message) as error:
+        read_admin_password()
+    output = capsys.readouterr()
+    assert all(value not in str(error.value) + output.out + output.err for value in responses)
+
+
+def test_console_refuses_input_when_terminal_cannot_hide_password(monkeypatch):
+    import warnings
+    from scripts.dev.run_feishu_mock_console import read_admin_password
+
+    def insecure_input(_prompt):
+        warnings.warn("Password input may be echoed", getpass.GetPassWarning)
+        pytest.fail("must refuse before reading an echoed password")
+
+    monkeypatch.setattr(getpass, "getpass", insecure_input)
+    with pytest.raises(getpass.GetPassWarning):
+        read_admin_password()
 
 
 def directory_client(app, **kwargs):

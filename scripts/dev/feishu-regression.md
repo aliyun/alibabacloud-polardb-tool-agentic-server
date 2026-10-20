@@ -30,10 +30,14 @@ access revocation, and preservation of the previous snapshot on fetch failure.
 uv run python scripts/dev/run_feishu_mock_console.py --confirm-local-development
 ```
 
-Open `http://127.0.0.1:18765` in Chrome and sign in with `admin` and the random
-password printed by the launcher. Use `--port 18766` if needed. Each invocation
-creates and migrates a new temporary SQLite database, creates its administrator,
-sets its loopback public URL, and stores its logs/checkpoints in the temporary
+Enter and confirm a temporary administrator password at the terminal prompt
+(at least 8 characters). Input is hidden; the launcher refuses terminals that
+cannot hide it. It does not print the password or mock App secret, or write a
+plaintext credential file. Open `http://127.0.0.1:18765` in Chrome and sign in
+with `admin` and the password you entered. Use `--port 18766` if needed. Each
+invocation creates and migrates a new temporary SQLite database, creates its
+administrator, sets its loopback public URL, and stores its database/checkpoints
+in the temporary directory. Startup logs may also be written to the local `log/`
 directory. Inherited PAS/cloud settings are discarded. Ctrl+C stops the server
 and removes the temporary directory. Existing databases are never accepted.
 

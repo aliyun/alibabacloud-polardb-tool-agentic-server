@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import getpass
 import hashlib
 import ipaddress
 import os
@@ -13,9 +14,35 @@ import secrets
 import socket
 import sys
 import tempfile
+import warnings
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+
+
+def read_admin_password() -> str:
+    from server.auth.password_policy import validate_password
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        password = getpass.getpass("Temporary console administrator password: ")
+        validate_password(password)
+        if getpass.getpass("Confirm administrator password: ") != password:
+            raise ValueError("Password confirmation does not match")
+    return password
+
+
+def announce_console(origin: str, mock_base: str) -> None:
+    from scripts.dev.mock_feishu_provider import APP_ID
+
+    print(
+        f"Temporary console: {origin}\nUsername: admin\n"
+        "Use the administrator password entered at startup.\n"
+        f"Mock App ID: {APP_ID}\n"
+        f"Scenario control: {mock_base}/__mock/scenario\n"
+        "All data is synthetic. Ctrl+C stops the console and removes its temporary database.",
+        flush=True,
+    )
 
 
 def loopback_only(event: str, args: tuple) -> None:
@@ -98,6 +125,13 @@ def main(argv: list[str] | None = None) -> None:
     except OSError:
         parser.error("The loopback port is already in use; choose another --port")
 
+    try:
+        password = read_admin_password()
+    except (EOFError, KeyboardInterrupt, getpass.GetPassWarning):
+        parser.error("A terminal with hidden password input is required")
+    except ValueError as error:
+        parser.error(str(error))
+
     for key in list(os.environ):
         if key.startswith(("PAS_", "ALIBABA_CLOUD_")) or key.lower() in {"http_proxy", "https_proxy", "all_proxy"}:
             del os.environ[key]
@@ -119,10 +153,9 @@ def main(argv: list[str] | None = None) -> None:
         from server.db.schema import migrate_database
 
         migrate_database(url)
-        password = "Mock!" + secrets.token_urlsafe(20)
         asyncio.run(initialize(url, root_key, origin, password, str(directory / "log")))
 
-        from scripts.dev.mock_feishu_provider import APP_ID, APP_SECRET, create_app
+        from scripts.dev.mock_feishu_provider import create_app
         import server.app as app_module
         from server.enterprise_identity import feishu, feishu_events, feishu_tenant_verification
         from starlette.routing import Mount
@@ -159,13 +192,7 @@ def main(argv: list[str] | None = None) -> None:
             return app
 
         app_module.create_app = local_app
-        print(
-            f"Temporary console: {origin}\nUsername: admin\nPassword: {password}\n"
-            f"Mock App ID: {APP_ID}\nMock App secret: {APP_SECRET}\n"
-            f"Scenario control: {mock_base}/__mock/scenario\n"
-            "All data is synthetic. Ctrl+C stops the console and removes its temporary database.",
-            flush=True,
-        )
+        announce_console(origin, mock_base)
         from server.serve import serve
 
         asyncio.run(serve(local_sso_dev_mode=True))
