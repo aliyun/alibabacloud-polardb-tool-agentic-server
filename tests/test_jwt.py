@@ -1,3 +1,4 @@
+import base64
 import time
 
 import pytest
@@ -74,6 +75,25 @@ class TestJWTManager:
     def test_invalid_token_rejected(self):
         with pytest.raises(PyJWTError):
             verify_token("invalid.token.here")
+
+    def test_deeply_nested_header_is_rejected_as_invalid_token(self):
+        header = '{"alg":"RS256","nested":' + "[" * 2000 + "0" + "]" * 2000 + "}"
+        encoded = base64.urlsafe_b64encode(header.encode()).rstrip(b"=").decode()
+
+        with pytest.raises(PyJWTError):
+            verify_token(f"{encoded}.e30.")
+
+    def test_unverified_decode_does_not_disable_later_expiration_check(self):
+        import jwt
+
+        private_key, public_key = jwt_manager._load_keys()
+        token = jwt.encode({"sub": "user:expired", "exp": 1}, private_key, algorithm="RS256")
+        options = {"verify_signature": False}
+        assert jwt.decode(token, options=options)["sub"] == "user:expired"
+        options["verify_signature"] = True
+
+        with pytest.raises(jwt.ExpiredSignatureError):
+            jwt.decode(token, public_key, algorithms=["RS256"], options=options)
 
     def test_token_from_different_key_rejected(self):
         """Tokens signed with one key pair are rejected under a different key pair."""
