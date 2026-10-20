@@ -105,7 +105,7 @@ def test_requests_stream_rejects_oversized_chunk_header_without_unbounded_read()
         def makefile(self, _mode):
             return wire
 
-    original = http.client.HTTPResponse(BufferedSocket())
+    original = http.client.HTTPResponse(BufferedSocket(), method="GET")
     original.begin()
     with requests.Response() as response:
         response.raw = urllib3.response.HTTPResponse(
