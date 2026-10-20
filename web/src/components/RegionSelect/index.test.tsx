@@ -13,7 +13,7 @@ it('uses the same localized reviewed region labels', async () => {
   await i18n.changeLanguage('zh-CN')
   render(<RegionSelect catalog={endpointCatalog} value="cn-shenzhen" network="vpc" />)
   expect(screen.getByText('华南1（深圳） · cn-shenzhen')).toBeInTheDocument()
-  expect(screen.getByText(/polardb-vpc.cn-shenzhen.aliyuncs.com/)).toBeInTheDocument()
+  expect(screen.getByText(/polardb-vpc\.cn-shenzhen\.aliyuncs\.com/)).toBeInTheDocument()
 })
 
 it('enforces VPC placement and the independent STS availability', () => {

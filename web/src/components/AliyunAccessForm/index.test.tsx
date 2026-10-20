@@ -60,7 +60,7 @@ it('requires deliberate connection choices for a new configuration', async () =>
   expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
     region_id: 'cn-shenzhen', openapi_network: 'vpc',
   }))
-  expect(screen.getByText(/polardb-vpc.cn-shenzhen.aliyuncs.com/)).toBeInTheDocument()
+  expect(screen.getByText(/polardb-vpc\.cn-shenzhen\.aliyuncs\.com/)).toBeInTheDocument()
 })
 
 it('reuses stored credentials and invalidates preflight on connection changes', async () => {
