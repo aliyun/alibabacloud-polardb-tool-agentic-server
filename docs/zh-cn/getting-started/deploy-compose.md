@@ -46,10 +46,6 @@ cd "alibabacloud-polardb-tool-agentic-server-${PAS_VERSION}"
 ./scripts/deploy/create-external-mysql-env.sh
 ```
 
-<p align="center">
-  <img src="images/external-mysql-env-generator.png" alt="生成环境文件并测试元数据库连接" width="820">
-</p>
-
 工具会显示非敏感字段供确认，密码输入显示为 `*`，并在写入 `.env` 前执行
 `SELECT 1`。输入有误时，在 `Use these settings? [Y/n]` 输入 `n` 重新填写。
 
@@ -105,7 +101,7 @@ sudo docker compose --env-file .env -f deploy/compose/compose.external-mysql.yam
   <img src="images/setup-enter-token.png" alt="setup 页面输入 bootstrap token" width="820">
 </p>
 
-然后创建首个管理员，密码至少 12 位：
+然后创建首个管理员，密码至少 8 位：
 
 <p align="center">
   <img src="images/setup-admin-password.png" alt="创建首个管理员" width="820">

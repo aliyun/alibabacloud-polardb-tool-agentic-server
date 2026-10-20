@@ -328,9 +328,11 @@ async def remove_instance(
         ) from None
 
 
-async def discover_instances(session: AsyncSession) -> list[dict]:
+async def discover_instances(
+    session: AsyncSession, region_id: str | None = None
+) -> list[dict]:
     """Discover PolarDB clusters via OpenAPI."""
     config = get_config()
     client = await get_polardb_client_async(session)
-    clusters = await client.discover_clusters(config.aliyun.region_id)
+    clusters = await client.discover_clusters(region_id or config.aliyun.region_id)
     return clusters

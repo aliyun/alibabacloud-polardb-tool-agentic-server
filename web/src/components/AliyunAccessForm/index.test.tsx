@@ -5,8 +5,10 @@ import { expect, it, vi } from 'vitest'
 import type { ConfigModule } from '../../api/configuration'
 import AliyunAccessForm from './index'
 import { i18n } from '../../i18n/i18n'
+import { endpointCatalog } from '../../test/endpointCatalog'
 
 const directModule: ConfigModule = {
+  ui_hints: { endpoint_catalog: endpointCatalog },
   name: 'aliyun_access',
   revision: 2,
   workflow_state: 'ACTIVE',
@@ -42,6 +44,44 @@ function transitionAlertFor(message: RegExp): HTMLElement {
   }
   return alert
 }
+
+it('requires deliberate connection choices for a new configuration', async () => {
+  const user = userEvent.setup()
+  const onSubmit = renderForm({ ...directModule, revision: 0, draft: null })
+  await user.type(screen.getByLabelText(/accesskey id/i), 'test-key')
+  await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
+  await user.click(screen.getByRole('button', { name: 'Submit' }))
+  expect(onSubmit).not.toHaveBeenCalled()
+  expect(screen.getByText(/select a supported region and network/i)).toBeInTheDocument()
+  await user.click(screen.getByRole('radio', { name: /^VPC/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Shenzhen) · cn-shenzhen'))
+  await user.click(screen.getByRole('button', { name: 'Submit' }))
+  expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+    region_id: 'cn-shenzhen', openapi_network: 'vpc',
+  }))
+  expect(screen.getByText(/polardb-vpc\.cn-shenzhen\.aliyuncs\.com/)).toBeInTheDocument()
+})
+
+it('reuses stored credentials and invalidates preflight on connection changes', async () => {
+  const user = userEvent.setup()
+  const onSubmit = vi.fn()
+  const changed = vi.fn()
+  render(<>
+    <AliyunAccessForm module={directModule} onSubmit={onSubmit} onValuesChange={changed} formId="connection-form" />
+    <button type="submit" form="connection-form">Submit</button>
+  </>)
+  await user.click(screen.getByRole('radio', { name: /^VPC/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Shenzhen) · cn-shenzhen'))
+  await user.click(screen.getByRole('button', { name: 'Submit' }))
+  expect(changed).toHaveBeenCalledTimes(2)
+  const payload = onSubmit.mock.calls[0][0]
+  expect(payload.region_id).toBe('cn-shenzhen')
+  expect(payload.openapi_network).toBe('vpc')
+  expect(payload.transition.selected_mode_action).toBe('reuse_retained')
+  expect(payload.direct_ak).toBeUndefined()
+})
 
 it('shows the selected mode fields while rendering stored credentials as markers', async () => {
   const user = userEvent.setup()
@@ -93,6 +133,7 @@ it('clears the previous credential by default when a credential mode changes', a
   await user.click(screen.getByRole('button', { name: 'Submit' }))
 
   expect(onSubmit).toHaveBeenCalledWith({
+    region_id: 'cn-hangzhou', openapi_network: 'public',
     credential_mode: 'ecs_ram_role',
     ecs_ram_role: { metadata_policy: 'v2_only' },
     transition: {
@@ -110,7 +151,7 @@ it('does not ask how to handle a current mode that has no stored credential', as
     ...directModule,
     revision: 0,
     workflow_state: 'NOT_CONFIGURED',
-    draft: { credential_mode: 'direct_ak' },
+    draft: { credential_mode: 'direct_ak', region_id: 'cn-hangzhou', openapi_network: 'public' },
   })
 
   await user.click(screen.getByRole('radio', { name: /ecs instance ram role/i }))
@@ -190,6 +231,7 @@ it('reuses an unchanged active credential without submitting its display markers
   await user.click(screen.getByRole('button', { name: 'Submit' }))
 
   expect(onSubmit).toHaveBeenCalledWith({
+    region_id: 'cn-hangzhou', openapi_network: 'public',
     credential_mode: 'direct_ak',
     transition: {
       previous_mode_action: 'clear',
@@ -212,6 +254,7 @@ it('requires explicit confirmation before reusing a retained direct credential f
   await user.click(screen.getByRole('button', { name: 'Submit' }))
 
   expect(onSubmit).toHaveBeenCalledWith({
+    region_id: 'cn-hangzhou', openapi_network: 'public',
     credential_mode: 'assume_role',
     assume_role: { role_arn: 'acs:ram::1234567890123456:role/polardb-operator' },
     transition: {
@@ -671,4 +714,9 @@ it('provides named advanced controls and a localized wrapped timestamp marker', 
   await user.click(screen.getByText(/advanced assumerole settings/i))
   expect(screen.getByLabelText(/role session name/i)).toHaveAttribute('id', 'aliyun-role-session-name')
   expect(screen.getByLabelText(/sts duration/i)).toHaveAttribute('id', 'aliyun-duration')
+})
+
+vi.mock('../../api/aliyunEndpoints', async () => {
+  const { endpointCatalog } = await import('../../test/endpointCatalog')
+  return { getEndpointCatalog: vi.fn().mockResolvedValue(endpointCatalog) }
 })

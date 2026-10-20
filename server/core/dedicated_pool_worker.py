@@ -199,8 +199,9 @@ class DedicatedPoolWorker:
             if member is None or member.worker_id != self._worker_id:
                 return
             cluster_id = member.instance.cluster_id
+            region_id = member.instance.region
         try:
-            await self._provisioner.delete_cluster(cluster_id)
+            await self._provisioner.delete_cluster(cluster_id, region_id=region_id)
         except Exception:
             async with self._session_factory() as session:
                 member = await session.get(DedicatedPoolMember, member_id)
@@ -460,6 +461,7 @@ class DedicatedPoolWorker:
             status = resource.status
             delete_step = resource.delete_step
             cluster_id = member.instance.cluster_id
+            region_id = member.instance.region
 
         try:
             if status == DBInstanceStatus.RESTORING:
@@ -471,7 +473,7 @@ class DedicatedPoolWorker:
                 if delete_step is None:
                     return
             if delete_step == DeleteLifecycleStep.PHYSICAL_DESTROY:
-                await self._provisioner.delete_cluster(cluster_id)
+                await self._provisioner.delete_cluster(cluster_id, region_id=region_id)
                 await self._finish_dedicated_cleanup(
                     resource_id, sanitized=False
                 )

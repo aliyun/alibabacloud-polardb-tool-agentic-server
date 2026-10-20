@@ -1,4 +1,7 @@
 {{- if .Values.management.enabled }}
+{{- if and .Values.management.service.enabled (ne .Values.management.service.type "ClusterIP") }}
+{{- fail "management.service.type must be ClusterIP; management must not be publicly exposed" }}
+{{- end }}
 {{- $managementPort := required "management.port is required when management.enabled=true" .Values.management.port }}
 {{- if eq (int $managementPort) (int .Values.service.port) }}
 {{- fail "management.port and service.port must be distinct" }}

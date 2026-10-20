@@ -23,6 +23,11 @@ initial page rendering. The user editor's department picker also searches the
 backend instead of downloading every department, while retaining the user's
 current selections when they are outside the returned page.
 
+On narrow desktop windows, scroll horizontally inside the account table to
+reach its remaining columns and actions. Long account names and enterprise user
+IDs are truncated in their cells; hover over them to read the full value.
+Identity source and membership labels wrap within their columns.
+
 Per-instance user access selects a registered instance, an active
 `direct_access` credential, `readonly` or `readwrite` permission, and explicit
 capabilities. Grant only the databases and operations allowed by the MySQL

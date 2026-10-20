@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 
 from server.bootstrap import load_bootstrap_settings
 from server.core.user_workspace import ensure_user_workspace
-from server.db.engine import enable_sqlite_foreign_keys
+from server.db.engine import enable_sqlite_foreign_keys, sqlite_connect_args
 from server.enterprise_identity.service import (
     identity_provider_key,
     upsert_external_user,
@@ -159,6 +159,7 @@ async def _run(args: argparse.Namespace) -> SeedResult:
     engine = create_async_engine(
         bootstrap.database_url,
         poolclass=NullPool,
+        connect_args=sqlite_connect_args(bootstrap.database_url),
     )
     enable_sqlite_foreign_keys(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False)

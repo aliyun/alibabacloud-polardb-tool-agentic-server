@@ -197,7 +197,7 @@ def auth_headers(setup_data):
 
 class TestListTools:
     async def test_list_tools(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         assert resp.status_code == 200
         tools = resp.json()["tools"]
         names = [t["name"] for t in tools]
@@ -206,14 +206,14 @@ class TestListTools:
         assert "set_default_instance" in names
 
     async def test_run_sql_has_confirm_param(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         run_sql = next(t for t in tools if t["name"] == "run_sql")
         assert "confirm" in run_sql["inputSchema"]["properties"]
         assert run_sql["inputSchema"]["properties"]["confirm"]["type"] == "boolean"
 
     async def test_positive_integer_limits_have_minimum_schema(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         by_name = {tool["name"]: tool for tool in tools}
 
@@ -221,20 +221,20 @@ class TestListTools:
         assert by_name["describe_schema"]["inputSchema"]["properties"]["max_tables"]["minimum"] == 1
 
     async def test_run_sql_has_branch_param(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         run_sql = next(t for t in tools if t["name"] == "run_sql")
         assert "branch" in run_sql["inputSchema"]["properties"]
         _assert_nullable_string_schema(run_sql["inputSchema"]["properties"]["branch"])
 
     async def test_run_sql_transaction_has_no_branch_param(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         transaction = next(t for t in tools if t["name"] == "run_sql_transaction")
         assert "branch" not in transaction["inputSchema"]["properties"]
 
     async def test_branch_tool_optional_params_are_nullable(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         by_name = {tool["name"]: tool for tool in tools}
 
@@ -250,7 +250,7 @@ class TestListTools:
                 _assert_nullable_string_schema(properties[property_name])
 
     async def test_branch_tools_have_expected_schema(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         names = [t["name"] for t in tools]
         assert "list_branches" in names
@@ -274,7 +274,7 @@ class TestListTools:
         assert "confirm" not in delete_branch["inputSchema"]["properties"]
 
     async def test_branch_tools_contract_stays_minimal(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         branch_tools = [t for t in tools if "branch" in t["name"]]
         assert {t["name"] for t in branch_tools} == {
@@ -289,14 +289,14 @@ class TestListTools:
             assert forbidden_params.isdisjoint(properties)
 
     async def test_run_sql_has_annotations(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         run_sql = next(t for t in tools if t["name"] == "run_sql")
         assert run_sql["annotations"]["destructiveHint"] is True
         assert run_sql["annotations"]["readOnlyHint"] is False
 
     async def test_set_default_instance_tool_schema(self, client, auth_headers):
-        resp = await client.get("/mcp/rest/tools")
+        resp = await client.get("/mcp/rest/tools", headers=auth_headers)
         tools = resp.json()["tools"]
         sdi = next(t for t in tools if t["name"] == "set_default_instance")
         assert "instance_id" in sdi["inputSchema"]["properties"]

@@ -26,6 +26,17 @@ process bootstrap settings.
 - **PolarRAG runtime policy** (`polarrag_tool_limits`): process-local rate,
   burst, instance concurrency, fan-out governance, and upstream request timeout.
 - `observability`: application logging and global audit lifecycle behavior.
+- `enterprise_identity_sync`: SharePoint full-refresh interval and Feishu
+  fallback checks, unavailability threshold, group and knowledge permission reconciliation and
+  request concurrency.
+
+The PAS Dashboard's **Enterprise identity synchronization** module exposes
+`interval_seconds` (SharePoint, default `1800`),
+`feishu_check_interval_seconds` (fallback check, default `600`),
+`feishu_fallback_after_seconds` (full-sync threshold after incremental
+unavailability, default `86400`), and `feishu_group_and_knowledge_scope_interval_seconds`
+(group and knowledge permission reconciliation, default `3600`). Feishu user and department changes
+are processed from long-connection events, not polled at these intervals.
 
 Optional modules can remain `SKIPPED`. Disable active dependents before their
 dependency.
@@ -141,6 +152,20 @@ and sanitized failure codes, never credentials or raw SDK exceptions.
 
 `openapi_network` accepts only `public` or `vpc`; custom hostnames are rejected.
 
+The `aliyun_access` describe result includes `ui_hints.endpoint_catalog`
+and a region enum in its schema for Web and CLI consumers. The authenticated,
+read-only `GET /api/config/aliyun-endpoints` returns the same reviewed catalog
+and active `defaults` (or `null` when credentials are not active), with
+`Cache-Control: no-store`. Catalog entries expose localized region labels and
+separate `polardb` / `sts` public/VPC endpoints; a missing endpoint is `null`.
+There is no runtime dependency on public documentation or a region discovery API.
+
+Failed plans retain normalized `region_id` / `openapi_network` and safe
+`external_validation.checks` with `region_id`, `stage`, `status: FAILED`,
+and `error_code`. `OPENAPI_CHECK_FAILED` is an unclassified failure.
+`POST /api/instances/discover?region_id=<region>` can select a target region;
+omitting it uses the active default. VPC cross-region requests are rejected.
+
 For `user_sso`, OIDC discovery supplies the trusted issuer. Manual endpoint
 configuration requires an explicit `issuer`, `authorization_endpoint`, and
 `token_endpoint`. OIDC mode validates ID Tokens against that exact issuer.
@@ -191,7 +216,7 @@ of `user_sso` must include the passed test's `sso_test_id` in addition to the
 normal `validation_id` and `expected_revision`. The proof is single-use and is
 bound to the administrator, revision, normalized digest, and expiry.
 
-When `browser_login_enabled=false`, PAS still requires an HTTPS External Base
+When `browser_login_enabled=false`, PAS requires an explicit HTTP or HTTPS External Base
 URL to identify the Token Exchange resources, but does not require a callback
 URL, Discovery/authorization/token/JWKS endpoints, browser Client ID or secret,
 or a browser login test. External token trust must be enabled with
@@ -246,11 +271,11 @@ User and Workspace but returns no PAS access or refresh token. Standard Token
 Exchange is accepted at both `/token` and `/api/v1/external-auth/token`; it
 returns a PAS access token without a refresh token.
 
-The Introspection and external UserInfo endpoints may use HTTP when every
-resolved address is in an approved private network range. This supports
-isolated VPC and intranet deployments, but sends Provider credentials and
-external tokens without transport encryption; HTTPS remains recommended.
-Public endpoints must use HTTPS. Link-local, metadata, multicast, unspecified,
+The Introspection and external UserInfo endpoints accept HTTP on approved private
+networks. Public HTTP provider addresses are accepted only when
+`browser_login_enabled=false`; HTTPS is accepted in both modes. HTTP sends
+Provider credentials and external tokens without transport encryption, so HTTPS
+remains recommended. Link-local, metadata, multicast, unspecified,
 reserved, mixed public/private, and unauthorized loopback destinations remain
 rejected. Browser SSO endpoints continue to require the stricter public HTTPS
 policy. Requests retain the existing timeout, redirect, and response-size
@@ -314,3 +339,8 @@ blindly.
 Secret fields are encrypted independently under the root key. Omitting an
 existing secret preserves it; an explicit supported clear action removes it.
 Describe and export responses contain configured/redacted markers only.
+
+`feishu_group_and_knowledge_scope_interval_seconds` also applies when the event
+subscription is in `error`; the full-sync fallback threshold does not suspend
+permission reconciliation. The legacy `feishu_group_interval_seconds` input remains
+accepted, while schema and serialized settings use the new field name.

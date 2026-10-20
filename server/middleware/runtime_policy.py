@@ -10,6 +10,14 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 
+def is_documentation_path(path: str) -> bool:
+    """Reserve retired documentation URLs, including trailing-slash variants."""
+    return path.rstrip("/") in {
+        "/docs", "/docs/oauth2-redirect", "/redoc", "/openapi.json",
+        "/api/openapi.json", "/mcp/rest/docs", "/mcp/rest/openapi.json",
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeAccessPolicy:
     mode: Literal["SETUP", "READY"] = "READY"
@@ -30,13 +38,15 @@ class RuntimePolicyMiddleware(BaseHTTPMiddleware):
     @staticmethod
     def _setup_path_allowed(path: str) -> bool:
         return (
-            path in {"/", "/livez", "/readyz", "/api/config"}
+            path in {"/", "/livez", "/readyz", "/api/config", "/api/config/aliyun-endpoints"}
             or path.startswith(("/assets/", "/setup"))
         )
 
     async def dispatch(
         self, request: Request, call_next
     ) -> Response:
+        if is_documentation_path(request.url.path):
+            return Response(status_code=404, headers={"Cache-Control": "no-store"})
         policy = self.snapshot_provider()
         origin = request.headers.get("origin")
         if (

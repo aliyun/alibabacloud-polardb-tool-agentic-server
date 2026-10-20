@@ -41,6 +41,7 @@ import CapabilityEditor from '../../components/CapabilityEditor'
 import PageContainer from '../../components/PageContainer'
 import PrincipalsPanel from '../PolarRAG/PrincipalsPanel'
 import EnterpriseIdentitySourcesPanel from './EnterpriseIdentitySourcesPanel'
+import './Users.css'
 
 const { Text, Title } = Typography
 
@@ -563,20 +564,23 @@ export default function Users() {
     {
       title: t('users.name'),
       key: 'name',
+      width: 280,
       render: (_: unknown, record: UserItem) => (
-        <Space direction="vertical" size={2}>
-          <Text strong>{record.auth_provider === 'builtin' ? record.external_id : record.display_name}</Text>
+        <div className="users-account-name">
+          <Text strong ellipsis={{ tooltip: true }}>{record.auth_provider === 'builtin' ? record.external_id : record.display_name}</Text>
           {(record.enterprise_identities ?? []).map((identity) => (
-            <Text key={identity.id} type="secondary">
+            <Text key={identity.id} type="secondary" ellipsis={{ tooltip: true }}>
               {t('users.enterpriseUserId')}: {identity.external_user_id}
             </Text>
           ))}
-        </Space>
+        </div>
       ),
     },
     {
       title: t('users.identitySource'),
       key: 'identity_sources',
+      width: 220,
+      className: 'users-account-wrapped-cell',
       render: (_: unknown, record: UserItem) => (
         <Space wrap>
           {(record.identity_sources ?? []).length === 0 ? (
@@ -589,10 +593,12 @@ export default function Users() {
         </Space>
       ),
     },
-    { title: t('users.role'), dataIndex: 'role', key: 'role', render: (role: string) => <Tag color={role === 'admin' ? 'red' : 'blue'}>{role}</Tag> },
+    { title: t('users.role'), dataIndex: 'role', key: 'role', width: 110, render: (role: string) => <Tag color={role === 'admin' ? 'red' : 'blue'}>{role}</Tag> },
     {
       title: t('users.departments'),
       key: 'departments',
+      width: 260,
+      className: 'users-account-wrapped-cell',
       render: (_: unknown, record: UserItem) => {
         const memberships = (record.enterprise_identities ?? []).flatMap((identity) => [
           ...identity.departments.map((department) => ({
@@ -631,11 +637,13 @@ export default function Users() {
       title: t('users.status'),
       dataIndex: 'status',
       key: 'status',
+      width: 100,
       render: (status: string) => <Tag color={status === 'active' ? 'green' : 'red'}>{status}</Tag>,
     },
     {
       title: t('users.actions'),
       key: 'actions',
+      width: 360,
       render: (_: unknown, record: UserItem) => (
         <Space direction="vertical" size={4}>
           <Space>
@@ -707,8 +715,11 @@ export default function Users() {
             label: t('users.accountsTab'),
             children: <>
       <Table
+        className="users-account-table"
         dataSource={users}
         columns={columns}
+        tableLayout="fixed"
+        scroll={{ x: 1330 }}
         rowKey="id"
         loading={loading}
         pagination={{ total, pageSize: 20, current: page, onChange: setPage }}

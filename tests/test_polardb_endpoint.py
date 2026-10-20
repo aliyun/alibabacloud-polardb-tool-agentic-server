@@ -50,6 +50,30 @@ def test_endpoint_static_provider_uses_current_credentials_sdk_contract():
 
 
 class TestOpenAPIEndpointResolution:
+    async def test_scoped_clients_do_not_mutate_access_region(self):
+        import asyncio
+
+        provider = _StaticProvider("cn-hangzhou")
+        client = AliyunPolarDBClient(provider)
+        shenzhen = client.for_region("cn-shenzhen")
+        beijing = client.for_region("cn-beijing")
+        first, second = await asyncio.gather(shenzhen._get_sdk(), beijing._get_sdk())
+        assert first._endpoint == "polardb.cn-shenzhen.aliyuncs.com"
+        assert second._endpoint == "polardb.aliyuncs.com"
+        assert first is not second
+        assert provider.region_id == "cn-hangzhou"
+        assert client.for_region("cn-shenzhen") is shenzhen
+
+    async def test_vpc_cross_region_and_missing_resource_region_rejected(self):
+        from server.aliyun.endpoints import OpenAPIEndpointError
+
+        client = AliyunPolarDBClient(_StaticProvider("cn-hangzhou", "vpc"))
+        for region in ("cn-shenzhen", None):
+            with pytest.raises(OpenAPIEndpointError):
+                client.for_region(region)
+        with pytest.raises(OpenAPIEndpointError):
+            await client.discover_clusters("cn-shenzhen")
+
     async def test_public_central_region_uses_shared_endpoint(self):
         _install_config()
         client = AliyunPolarDBClient(_StaticProvider("cn-hangzhou"))
@@ -82,17 +106,12 @@ class TestOpenAPIEndpointResolution:
         sdk = await client._get_sdk()
         assert sdk._endpoint == "polardb-vpc.cn-hangzhou.aliyuncs.com"
 
-    async def test_unknown_region_falls_back_to_naming_rule(self):
-        from server.aliyun.endpoints import resolve_polardb_endpoint
+    async def test_unknown_region_is_rejected(self):
+        from server.aliyun.endpoints import OpenAPIEndpointError, resolve_polardb_endpoint
 
-        assert (
-            resolve_polardb_endpoint("cn-unknown", "public")
-            == "polardb.cn-unknown.aliyuncs.com"
-        )
-        assert (
-            resolve_polardb_endpoint("cn-unknown", "vpc")
-            == "polardb-vpc.cn-unknown.aliyuncs.com"
-        )
+        for network in ("public", "vpc"):
+            with pytest.raises(OpenAPIEndpointError):
+                resolve_polardb_endpoint("cn-unknown", network)
 
     async def test_sdk_rebuilt_when_endpoint_network_changes(self):
         _install_config()

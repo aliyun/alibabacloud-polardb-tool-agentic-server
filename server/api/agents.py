@@ -5,17 +5,18 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from mcp.server.auth.provider import RegistrationError
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.api.enterprise_user_identity import enterprise_identities_by_user
 from server.auth.dependencies import require_admin
 from server.auth.oauth_provider import validate_redirect_uri
 from server.api.pagination import Page
 from server.core import agent_service, agent_token_service
 from server.core.audit_logger import log_audit
 from server.db.engine import get_session
-from server.models import Agent, AgentAPIToken, AgentStatus, AuditStatus, User
+from server.models import Agent, AgentAPIToken, AgentKnowledgeScopeMode, AgentStatus, AuditStatus, User
 from server.models.base import utc_now
 
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -30,6 +31,15 @@ class CreateAgentRequest(BaseModel):
     description: str | None = Field(default=None, max_length=4096)
     max_active_resources: int | None = Field(default=None, gt=0)
     oauth_redirect_uri: AnyHttpUrl | None = None
+
+    knowledge_scope_mode: AgentKnowledgeScopeMode = AgentKnowledgeScopeMode.LEGACY_ALL
+    external_knowledge_auto_bind_enabled: bool = False
+
+    @model_validator(mode="after")
+    def validate_knowledge_policy(self):
+        if self.external_knowledge_auto_bind_enabled and self.knowledge_scope_mode != AgentKnowledgeScopeMode.SCOPED:
+            raise ValueError("External knowledge auto-bind requires SCOPED mode")
+        return self
 
     @field_validator("oauth_redirect_uri")
     @classmethod
@@ -104,6 +114,8 @@ class AgentTokenSummaryResponse(BaseModel):
 
 
 class AgentResponse(BaseModel):
+    knowledge_scope_mode: AgentKnowledgeScopeMode
+    external_knowledge_auto_bind_enabled: bool
     id: str
     name: str
     description: str | None
@@ -111,6 +123,7 @@ class AgentResponse(BaseModel):
     max_active_resources: int | None
     oauth_redirect_uri: str | None
     created_by: str | None
+    created_by_enterprise_identities: list[dict[str, str]] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime | None
     token_summary: AgentTokenSummaryResponse | None
@@ -120,6 +133,8 @@ class AgentResponse(BaseModel):
         return cls(
             id=agent.id,
             name=agent.name,
+            knowledge_scope_mode=agent.knowledge_scope_mode,
+            external_knowledge_auto_bind_enabled=agent.external_knowledge_auto_bind_enabled,
             description=agent.description,
             status=agent.status,
             max_active_resources=agent.max_active_resources,
@@ -215,6 +230,8 @@ async def create_agent(
                 else None
             ),
             admin_id=admin.id,
+            knowledge_scope_mode=body.knowledge_scope_mode,
+            external_knowledge_auto_bind_enabled=body.external_knowledge_auto_bind_enabled,
         )
     except IntegrityError as exc:
         await session.rollback()
@@ -251,7 +268,9 @@ async def create_agent(
             status_code=503, detail="Agent credential creation unavailable"
         ) from exc
 
+    identities = await enterprise_identities_by_user(session, [agent.created_by] if agent.created_by else [])
     response = AgentResponse.from_model(agent).model_dump()
+    response["created_by_enterprise_identities"] = identities.get(agent.created_by or "", [])
     response["token_summary"] = AgentTokenSummaryResponse.from_model(
         token_row
     ).model_dump()
@@ -282,8 +301,12 @@ async def list_agents(
         limit=limit,
         search=search,
     )
+    identities = await enterprise_identities_by_user(session, [agent.created_by for agent in agents if agent.created_by])
+    items = [AgentResponse.from_model(agent) for agent in agents]
+    for item in items:
+        item.created_by_enterprise_identities = identities.get(item.created_by or "", [])
     return Page(
-        items=[AgentResponse.from_model(agent) for agent in agents],
+        items=items,
         total=total,
         offset=offset,
         limit=limit,
@@ -297,7 +320,11 @@ async def get_agent(
     session: AsyncSession = Depends(get_session),
 ):
     try:
-        return AgentResponse.from_model(await agent_service.get_agent(session, agent_id))
+        agent = await agent_service.get_agent(session, agent_id)
+        response = AgentResponse.from_model(agent)
+        identities = await enterprise_identities_by_user(session, [agent.created_by] if agent.created_by else [])
+        response.created_by_enterprise_identities = identities.get(agent.created_by or "", [])
+        return response
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -354,7 +381,10 @@ async def update_agent(
         raise HTTPException(status_code=409, detail="Agent name already exists") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return AgentResponse.from_model(agent)
+    response = AgentResponse.from_model(agent)
+    identities = await enterprise_identities_by_user(session, [agent.created_by] if agent.created_by else [])
+    response.created_by_enterprise_identities = identities.get(agent.created_by or "", [])
+    return response
 
 
 @router.post("/{agent_id}/token/regenerate", response_model=TokenResponse)

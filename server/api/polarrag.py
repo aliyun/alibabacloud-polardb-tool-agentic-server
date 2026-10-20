@@ -26,8 +26,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from server.auth.dependencies import require_admin
 from server.core.audit_logger import log_audit
 from server.core.crypto import encrypt
+from server.core.identity_source_space import bind_default_identity_sources_to_space
 from server.db.engine import get_session
 from server.models import (
+    Agent,
+    AgentPolarRAGInstanceBinding,
     AuditStatus,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
@@ -43,10 +46,15 @@ from server.models import (
 )
 from server.polarrag.catalog import (
     claim_space_catalog_sync,
+    fetch_space_catalog,
     run_claimed_space_catalog_sync,
     sync_space_catalog,
 )
-from server.polarrag.client import _MAX_CATALOG_PAGES, client_from_instance
+from server.polarrag.client import (
+    _MAX_CATALOG_PAGES,
+    client_from_instance,
+    supports_minimum_plugin_version,
+)
 from server.polarrag.connection_config import InstanceCreate
 from server.polarrag.contracts import (
     PolarRAGCapabilities,
@@ -81,6 +89,7 @@ async def _commit_with_required_audit(
         **audit_fields,
     )
     await session.commit()
+
 
 class KnowledgeResourceManagementModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -126,10 +135,17 @@ class PrincipalCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     identity_domain: str = Field(min_length=1, max_length=255)
-    provider: Literal["feishu", "sharepoint", "polarrag"]
+    provider: Literal["feishu", "sharepoint", "dingtalk", "polarrag"]
     principal_type: Literal["user", "group"]
     principal_id: str = Field(min_length=1, max_length=255)
     valid_until: datetime | None = None
+
+    @field_validator("principal_type")
+    @classmethod
+    def validate_supported_principal_type(cls, value: str, info: ValidationInfo) -> str:
+        if info.data.get("provider") == "dingtalk" and value == "group":
+            raise ValueError("DingTalk conversation membership expansion is not supported")
+        return value
 
     @field_validator("identity_domain")
     @classmethod
@@ -167,9 +183,7 @@ class ClaimKnowledgeBaseRequest(BaseModel):
     @model_validator(mode="after")
     def validate_owner_reference(self) -> "ClaimKnowledgeBaseRequest":
         if (self.principal_assignment_id is None) == (self.pas_user_id is None):
-            raise ValueError(
-                "exactly one of principal_assignment_id or pas_user_id is required"
-            )
+            raise ValueError("exactly one of principal_assignment_id or pas_user_id is required")
         return self
 
 
@@ -260,23 +274,13 @@ def _space_response(
         "identity_domain": upstream.identity_domain,
         "oss_bucket": upstream.oss_bucket,
         "oss_endpoint": upstream.oss_endpoint,
-        "oss_config_validated": (
-            local.oss_config_validated if local is not None else False
-        ),
-        "oss_validated_at": (
-            local.oss_validated_at if local is not None else None
-        ),
-        "oss_last_error_code": (
-            local.oss_last_error_code if local is not None else None
-        ),
+        "oss_config_validated": (local.oss_config_validated if local is not None else False),
+        "oss_validated_at": (local.oss_validated_at if local is not None else None),
+        "oss_last_error_code": (local.oss_last_error_code if local is not None else None),
         "status": upstream.status,
         "enabled": local.enabled if local is not None else False,
-        "knowledge_space_id": (
-            local.knowledge_space_id if local is not None else None
-        ),
-        "last_synced_at": (
-            local.last_synced_at if local is not None else None
-        ),
+        "knowledge_space_id": (local.knowledge_space_id if local is not None else None),
+        "last_synced_at": (local.last_synced_at if local is not None else None),
         "knowledge_resource_count": knowledge_resource_count,
     }
 
@@ -292,9 +296,7 @@ def _knowledge_resource_response(
         "space_id": resource.space_id,
         "space_name": space_name or resource.space_id,
         "kb_type": resource.kb_type,
-        "binding_mode": (
-            resource.binding_mode.value if resource.binding_mode is not None else None
-        ),
+        "binding_mode": (resource.binding_mode.value if resource.binding_mode is not None else None),
         "sync_status": resource.sync_status.value,
         "enabled": resource.enabled,
         "management_mode": resource.management_mode.value,
@@ -305,10 +307,7 @@ def _apply_space_storage(
     local: PolarRAGSpace,
     upstream: PolarRAGSpaceRecord,
 ) -> bool:
-    if (
-        local.oss_bucket == upstream.oss_bucket
-        and local.oss_endpoint == upstream.oss_endpoint
-    ):
+    if local.oss_bucket == upstream.oss_bucket and local.oss_endpoint == upstream.oss_endpoint:
         return False
     local.oss_bucket = upstream.oss_bucket
     local.oss_endpoint = upstream.oss_endpoint
@@ -323,18 +322,15 @@ def _apply_capability_status(
     capabilities: PolarRAGCapabilities,
 ) -> None:
     required = (
-        capabilities.search
+        supports_minimum_plugin_version(capabilities.version)
+        and capabilities.search
         and capabilities.protected_document_info
         and capabilities.protected_context
         and capabilities.protected_document_search
         and capabilities.space_catalog
         and capabilities.knowledge_base_catalog
     )
-    instance.status = (
-        PolarRAGInstanceStatus.ACTIVE
-        if required
-        else PolarRAGInstanceStatus.CAPABILITY_MISSING
-    )
+    instance.status = PolarRAGInstanceStatus.ACTIVE if required else PolarRAGInstanceStatus.CAPABILITY_MISSING
     instance.plugin_version = capabilities.version
     instance.capabilities_json = json.dumps(
         capabilities.as_dict(),
@@ -343,17 +339,38 @@ def _apply_capability_status(
     )
     instance.last_checked_at = datetime.now().astimezone()
     instance.last_error_code = (
-        None if required else "POLARRAG_CATALOG_CAPABILITY_MISSING"
+        None
+        if required
+        else (
+            "POLARRAG_VERSION_UNSUPPORTED"
+            if not supports_minimum_plugin_version(capabilities.version)
+            else "POLARRAG_CATALOG_CAPABILITY_MISSING"
+        )
+    )
+
+
+def _require_supported_plugin_version(
+    capabilities: PolarRAGCapabilities,
+) -> None:
+    if supports_minimum_plugin_version(capabilities.version):
+        return
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "POLARRAG_VERSION_UNSUPPORTED",
+            "message": "PolarRAG plugin 1.0.6 or later is required.",
+        },
     )
 
 
 def _raise_upstream(error: PolarRAGUpstreamError) -> None:
-    status_code = 501 if isinstance(
-        error, PolarRAGOperationNotSupported
-    ) else 503 if (
-        error.retryable
-        or error.code == PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE
-    ) else 422
+    status_code = (
+        501
+        if isinstance(error, PolarRAGOperationNotSupported)
+        else 503
+        if (error.retryable or error.code == PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE)
+        else 422
+    )
     raise HTTPException(
         status_code=status_code,
         detail={"code": error.code.value, "message": error.code.value},
@@ -393,8 +410,20 @@ async def _activate_new_spaces(
 ) -> tuple[PolarRAGSpace, ...]:
     if instance.status != PolarRAGInstanceStatus.ACTIVE:
         return ()
+    upstream_pages = [page async for page in _iter_upstream_space_pages(client)]
+    with session.no_autoflush:
+        existing_ids = set((await session.scalars(
+            select(PolarRAGSpace.space_id).where(PolarRAGSpace.polarrag_instance_id == instance.id)
+        )).all()) if instance.id is not None else set()
+    catalogs = {
+        upstream.space_id: await fetch_space_catalog(client, upstream.space_id, upstream.identity_domain)
+        for page in upstream_pages for upstream in page
+        if upstream.space_id not in existing_ids
+        and upstream.status.upper() == "ACTIVE" and upstream.identity_domain is not None
+    }
+    await session.flush()
     activated: list[PolarRAGSpace] = []
-    async for upstream_spaces in _iter_upstream_space_pages(client):
+    for upstream_spaces in upstream_pages:
         space_ids = [space.space_id for space in upstream_spaces]
         local_spaces = {
             space.space_id: space
@@ -413,10 +442,7 @@ async def _activate_new_spaces(
                 local.name = upstream.name
                 _apply_space_storage(local, upstream)
                 continue
-            if (
-                upstream.status.upper() != "ACTIVE"
-                or upstream.identity_domain is None
-            ):
+            if upstream.status.upper() != "ACTIVE" or upstream.identity_domain is None:
                 continue
             local = PolarRAGSpace(
                 polarrag_instance_id=instance.id,
@@ -429,7 +455,8 @@ async def _activate_new_spaces(
             )
             session.add(local)
             await session.flush()
-            await sync_space_catalog(session, local, client, commit=False)
+            await bind_default_identity_sources_to_space(session, local)
+            await sync_space_catalog(session, local, client, commit=False, pages=catalogs[upstream.space_id])
             activated.append(local)
     return tuple(activated)
 
@@ -505,9 +532,7 @@ async def create_instance(
         username_ciphertext=encrypt(body.username),
         password_ciphertext=encrypt(body.password),
         tls_verify=body.tls_verify,
-        ca_bundle_ciphertext=(
-            encrypt(body.ca_bundle) if body.ca_bundle else None
-        ),
+        ca_bundle_ciphertext=(encrypt(body.ca_bundle) if body.ca_bundle else None),
         status=PolarRAGInstanceStatus.PENDING,
         created_by=admin.id,
     )
@@ -516,15 +541,16 @@ async def create_instance(
         capabilities = await client.check_capabilities()
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
+    _require_supported_plugin_version(capabilities)
     _apply_capability_status(instance, capabilities)
     session.add(instance)
     try:
-        await session.flush()
         activated_spaces = await _activate_new_spaces(
             session,
             instance,
             client,
         )
+        await session.flush()
         await _audit_auto_enabled_spaces(
             session,
             user_id=admin.id,
@@ -556,10 +582,22 @@ async def list_instances(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     q: str | None = Query(default=None, max_length=255),
+    agent_id: str | None = Query(default=None, max_length=36),
+    binding_status: Literal["bound", "unbound"] | None = Query(default=None),
+    status: PolarRAGInstanceStatus | None = Query(default=None),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    if binding_status is not None and agent_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail="agent_id is required when filtering by binding status",
+        )
+    if agent_id is not None and await session.get(Agent, agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
     filters = []
+    if status is not None:
+        filters.append(PolarRAGInstance.status == status)
     if q and q.strip():
         pattern = f"%{q.strip()}%"
         filters.append(
@@ -568,12 +606,20 @@ async def list_instances(
                 PolarRAGInstance.host.ilike(pattern),
             )
         )
-    total = (
-        await session.scalar(
-            select(func.count(PolarRAGInstance.id)).where(*filters)
+    if agent_id is not None and binding_status is not None:
+        binding_exists = (
+            select(AgentPolarRAGInstanceBinding.id)
+            .where(
+                AgentPolarRAGInstanceBinding.agent_id == agent_id,
+                AgentPolarRAGInstanceBinding.polarrag_instance_id
+                == PolarRAGInstance.id,
+            )
+            .exists()
         )
-        or 0
-    )
+        filters.append(
+            binding_exists if binding_status == "bound" else ~binding_exists
+        )
+    total = await session.scalar(select(func.count(PolarRAGInstance.id)).where(*filters)) or 0
     instances = (
         await session.execute(
             select(PolarRAGInstance)
@@ -617,17 +663,15 @@ async def update_instance(
     if body.tls_verify is not None:
         instance.tls_verify = body.tls_verify
     if "ca_bundle" in body.model_fields_set:
-        instance.ca_bundle_ciphertext = (
-            encrypt(body.ca_bundle) if body.ca_bundle else None
-        )
+        instance.ca_bundle_ciphertext = encrypt(body.ca_bundle) if body.ca_bundle else None
     client = client_from_instance(instance)
     try:
         capabilities = await client.check_capabilities()
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
+    _require_supported_plugin_version(capabilities)
     _apply_capability_status(instance, capabilities)
     try:
-        await session.flush()
         activated_spaces = await _activate_new_spaces(
             session,
             instance,
@@ -665,14 +709,10 @@ async def disable_instance(
     instance = await _get_instance(session, instance_id)
     instance.status = PolarRAGInstanceStatus.DISABLED
     await session.execute(
-        update(PolarRAGSpace)
-        .where(PolarRAGSpace.polarrag_instance_id == instance.id)
-        .values(enabled=False)
+        update(PolarRAGSpace).where(PolarRAGSpace.polarrag_instance_id == instance.id).values(enabled=False)
     )
     await session.execute(
-        update(KnowledgeResource)
-        .where(KnowledgeResource.polarrag_instance_id == instance.id)
-        .values(enabled=False)
+        update(KnowledgeResource).where(KnowledgeResource.polarrag_instance_id == instance.id).values(enabled=False)
     )
     await _commit_with_required_audit(
         session,
@@ -744,9 +784,7 @@ async def list_spaces(
 ):
     instance = await _get_instance(session, instance_id)
     try:
-        spaces, next_cursor = await client_from_instance(
-            instance
-        ).list_spaces_page(cursor=cursor, page_size=limit)
+        spaces, next_cursor = await client_from_instance(instance).list_spaces_page(cursor=cursor, page_size=limit)
     except PolarRAGUpstreamError as exc:
         _raise_upstream(exc)
     space_ids = [space.space_id for space in spaces]
@@ -771,16 +809,12 @@ async def list_spaces(
             .group_by(KnowledgeResource.space_id)
         )
     ).all()
-    resource_counts: dict[str, int] = {
-        space_id: count for space_id, count in count_rows
-    }
+    resource_counts: dict[str, int] = {space_id: count for space_id, count in count_rows}
     storage_changed = False
     for upstream in spaces:
         local = local_spaces.get(upstream.space_id)
         if local is not None:
-            storage_changed = (
-                _apply_space_storage(local, upstream) or storage_changed
-            )
+            storage_changed = _apply_space_storage(local, upstream) or storage_changed
     if storage_changed:
         await session.commit()
     return {
@@ -823,14 +857,25 @@ async def list_knowledge_resources(
         )
     ).all()
     return {
-        "items": [
-            _knowledge_resource_response(resource, space_name=space_name)
-            for resource, space_name in rows
-        ],
+        "items": [_knowledge_resource_response(resource, space_name=space_name) for resource, space_name in rows],
         "total": total or 0,
         "offset": offset,
         "limit": limit,
     }
+
+
+@router.put("/spaces/{space_id}/knowledge-bases/{kb_id}/management-mode")
+async def update_knowledge_management_mode_by_pair(
+    space_id: str,
+    kb_id: str,
+    body: KnowledgeResourceManagementModeRequest,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from server.polarrag.resource_selector import resolve_knowledge_pair
+
+    resource_id = await resolve_knowledge_pair(session, space_id, kb_id)
+    return await update_knowledge_resource_management_mode(resource_id, body, admin, session)
 
 
 @router.put("/knowledge-resources/{knowledge_resource_id}/management-mode")
@@ -882,6 +927,15 @@ async def enable_space(
             },
         )
     space = await _find_space(session, instance.id, upstream.space_id)
+    if space is not None and space.identity_domain != upstream.identity_domain:
+        raise HTTPException(
+            status_code=409,
+            detail="PolarRAG Space identity domain changed",
+        )
+    try:
+        pages = await fetch_space_catalog(client, upstream.space_id, upstream.identity_domain)
+    except PolarRAGUpstreamError as exc:
+        _raise_upstream(exc)
     if space is None:
         space = PolarRAGSpace(
             polarrag_instance_id=instance.id,
@@ -894,12 +948,8 @@ async def enable_space(
         )
         session.add(space)
         await session.flush()
+        await bind_default_identity_sources_to_space(session, space)
     else:
-        if space.identity_domain != upstream.identity_domain:
-            raise HTTPException(
-                status_code=409,
-                detail="PolarRAG Space identity domain changed",
-            )
         space.name = upstream.name
         _apply_space_storage(space, upstream)
         space.enabled = True
@@ -909,6 +959,7 @@ async def enable_space(
             space,
             client,
             commit=False,
+            pages=pages,
         )
     except PolarRAGUpstreamError as exc:
         await session.rollback()
@@ -1058,12 +1109,14 @@ async def _sync_space_in_background(
     admin_id: str,
     knowledge_space_id: str,
     worker_id: str,
+    kb_ids: list[str] | None = None,
 ) -> None:
     try:
         result = await run_claimed_space_catalog_sync(
             session_factory,
             knowledge_space_id,
             worker_id,
+            kb_ids=kb_ids,
         )
         if result is not None:
             async with session_factory() as session:
@@ -1091,6 +1144,7 @@ async def _schedule_space_sync(
     session: AsyncSession,
     space: PolarRAGSpace,
     admin_id: str,
+    kb_ids: list[str] | None = None,
 ) -> tuple[SpaceSyncStatus, asyncio.Task[None] | None]:
     worker_id = str(uuid.uuid4())
     if not await claim_space_catalog_sync(
@@ -1108,6 +1162,7 @@ async def _schedule_space_sync(
             admin_id,
             space.knowledge_space_id,
             worker_id,
+            kb_ids,
         )
     )
     return SpaceSyncStatus(status="running"), task
@@ -1259,9 +1314,7 @@ async def list_unclaimed_knowledge_bases(
                     or record.identity_domain != space.identity_domain
                     or record.kb_type != "PERSONAL"
                 ):
-                    raise PolarRAGUpstreamError(
-                        PolarRAGErrorCode.INVALID_RESPONSE
-                    )
+                    raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
                 items.append(
                     {
                         "space_id": space.space_id,
@@ -1336,7 +1389,7 @@ async def list_owner_candidates(
         .join(User, User.id == EnterprisePrincipalAssignment.pas_user_id)
         .where(
             EnterprisePrincipalAssignment.identity_domain == identity_domain,
-            EnterprisePrincipalAssignment.provider.in_(("feishu", "sharepoint")),
+            EnterprisePrincipalAssignment.provider.in_(("feishu", "sharepoint", "dingtalk")),
             EnterprisePrincipalAssignment.principal_type == EnterprisePrincipalType.USER,
             EnterprisePrincipalAssignment.status == EnterprisePrincipalStatus.ACTIVE,
             or_(
@@ -1366,24 +1419,26 @@ async def list_owner_candidates(
                 EnterprisePrincipalAssignment.principal_id.ilike(pattern),
             )
         )
-        native = native.where(
-            or_(User.display_name.ilike(pattern), User.external_id.ilike(pattern))
-        )
+        native = native.where(or_(User.display_name.ilike(pattern), User.external_id.ilike(pattern)))
     candidates = union_all(assigned, native).subquery()
     total = int(await session.scalar(select(func.count()).select_from(candidates)) or 0)
     rows = (
-        await session.execute(
-            select(candidates)
-            .order_by(
-                candidates.c.user_name,
-                candidates.c.user_external_id,
-                candidates.c.provider,
-                candidates.c.principal_id,
+        (
+            await session.execute(
+                select(candidates)
+                .order_by(
+                    candidates.c.user_name,
+                    candidates.c.user_external_id,
+                    candidates.c.provider,
+                    candidates.c.principal_id,
+                )
+                .offset(offset)
+                .limit(limit)
             )
-            .offset(offset)
-            .limit(limit)
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return {
         "items": [dict(row) for row in rows],
         "total": total,
@@ -1392,10 +1447,7 @@ async def list_owner_candidates(
     }
 
 
-@router.post(
-    "/instances/{instance_id}/spaces/{space_id}"
-    "/knowledge-bases/{kb_id}/claim"
-)
+@router.post("/instances/{instance_id}/spaces/{space_id}/knowledge-bases/{kb_id}/claim")
 async def claim_knowledge_base(
     instance_id: str,
     space_id: str,
@@ -1484,10 +1536,8 @@ async def claim_knowledge_base(
                 or record.kb_type != "PERSONAL"
                 or record.status.upper() != "ACTIVE"
                 or not isinstance(owner_value, dict)
-                or owner_value.get("type")
-                != EnterprisePrincipalType.USER.value
-                or (owner_value.get("provider"), owner_value.get("id"))
-                not in expected_owners
+                or owner_value.get("type") != EnterprisePrincipalType.USER.value
+                or (owner_value.get("provider"), owner_value.get("id")) not in expected_owners
             ):
                 raise HTTPException(
                     status_code=409,
@@ -1542,10 +1592,7 @@ async def create_principal(
     user = await session.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
-    if body.provider == "polarrag" and (
-        body.principal_type != "user"
-        or body.principal_id != user.external_id
-    ):
+    if body.provider == "polarrag" and (body.principal_type != "user" or body.principal_id != user.external_id):
         raise HTTPException(
             status_code=422,
             detail="PolarRAG principal must match the PAS user",
@@ -1555,11 +1602,7 @@ async def create_principal(
         identity_domain=body.identity_domain,
         provider=body.provider,
         principal_type=EnterprisePrincipalType(body.principal_type),
-        principal_id=(
-            user.external_id
-            if body.provider == "polarrag"
-            else body.principal_id
-        ),
+        principal_id=(user.external_id if body.provider == "polarrag" else body.principal_id),
         source=EnterprisePrincipalSource.ADMIN_MANAGED,
         valid_until=body.valid_until,
         canonical_user_external_id=user.external_id,
@@ -1603,12 +1646,7 @@ async def list_principals(
                 EnterprisePrincipalAssignment.identity_domain.ilike(pattern),
             )
         )
-    total = (
-        await session.scalar(
-            select(func.count(EnterprisePrincipalAssignment.id)).where(*filters)
-        )
-        or 0
-    )
+    total = await session.scalar(select(func.count(EnterprisePrincipalAssignment.id)).where(*filters)) or 0
     assignments = (
         await session.execute(
             select(EnterprisePrincipalAssignment)

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import json
 
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import event, select
+from sqlalchemy import event, func, select
 
 from server.app import create_app
 from server.api.agent_polarrag_access import _assign_all_users_in_background
@@ -20,6 +20,7 @@ from server.models import (
     Department,
     EnterpriseDirectoryPrincipalType,
     EnterpriseDirectoryMembershipType,
+    EnterpriseDirectoryUser,
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceStatus,
     EnterprisePrincipalAssignment,
@@ -33,15 +34,77 @@ from server.models import (
     PolarRAGSpace,
     IdentitySourceProvider,
     User,
+    UserStatus,
     UserDepartment,
+    UserExternalIdentity,
 )
 from server.enterprise_identity.service import (
+    identity_provider_key,
     upsert_directory_group,
     upsert_directory_membership,
     upsert_external_user,
 )
 
 pytest_plugins = ("tests._admin_api_fixtures",)
+
+
+async def test_bind_all_builtin_users_is_dynamic_without_materialized_assignments(client, setup) -> None:
+    from server.core.agent_access import has_agent_access, has_group_agent_access
+    from server.core.agent_user_token_service import resolve_token
+
+    http, admin_headers, member_headers = client
+    factory, admin, member = setup
+    agent_id, _instance_id, _member_id = await _seed(setup)
+    url = f"/api/agents/{agent_id}/all-subject-assignments"
+    for _ in range(2):
+        response = await http.post(url, json={"operation": "BIND"}, headers=admin_headers)
+        assert response.status_code == 200
+        assert response.json()["status"] == "BOUND"
+    async with factory() as session:
+        assert await session.scalar(select(func.count()).select_from(AgentUserAssignment)) == 0
+        later = User(external_id="later", display_name="Later", auth_provider=AuthProvider.BUILTIN)
+        oidc = User(external_id="external", display_name="External", auth_provider=AuthProvider.OIDC)
+        disabled = User(
+            external_id="disabled", display_name="Disabled", auth_provider=AuthProvider.BUILTIN,
+            status=UserStatus.DISABLED,
+        )
+        session.add_all([later, oidc, disabled])
+        await session.commit()
+        assert await has_agent_access(session, agent_id, later.id)
+        assert await has_group_agent_access(session, agent_id, member.id)
+        assert not await has_agent_access(session, agent_id, oidc.id)
+        assert not await has_agent_access(session, agent_id, disabled.id)
+    options = await http.get(
+        f"/api/agents/{agent_id}/user-options?binding_status=bound&limit=1&search=Later",
+        headers=admin_headers,
+    )
+    assert options.status_code == 200
+    assert options.json()["total"] == 1
+    assert options.json()["items"][0]["assignment_id"] is None
+    assert options.json()["items"][0]["inherited_source_names"] == ["PAS"]
+    direct = await http.post(
+        f"/api/agents/{agent_id}/user-assignments", json={"user_id": later.id}, headers=admin_headers,
+    )
+    assert direct.status_code == 201
+    removed = await http.delete(
+        f"/api/agents/{agent_id}/user-assignments/{direct.json()['id']}", headers=admin_headers,
+    )
+    assert removed.status_code == 204
+    async with factory() as session:
+        assert await has_agent_access(session, agent_id, later.id)
+    issued = await http.post(f"/api/me/agent-connections/{agent_id}/token/issue", headers=member_headers)
+    assert issued.status_code == 200
+    revealed = await http.post(f"/api/me/agent-connections/{agent_id}/token/reveal", headers=member_headers)
+    assert revealed.status_code == 200
+    token = revealed.json()["token"]
+    async with factory() as session:
+        assert await resolve_token(session, token) is not None
+    response = await http.post(url, json={"operation": "UNBIND"}, headers=admin_headers)
+    assert response.status_code == 200
+    assert response.json()["status"] == "UNBOUND"
+    async with factory() as session:
+        assert not await has_agent_access(session, agent_id, later.id)
+        assert await resolve_token(session, token) is None
 
 
 async def _seed(setup):
@@ -410,11 +473,15 @@ async def test_admin_updates_agent_public_kb_scope_with_audit(
         "items": [
             {
                 "knowledge_resource_id": other_public.id,
+                "space_id": "space-1",
+                "kb_id": "public-other",
                 "name": "public-other",
                 "knowledge_space_name": "Space 1",
             },
             {
                 "knowledge_resource_id": selected.id,
+                "space_id": "space-1",
+                "kb_id": "public-selected",
                 "name": "public-selected",
                 "knowledge_space_name": "Space 1",
             },
@@ -770,6 +837,17 @@ async def test_admin_assigns_all_synchronized_identity_source_users(
         "member_count": 1,
     }
 
+    source_options = await http.get(
+        f"/api/agents/{agent_id}/group-options",
+        params={"category": "identity_source", "offset": 0, "limit": 20},
+        headers=admin_headers,
+    )
+    assert source_options.status_code == 200
+    assert source_options.json()["total"] == 1
+    assert {
+        item["group_kind"] for item in source_options.json()["items"]
+    } == {"identity_source_all"}
+
     created = await http.post(
         f"/api/agents/{agent_id}/group-assignments",
         json={
@@ -781,6 +859,73 @@ async def test_admin_assigns_all_synchronized_identity_source_users(
     assert created.status_code == 201
     assert created.json()["principal_id"] is None
     assert created.json()["member_count"] == 1
+
+    source_assignments = await http.get(
+        f"/api/agents/{agent_id}/group-assignments",
+        params={"category": "identity_source", "offset": 0, "limit": 20},
+        headers=admin_headers,
+    )
+    assert source_assignments.status_code == 200
+    assert source_assignments.json()["total"] == 1
+    assert source_assignments.json()["items"][0]["group_kind"] == "identity_source_all"
+
+    regular_groups = await http.get(
+        f"/api/agents/{agent_id}/group-assignments",
+        params={"category": "group", "offset": 0, "limit": 20},
+        headers=admin_headers,
+    )
+    assert regular_groups.status_code == 200
+    assert regular_groups.json()["total"] == 0
+
+
+async def test_enterprise_user_options_page_mapped_users_from_fresh_stale_source(client, setup) -> None:
+    http, admin_headers, _member_headers = client
+    factory, admin, member = setup
+    async with factory() as session:
+        agent = Agent(name="directory-user-options", created_by=admin.id)
+        source = EnterpriseIdentitySource.create(
+            name="Stale directory", provider=IdentitySourceProvider.FEISHU, tenant_id="tenant-options",
+        )
+        source.status = EnterpriseIdentitySourceStatus.STALE
+        source.last_synced_at = datetime.now(UTC)
+        second = User(external_id="second-directory-user", display_name="Second")
+        session.add_all([agent, source, second])
+        await session.flush()
+        for external_id, name in [("ou-a", "Alice"), ("ou-b", "Bob"), ("ou-unmapped", "Unmapped")]:
+            session.add(EnterpriseDirectoryUser(
+                identity_source_id=source.id, external_user_id=external_id, display_name=name,
+            ))
+        session.add_all([
+            UserExternalIdentity(
+                user_id=member.id, identity_provider=identity_provider_key(source), external_subject="ou-a",
+            ),
+            UserExternalIdentity(
+                user_id=second.id, identity_provider=identity_provider_key(source), external_subject="ou-b",
+            ),
+            AgentUserAssignment(agent_id=agent.id, user_id=member.id, created_by_user_id=admin.id),
+        ])
+        await session.commit()
+        agent_id, source_id = agent.id, source.id
+
+    path = f"/api/agents/{agent_id}/enterprise-user-options"
+    params = {"identity_source_ids": source_id, "offset": 0, "limit": 1}
+    unbound = await http.get(path, params=params, headers=admin_headers)
+    assert unbound.status_code == 200
+    assert unbound.json()["total"] == 1
+    assert [row["external_user_id"] for row in unbound.json()["items"]] == ["ou-b"]
+
+    bound = await http.get(path, params={**params, "binding_status": "bound"}, headers=admin_headers)
+    assert bound.status_code == 200
+    assert bound.json()["total"] == 1
+    assert [row["external_user_id"] for row in bound.json()["items"]] == ["ou-a"]
+
+    async with factory() as session:
+        source = await session.get(EnterpriseIdentitySource, source_id)
+        source.last_synced_at = datetime.now(UTC) - timedelta(days=8)
+        await session.commit()
+    expired = await http.get(path, params=params, headers=admin_headers)
+    assert expired.status_code == 200
+    assert expired.json()["total"] == 0
 
 
 async def test_group_options_fetch_is_bounded_by_requested_page(client, setup) -> None:
@@ -879,3 +1024,25 @@ async def test_direct_assignment_upgrades_group_shadow_and_can_be_removed(
     )
     assert connections.json()["items"][0]["assignment_id"] == assignment_id
     assert connections.json()["items"][0]["token"]["status"] == "active"
+    options = await http.get(
+        f"/api/agents/{agent_id}/user-options?binding_status=bound&search=Member&limit=1",
+        headers=admin_headers,
+    )
+    assert options.json()["total"] == 1
+    assert options.json()["items"][0]["assignment_id"] is None
+    assert options.json()["items"][0]["inherited_source_names"] == ["Engineering"]
+
+
+async def test_dingtalk_user_identity_source_name_is_not_pas(setup):
+    from server.api.agent_polarrag_access import _user_identity_source_names
+
+    factory, _, member = setup
+    async with factory() as session:
+        source = EnterpriseIdentitySource.create(
+            name='DingTalk directory', provider=IdentitySourceProvider.DINGTALK, tenant_id='ding-corp',
+        )
+        session.add(source)
+        session.add(UserExternalIdentity(user_id=member.id, identity_provider='dingtalk:ding-corp',
+                                         external_subject='ding-user'))
+        await session.commit()
+        assert await _user_identity_source_names(session, [member.id]) == {member.id: ['DingTalk directory']}

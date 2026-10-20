@@ -10,14 +10,16 @@ class PolarRAGErrorCode(str, enum.Enum):
     AUTH_FAILED = "POLARRAG_AUTH_FAILED"
     UNAVAILABLE = "POLARRAG_UNAVAILABLE"
     INVALID_RESPONSE = "POLARRAG_INVALID_RESPONSE"
+    CATALOG_TARGETS_MISSING = "POLARRAG_CATALOG_TARGETS_MISSING"
+    VERSION_UNSUPPORTED = "POLARRAG_VERSION_UNSUPPORTED"
     CREDENTIAL_UNAVAILABLE = "POLARRAG_CREDENTIAL_UNAVAILABLE"
     RERANKER_NOT_CONFIGURED = "RERANKER_NOT_CONFIGURED"
     DOCUMENT_UPLOAD_FORBIDDEN = "POLARRAG_DOCUMENT_UPLOAD_FORBIDDEN"
     OPERATION_NOT_SUPPORTED = "OPERATION_NOT_SUPPORTED"
     DOCUMENT_NOT_ACCESSIBLE = "DOCUMENT_NOT_ACCESSIBLE"
-    KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE = (
-        "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE"
-    )
+    # Preserve the upstream generation-conflict code in the public recovery contract.
+    CITATION_SOURCE_CHANGED = "citation_source_changed"
+    KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE = "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE"
     EXTERNAL_SYNC_RESOURCE_READ_ONLY = "EXTERNAL_SYNC_RESOURCE_READ_ONLY"
 
 
@@ -64,7 +66,8 @@ class PolarRAGCapabilities:
 
 @dataclass(frozen=True)
 class PolarRAGSearchCapabilities:
-    max_kb_ids: int
+    multi_kb_search: bool
+    max_kb_ids: int | None
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,7 @@ class PolarRAGClient(Protocol):
         *,
         cursor: str | None,
         page_size: int,
+        kb_ids: list[str] | None = None,
     ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]: ...
 
     async def list_unclaimed_knowledge_bases(
@@ -152,6 +156,14 @@ class PolarRAGClient(Protocol):
         acl_context: dict[str, Any],
     ) -> dict[str, Any]: ...
 
+    async def submit_documents(
+        self,
+        space_id: str,
+        documents: list[dict[str, Any]],
+        *,
+        acl_context: dict[str, Any],
+    ) -> list[dict[str, Any]]: ...
+
     async def delete_document(
         self,
         space_id: str,
@@ -167,13 +179,14 @@ class PolarRAGClient(Protocol):
         *,
         chunk_strategy: str | None,
         chunk_max_tokens: int | None,
+        force: bool = False,
         acl_context: dict[str, Any],
     ) -> dict[str, Any]: ...
 
     async def search(
         self,
         space_id: str,
-        kb_id: str,
+        kb_id: str | list[str],
         *,
         query: str,
         search_mode: str,
@@ -181,6 +194,7 @@ class PolarRAGClient(Protocol):
         min_score: float | None,
         reranker: bool,
         acl_context: dict[str, Any],
+        legacy_protocol: bool = False,
     ) -> dict[str, Any]: ...
 
     async def search_many(
@@ -204,6 +218,8 @@ class PolarRAGClient(Protocol):
         chunk_index: int,
         window_size: int,
         acl_context: dict[str, Any],
+        kb_id: str | None = None,
+        expected_doc_generation: int | None = None,
     ) -> dict[str, Any]: ...
 
     async def list_document_chunks(
@@ -214,16 +230,18 @@ class PolarRAGClient(Protocol):
         offset: int,
         limit: int,
         acl_context: dict[str, Any],
+        kb_id: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def find_by_name(
         self,
         space_id: str,
         *,
-        kb_id: str,
+        kb_id: str | list[str],
         filename: str,
         limit: int,
         acl_context: dict[str, Any],
+        legacy_protocol: bool = False,
     ) -> dict[str, Any]: ...
 
     async def list_documents(
@@ -234,6 +252,15 @@ class PolarRAGClient(Protocol):
         size: int,
         after_doc_id: str | None,
         acl_context: dict[str, Any],
+        page: int = 1,
+    ) -> dict[str, Any]: ...
+
+    async def list_document_permissions(
+        self,
+        space_id: str,
+        doc_ids: list[str],
+        *,
+        acl_context: dict[str, Any],
     ) -> dict[str, Any]: ...
 
     async def document_info(
@@ -242,6 +269,7 @@ class PolarRAGClient(Protocol):
         doc_id: str,
         *,
         acl_context: dict[str, Any],
+        kb_id: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def recall_document(

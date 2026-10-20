@@ -46,10 +46,6 @@ Run the containerized helper and enter the metadata database connection:
 ./scripts/deploy/create-external-mysql-env.sh
 ```
 
-<p align="center">
-  <img src="../../zh-cn/getting-started/images/external-mysql-env-generator.png" alt="Generate the environment file and test the metadata database connection" width="820">
-</p>
-
 The helper displays non-secret fields for confirmation, masks password input
 with `*`, and executes `SELECT 1` before writing `.env`. Enter `n` at
 `Use these settings? [Y/n]` to correct the values.
@@ -109,7 +105,7 @@ Open `http://<ECS public address>:18760/setup` and enter the token:
   <img src="../../zh-cn/getting-started/images/setup-enter-token.png" alt="Enter the bootstrap token on the setup page" width="820">
 </p>
 
-Then create the first administrator with a password of at least 12 characters:
+Then create the first administrator with a password of at least 8 characters:
 
 <p align="center">
   <img src="../../zh-cn/getting-started/images/setup-admin-password.png" alt="Create the first administrator" width="820">

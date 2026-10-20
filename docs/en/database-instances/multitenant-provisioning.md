@@ -24,6 +24,13 @@ Configure capacity, CPU range, DDL concurrency, priority, and lifecycle state.
 cleanup, and `disabled` reserves the backend for recovery. Capacity controls
 placement but never hides an Agent's existing owned resources.
 
+Resource reservation checks and locks the active instance and backend together
+with Agent authorization and health, and enforces both Agent and backend
+capacity under concurrent requests. This behavior applies to SQLite, MySQL and
+PostgreSQL metadata stores. A permission template is optional: a configured
+revision is captured in the resource's permission snapshot; otherwise PAS uses
+the built-in database privileges.
+
 ## Agent provisioning
 
 Grant **Create managed databases** on an active healthy backend. The Agent then

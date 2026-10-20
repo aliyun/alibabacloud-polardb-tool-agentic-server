@@ -16,10 +16,12 @@ import uuid
 
 import httpx
 
+from server.enterprise_identity.checkpoints import checkpoint_precedes_completed_sync
+
 
 logger = logging.getLogger(__name__)
 _LEGACY_CHECKPOINT_VERSION = 1
-_STREAM_CHECKPOINT_VERSION = 2
+_STREAM_CHECKPOINT_VERSION = 3
 
 
 class FeishuDirectoryError(ValueError):
@@ -46,6 +48,8 @@ class FeishuDirectoryClient:
         max_concurrency: int = 8,
         checkpoint_dir: Path | str | None = None,
         checkpoint_key: str | None = None,
+        last_completed_at: datetime | None = None,
+        sync_worker_id: str | None = None,
     ) -> None:
         if not app_id or not app_secret:
             raise ValueError("Feishu app_id and app_secret are required")
@@ -59,6 +63,8 @@ class FeishuDirectoryClient:
         self._tenant_access_token: str | None = None
         self._checkpoint_lock = asyncio.Lock()
         self._checkpoint_key = checkpoint_key
+        self._last_completed_at = last_completed_at
+        self._sync_worker_id = sync_worker_id
         if checkpoint_key is None:
             self._checkpoint_path: Path | None = None
         else:
@@ -273,6 +279,7 @@ class FeishuDirectoryClient:
         return {
             "version": _STREAM_CHECKPOINT_VERSION,
             "source": self._checkpoint_key,
+            "sync_worker_id": self._sync_worker_id,
             "stage": "users",
             "has_more": True,
             "sync_started_at": None,
@@ -282,9 +289,8 @@ class FeishuDirectoryClient:
             "visited_departments": [],
             "group_page_tokens": {"1": None, "2": None},
             "groups_done": {"1": False, "2": False},
-            "membership_group_type": 1,
-            "membership_last_user_id": None,
-            "memberships_done": False,
+            "membership_provider_errors": {},
+            "unavailable_membership_group_ids": [],
         }
 
     async def _load_stream_checkpoint(self) -> tuple[dict[str, Any], dict[str, Any] | None]:
@@ -299,6 +305,10 @@ class FeishuDirectoryClient:
             return self._new_stream_checkpoint(), None
         if not isinstance(payload, dict) or payload.get("source") != self._checkpoint_key:
             logger.warning("feishu.checkpoint_invalid", extra={"has_more": True})
+            return self._new_stream_checkpoint(), None
+        if self._sync_worker_id is not None and payload.get("sync_worker_id") != self._sync_worker_id:
+            return self._new_stream_checkpoint(), None
+        if checkpoint_precedes_completed_sync(payload, self._last_completed_at):
             return self._new_stream_checkpoint(), None
         if payload.get("version") == _STREAM_CHECKPOINT_VERSION:
             return payload, None
@@ -335,6 +345,139 @@ class FeishuDirectoryClient:
         if not isinstance(name, str) or not name:
             raise FeishuDirectoryError("Feishu group name is missing")
         return {"id": group_id, "display_name": name, "principal_type": principal_type}
+
+    async def _get_object(
+        self,
+        path: str,
+        *,
+        operation: str,
+        params: dict[str, str],
+        key: str,
+    ) -> dict[str, Any]:
+        token = await self._token()
+        response = await self._request(
+            operation,
+            "GET",
+            path,
+            params=params,
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        data = self._response_payload(response)
+        value = data.get(key)
+        if not isinstance(value, dict):
+            raise FeishuDirectoryError(f"Feishu {key} is missing")
+        return value
+
+    async def fetch_user(self, user_id: str) -> dict[str, str | None]:
+        item = await self._get_object(
+            f"/open-apis/contact/v3/users/{user_id}",
+            operation="users.get",
+            params={"user_id_type": "user_id"},
+            key="user",
+        )
+        return self._stream_user(item)
+
+    async def fetch_department(self, department_id: str) -> dict[str, str | None]:
+        item = await self._get_object(
+            f"/open-apis/contact/v3/departments/{department_id}",
+            operation="departments.get",
+            params={"department_id_type": "open_department_id"},
+            key="department",
+        )
+        group = self._stream_group(item, principal_type="department")
+        parent_id = item.get("parent_department_id")
+        return {
+            **group,
+            "parent_id": parent_id if isinstance(parent_id, str) and parent_id != "0" else None,
+        }
+
+    async def fetch_department_users(self, department_id: str) -> list[dict[str, str | None]]:
+        users = await self._list_pages(
+            "/open-apis/contact/v3/users/find_by_department",
+            operation="users.find_by_department",
+            params={
+                "department_id": department_id,
+                "department_id_type": "open_department_id",
+                "user_id_type": "user_id",
+                "page_size": 50,
+            },
+            item_keys=("items",),
+        )
+        return [self._stream_user(user) for user in users]
+
+    async def fetch_user_memberships(self, user_id: str) -> list[dict[str, str]]:
+        user = await self._get_object(
+            f"/open-apis/contact/v3/users/{user_id}",
+            operation="users.get_memberships",
+            params={"user_id_type": "user_id"},
+            key="user",
+        )
+        records: dict[str, dict[str, str]] = {}
+        department_ids = user.get("department_ids")
+        if not isinstance(department_ids, list):
+            raise FeishuDirectoryError("Feishu user department_ids is unavailable")
+        for department_id in department_ids:
+            if isinstance(department_id, str) and department_id and department_id != "0":
+                records[department_id] = {
+                    "group_id": department_id,
+                    "member_type": "user",
+                    "member_id": user_id,
+                }
+        for group_type in (1, 2):
+            groups = await self._list_pages(
+                "/open-apis/contact/v3/group/member_belong",
+                operation="group.member_belong",
+                params={
+                    "member_id": user_id,
+                    "member_id_type": "user_id",
+                    "group_type": group_type,
+                    "page_size": 1000,
+                },
+                item_keys=("group_list", "grouplist", "items"),
+            )
+            for group in groups:
+                group_id = group if isinstance(group, str) else group.get("group_id") or group.get("id")
+                if isinstance(group_id, str) and group_id:
+                    records[group_id] = {
+                        "group_id": group_id,
+                        "member_type": "user",
+                        "member_id": user_id,
+                    }
+        return [records[group_id] for group_id in sorted(records)]
+
+    async def fetch_group_snapshot(self) -> FeishuDirectorySnapshot:
+        groups: dict[str, dict[str, str]] = {}
+        for group_type in (1, 2):
+            page = await self._list_pages(
+                "/open-apis/contact/v3/group/simplelist",
+                operation="group.simplelist",
+                params={"type": group_type, "page_size": 100},
+                item_keys=("grouplist", "items"),
+            )
+            for item in page:
+                group = self._stream_group(item)
+                groups[group["id"]] = group
+
+        async def members(group_id: str) -> list[dict[str, str]]:
+            page = await self._list_pages(
+                f"/open-apis/contact/v3/group/{group_id}/member/simplelist",
+                operation="group.member.simplelist",
+                params={"member_type": "user", "member_id_type": "user_id", "page_size": 50},
+                item_keys=("memberlist", "items"),
+            )
+            result: list[dict[str, str]] = []
+            for item in page:
+                if not isinstance(item, dict) or not isinstance(item.get("member_id"), str):
+                    raise FeishuDirectoryError("Feishu group member ID is missing")
+                result.append({"group_id": group_id, "member_type": "user", "member_id": item["member_id"]})
+            return result
+
+        memberships: list[dict[str, str]] = []
+        group_ids = sorted(groups)
+        for index in range(0, len(group_ids), self._max_concurrency):
+            for batch in await asyncio.gather(*(members(group_id) for group_id in group_ids[index:index + self._max_concurrency])):
+                memberships.extend(batch)
+        return FeishuDirectorySnapshot(users=[], groups=list(groups.values()), memberships=memberships)
 
     async def _replay_legacy_checkpoint(self, sink: Any, checkpoint: dict[str, Any]) -> None:
         users = checkpoint.get("users")
@@ -387,10 +530,9 @@ class FeishuDirectoryClient:
             checkpoint["visited_departments"] = list(legacy_checkpoint.get("visited_departments") or [])
             checkpoint["group_page_tokens"] = dict(legacy_checkpoint.get("group_page_tokens") or {"1": None, "2": None})
             checkpoint["groups_done"] = dict(legacy_checkpoint.get("groups_done") or {"1": False, "2": False})
-            checkpoint["membership_group_type"] = 1
-            checkpoint["membership_last_user_id"] = None
-            checkpoint["memberships_done"] = False
-            checkpoint["stage"] = "memberships"
+            checkpoint["membership_provider_errors"] = {}
+            checkpoint["unavailable_membership_group_ids"] = []
+            checkpoint["stage"] = "groups"
             checkpoint["has_more"] = True
             await self._save_checkpoint(checkpoint)
 
@@ -512,6 +654,20 @@ class FeishuDirectoryClient:
         group_page_tokens = checkpoint.get("group_page_tokens")
         if not isinstance(groups_done, dict) or not isinstance(group_page_tokens, dict):
             raise FeishuDirectoryError("Feishu checkpoint is invalid")
+        stored_membership_errors = checkpoint.get("membership_provider_errors")
+        stored_unavailable_group_ids = checkpoint.get("unavailable_membership_group_ids")
+        if (
+            not isinstance(stored_membership_errors, dict)
+            or not all(
+                isinstance(key, str) and isinstance(value, int) and value >= 0
+                for key, value in stored_membership_errors.items()
+            )
+            or not isinstance(stored_unavailable_group_ids, list)
+            or not all(isinstance(group_id, str) for group_id in stored_unavailable_group_ids)
+        ):
+            raise FeishuDirectoryError("Feishu checkpoint is invalid")
+        membership_errors = Counter(stored_membership_errors)
+        unavailable_membership_group_ids = set(stored_unavailable_group_ids)
         for group_type in (1, 2):
             group_type_key = str(group_type)
             if groups_done.get(group_type_key):
@@ -520,7 +676,64 @@ class FeishuDirectoryClient:
             async def save_group_page(
                 page_items: list[dict[str, Any] | str], page_token: str | None, has_more: bool
             ) -> None:
-                await sink.upsert_groups([self._stream_group(item) for item in page_items])
+                groups = [self._stream_group(item) for item in page_items]
+                await sink.upsert_groups(groups)
+
+                async def fetch_group_members(group_id: str) -> None:
+                    if group_id in unavailable_membership_group_ids:
+                        return
+                    records: list[dict[str, str]] = []
+
+                    async def save_membership_page(
+                        member_items: list[dict[str, Any] | str],
+                        _token: str | None,
+                        _has_more: bool,
+                    ) -> None:
+                        for item in member_items:
+                            if not isinstance(item, dict) or not isinstance(item.get("member_id"), str):
+                                raise FeishuDirectoryError("Feishu group member ID is missing")
+                            records.append({
+                                "group_id": group_id,
+                                "member_type": "user",
+                                "member_id": item["member_id"],
+                            })
+
+                    try:
+                        await self._visit_pages(
+                            f"/open-apis/contact/v3/group/{group_id}/member/simplelist",
+                            operation="group.member.simplelist",
+                            params={
+                                "member_type": "user",
+                                "member_id_type": "user_id",
+                                "page_size": 50,
+                            },
+                            item_keys=("memberlist", "items"),
+                            on_page=save_membership_page,
+                        )
+                        await sink.upsert_memberships(records)
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 400:
+                            raise
+                        try:
+                            payload = exc.response.json()
+                        except ValueError:
+                            payload = {}
+                        provider_code = payload.get("code") if isinstance(payload, dict) else None
+                        membership_errors[
+                            str(provider_code) if provider_code is not None else "HTTP_400"
+                        ] += 1
+                        unavailable_membership_group_ids.add(group_id)
+                        await sink.preserve_group_memberships([group_id])
+
+                for index in range(0, len(groups), self._max_concurrency):
+                    await asyncio.gather(*(
+                        fetch_group_members(group["id"])
+                        for group in groups[index : index + self._max_concurrency]
+                    ))
+                checkpoint["membership_provider_errors"] = dict(membership_errors)
+                checkpoint["unavailable_membership_group_ids"] = sorted(
+                    unavailable_membership_group_ids
+                )
                 group_page_tokens[group_type_key] = page_token
                 groups_done[group_type_key] = not has_more
                 await save_checkpoint("groups", has_more)
@@ -534,88 +747,13 @@ class FeishuDirectoryClient:
                 on_page=save_group_page,
             )
 
-        if not checkpoint.get("memberships_done"):
-            membership_errors: Counter[str] = Counter()
-            unavailable_membership_user_ids: set[str] = set()
-            checkpoint_group_type = checkpoint.get("membership_group_type")
-            if not isinstance(checkpoint_group_type, int) or checkpoint_group_type not in (1, 2):
-                raise FeishuDirectoryError("Feishu checkpoint is invalid")
-            group_type = checkpoint_group_type
-            while group_type in (1, 2):
-                last_user_id = checkpoint.get("membership_last_user_id")
-                if last_user_id is not None and not isinstance(last_user_id, str):
-                    raise FeishuDirectoryError("Feishu checkpoint is invalid")
-                user_ids = await sink.membership_user_ids(last_user_id, self._max_concurrency)
-                if not user_ids:
-                    if group_type == 1:
-                        group_type = 2
-                        checkpoint["membership_group_type"] = group_type
-                        checkpoint["membership_last_user_id"] = None
-                        await save_checkpoint("memberships", True)
-                        continue
-                    checkpoint["memberships_done"] = True
-                    break
-
-                async def fetch_memberships(user_id: str) -> None:
-                    if user_id in unavailable_membership_user_ids:
-                        return
-
-                    async def save_membership_page(
-                        page_items: list[dict[str, Any] | str],
-                        _token: str | None,
-                        _has_more: bool,
-                    ) -> None:
-                        records = []
-                        for group in page_items:
-                            group_id = group if isinstance(group, str) else group.get("group_id") or group.get("id")
-                            if isinstance(group_id, str) and group_id:
-                                records.append(
-                                    {"group_id": group_id, "member_type": "user", "member_id": user_id}
-                                )
-                        await sink.upsert_memberships(records)
-
-                    try:
-                        await self._visit_pages(
-                            "/open-apis/contact/v3/group/member_belong",
-                            operation="group.member_belong",
-                            params={
-                                "member_id": user_id,
-                                "member_id_type": "user_id",
-                                "group_type": group_type,
-                                "page_size": 1000,
-                            },
-                            item_keys=("group_list", "grouplist", "items"),
-                            on_page=save_membership_page,
-                        )
-                    except httpx.HTTPStatusError as exc:
-                        if exc.response.status_code != 400:
-                            raise
-                        try:
-                            payload = exc.response.json()
-                        except ValueError:
-                            payload = {}
-                        provider_code = payload.get("code") if isinstance(payload, dict) else None
-                        membership_errors[str(provider_code) if provider_code is not None else "HTTP_400"] += 1
-                        unavailable_membership_user_ids.add(user_id)
-                        await sink.preserve_user_memberships([user_id])
-
-                await asyncio.gather(*(fetch_memberships(user_id) for user_id in user_ids))
-                checkpoint["membership_last_user_id"] = user_ids[-1]
-                await save_checkpoint("memberships", True)
-
-            if membership_errors:
-                warning_details = {
-                    "skipped_count": sum(membership_errors.values()),
-                    "provider_errors": dict(sorted(membership_errors.items())),
-                }
-                await sink.record_sync_warning(
-                    "MEMBERSHIPS_PARTIAL",
-                    warning_details,
-                )
-                logger.warning(
-                    "feishu.memberships_partial",
-                    extra=warning_details,
-                )
+        if membership_errors:
+            warning_details = {
+                "skipped_count": len(unavailable_membership_group_ids),
+                "provider_errors": dict(sorted(membership_errors.items())),
+            }
+            await sink.record_sync_warning("MEMBERSHIPS_PARTIAL", warning_details)
+            logger.warning("feishu.memberships_partial", extra=warning_details)
 
         checkpoint["stage"] = "complete"
         checkpoint["has_more"] = False
@@ -652,20 +790,13 @@ class FeishuDirectoryClient:
                     if membership["group_id"] in self.groups
                 )
 
-            async def preserve_user_memberships(self, _user_ids: list[str]) -> None:
+            async def preserve_group_memberships(self, _group_ids: list[str]) -> None:
                 return None
 
             async def record_sync_warning(
                 self, _code: str, _details: dict[str, object]
             ) -> None:
                 return None
-
-            async def membership_user_ids(self, after_user_id: str | None, limit: int) -> list[str]:
-                return [
-                    user_id
-                    for user_id in sorted(self.users)
-                    if after_user_id is None or user_id > after_user_id
-                ][:limit]
 
             async def complete_sync(self) -> None:
                 return None

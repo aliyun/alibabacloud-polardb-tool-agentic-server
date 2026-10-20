@@ -4,7 +4,7 @@
 
 This guide is the human-readable contract for Agents that create, inspect,
 and delete PAS-managed databases over REST. The machine-readable contract is
-served by the same PAS deployment at `/mcp/rest/openapi.json`.
+exported offline from the matching PAS version with `python -m server.openapi --surface agent`.
 
 ## Authentication and isolation
 
@@ -27,12 +27,12 @@ prompt, analytics event, or persistent cache.
 
 ## Discover the contract
 
-- The Agent detail page shows the lifecycle URL and links to both the live API
-  documentation and this guide. It reuses the same Agent Token shown for MCP.
-- `GET /mcp/rest/openapi.json` returns only the Agent lifecycle schema.
-- `GET /mcp/rest/docs` renders that scoped schema for a human reader.
-- The application-level `/openapi.json` intentionally excludes the Agent
-  lifecycle routes.
+- The Agent detail page shows the lifecycle URL and links to this guide.
+  It reuses the same Agent Token shown for MCP.
+- `/mcp/rest/openapi.json`, `/mcp/rest/docs`, and `/openapi.json` return `404`.
+- Export the scoped contract from the deployed image or matching checkout:
+  `python -m server.openapi --surface agent > agent-openapi.json`.
+- The offline application schema intentionally excludes Agent lifecycle routes.
 
 Use the schema from the deployed PAS version as authoritative. The lifecycle
 base path reuses the MCP REST port; the authentication principal and entry

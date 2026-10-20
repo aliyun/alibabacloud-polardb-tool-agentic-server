@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 import asyncio
+from contextlib import aclosing
 import json
-import os
-from typing import Any, Callable, TypedDict, cast
+import logging
+from typing import Any, Callable, cast
 
-from sqlalchemy import delete, select, tuple_, update
+from sqlalchemy import delete, exists, literal, or_, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from server.config import get_config
+from server.enterprise_identity.providers import acl_membership_snapshot_config, directory_sync_adapter_for
 from server.models import (
     AuthProvider,
     EnterpriseDirectoryEntryStatus,
@@ -21,52 +23,26 @@ from server.models import (
     EnterpriseDirectoryUser,
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceStatus,
+    EnterpriseIdentitySourceEvent,
+    EnterpriseIdentitySourceEventStatus,
     IdentitySourceProvider,
     User,
     UserExternalIdentity,
+    UserRefreshToken,
     UserRole,
     UserStatus,
 )
 from server.models.base import utc_now
+from server.models.oauth import ExternalTokenSession, OAuthRefreshToken
 
 
-class AclMembershipSnapshotConfig(TypedDict):
-    host: str
-    port: int
-    username: str
-    password: str
-    database: str
-
-
-def _acl_membership_snapshot_config(
-    config: Mapping[str, object],
-) -> AclMembershipSnapshotConfig | None:
-    snapshot = config.get("acl_membership_snapshot")
-    if snapshot is None:
-        return None
-    if not isinstance(snapshot, Mapping):
-        raise ValueError("ACL membership snapshot configuration is invalid")
-    host = snapshot.get("host")
-    port = snapshot.get("port")
-    username = snapshot.get("username")
-    password = snapshot.get("password")
-    database = snapshot.get("database", "polar_rag_meta")
-    if (
-        not isinstance(host, str)
-        or not isinstance(port, int)
-        or isinstance(port, bool)
-        or not isinstance(username, str)
-        or not isinstance(password, str)
-        or not isinstance(database, str)
-    ):
-        raise ValueError("ACL membership snapshot configuration is invalid")
-    return {
-        "host": host,
-        "port": port,
-        "username": username,
-        "password": password,
-        "database": database,
-    }
+_FEISHU_DIRECTORY_UPDATE_EVENTS = frozenset({
+    "contact.user.created_v3",
+    "contact.user.updated_v3",
+    "contact.department.created_v3",
+    "contact.department.updated_v3",
+})
+logger = logging.getLogger(__name__)
 
 
 def _merge_directory_snapshots(
@@ -105,6 +81,16 @@ def identity_source_snapshot_is_usable(
     *,
     now: datetime | None = None,
 ) -> bool:
+    if source.provider == IdentitySourceProvider.DINGTALK:
+        current = now or datetime.now(UTC)
+        marker = source.last_synced_at
+        if source.permission_error:
+            return False
+        if marker is None or source.status not in {EnterpriseIdentitySourceStatus.ACTIVE, EnterpriseIdentitySourceStatus.STALE}:
+            return False
+        if marker.tzinfo is None:
+            marker = marker.replace(tzinfo=UTC)
+        return marker >= current - timedelta(seconds=min(source.stale_after_seconds, 900))
     if source.status == EnterpriseIdentitySourceStatus.ACTIVE:
         return True
     if source.status != EnterpriseIdentitySourceStatus.STALE or source.last_synced_at is None:
@@ -122,38 +108,6 @@ def identity_source_snapshot_is_usable(
     )
 
 
-def _feishu_sync_concurrency(*, initial_sync: bool) -> int:
-    settings = get_config().enterprise_identity_sync
-    if initial_sync:
-        return _identity_sync_concurrency(
-            "PAS_FEISHU_INITIAL_SYNC_CONCURRENCY",
-            default=settings.initial_concurrency,
-        )
-    return _identity_sync_concurrency(
-        "PAS_FEISHU_SYNC_CONCURRENCY",
-        default=settings.incremental_concurrency,
-    )
-
-
-def _sharepoint_sync_concurrency() -> int:
-    return _identity_sync_concurrency("PAS_SHAREPOINT_SYNC_CONCURRENCY")
-
-
-def _identity_sync_concurrency(
-    environment_variable: str,
-    *,
-    default: int = 8,
-) -> int:
-    raw_value = os.environ.get(environment_variable, str(default))
-    try:
-        value = int(raw_value)
-    except ValueError as exc:
-        raise ValueError(f"{environment_variable} must be an integer") from exc
-    if not 1 <= value <= 32:
-        raise ValueError(f"{environment_variable} must be between 1 and 32")
-    return value
-
-
 def _required_external_id(value: str, label: str) -> str:
     normalized = value.strip()
     if not normalized:
@@ -161,6 +115,63 @@ def _required_external_id(value: str, label: str) -> str:
     if len(normalized) > 255:
         raise ValueError(f"{label} is too long")
     return normalized
+
+
+async def _disable_source_owned_users(
+    session: AsyncSession,
+    source: EnterpriseIdentitySource,
+    *,
+    external_user_id: str | None = None,
+) -> None:
+    """Disable only canonical, single-identity PAS accounts absent from the directory."""
+    user = aliased(User)
+    identity = aliased(UserExternalIdentity)
+    other_identity = aliased(UserExternalIdentity)
+    owned_users = (
+        select(user.id)
+        .join(identity, identity.user_id == user.id)
+        .join(
+            EnterpriseDirectoryUser,
+            (EnterpriseDirectoryUser.identity_source_id == source.id)
+            & (EnterpriseDirectoryUser.external_user_id == identity.external_subject),
+        )
+        .where(
+            identity.identity_provider == identity_provider_key(source),
+            EnterpriseDirectoryUser.status == EnterpriseDirectoryEntryStatus.DISABLED,
+            user.external_id == literal(f"{identity_provider_key(source)}:") + identity.external_subject,
+            user.auth_provider == AuthProvider.OIDC,
+            ~exists(
+                select(other_identity.id).where(
+                    other_identity.user_id == user.id,
+                    other_identity.id != identity.id,
+                )
+            ),
+        )
+    )
+    if external_user_id is not None:
+        owned_users = owned_users.where(identity.external_subject == external_user_id)
+    # MySQL forbids updating users while selecting it directly in a subquery.
+    # DISTINCT prevents derived-table merging, so the candidate set is
+    # materialized even when optimizer_switch.derived_merge is enabled.
+    owned_user_ids = owned_users.distinct().subquery()
+    owned_users = select(owned_user_ids.c.id)
+    await session.execute(update(User).where(User.id.in_(owned_users)).values(status=UserStatus.DISABLED))
+    revoked_at = utc_now()
+    await session.execute(
+        update(UserRefreshToken)
+        .where(UserRefreshToken.user_id.in_(owned_users), UserRefreshToken.revoked_at.is_(None))
+        .values(revoked_at=revoked_at)
+    )
+    await session.execute(
+        update(OAuthRefreshToken)
+        .where(OAuthRefreshToken.user_id.in_(owned_users), OAuthRefreshToken.revoked_at.is_(None))
+        .values(revoked_at=revoked_at)
+    )
+    await session.execute(
+        update(ExternalTokenSession)
+        .where(ExternalTokenSession.user_id.in_(owned_users), ExternalTokenSession.revoked_at.is_(None))
+        .values(revoked_at=revoked_at)
+    )
 
 
 class _StreamingDirectorySink:
@@ -214,6 +225,7 @@ class _StreamingDirectorySink:
                     external_user_id=str(record.get("id") or ""),
                     display_name=str(record.get("display_name") or record.get("id") or ""),
                     email=str(record["email"]) if record.get("email") is not None else None,
+                    synchronize_status=True,
                 )
             await self._commit_page()
 
@@ -403,25 +415,10 @@ class _StreamingDirectorySink:
             )
         return known_ids
 
-    async def membership_user_ids(self, after_user_id: str | None, limit: int) -> list[str]:
-        async with self._lock:
-            query = (
-                select(EnterpriseDirectoryUser.external_user_id)
-                .where(
-                    EnterpriseDirectoryUser.identity_source_id == self._source.id,
-                    EnterpriseDirectoryUser.status == EnterpriseDirectoryEntryStatus.ACTIVE,
-                )
-                .order_by(EnterpriseDirectoryUser.external_user_id)
-                .limit(limit)
-            )
-            if after_user_id is not None:
-                query = query.where(EnterpriseDirectoryUser.external_user_id > after_user_id)
-            return list((await self._session.execute(query)).scalars())
-
-    async def preserve_user_memberships(self, user_ids: Iterable[str]) -> None:
+    async def preserve_group_memberships(self, group_ids: Iterable[str]) -> None:
         if self._started_at is None:
             raise RuntimeError("identity source sync did not start")
-        preserved_ids = sorted(set(user_ids))
+        preserved_ids = sorted(set(group_ids))
         if not preserved_ids:
             return
         async with self._lock:
@@ -430,8 +427,7 @@ class _StreamingDirectorySink:
                     update(EnterpriseDirectoryMembership)
                     .where(
                         EnterpriseDirectoryMembership.identity_source_id == self._source.id,
-                        EnterpriseDirectoryMembership.member_type == EnterpriseDirectoryMembershipType.USER,
-                        EnterpriseDirectoryMembership.external_member_id.in_(preserved_ids[index : index + 500]),
+                        EnterpriseDirectoryMembership.external_group_id.in_(preserved_ids[index : index + 500]),
                     )
                     .values(updated_at=self._started_at)
                 )
@@ -470,7 +466,11 @@ class _StreamingDirectorySink:
                     EnterpriseDirectoryUser.updated_at < self._started_at,
                 )
                 .values(status=EnterpriseDirectoryEntryStatus.DISABLED)
+                # Let the database compare timestamps: SQLite/MySQL return
+                # naive values for already-loaded directory rows.
+                .execution_options(synchronize_session="fetch")
             )
+            await _disable_source_owned_users(self._session, self._source)
             await self._session.execute(
                 update(EnterpriseDirectoryGroup)
                 .where(
@@ -478,6 +478,7 @@ class _StreamingDirectorySink:
                     EnterpriseDirectoryGroup.updated_at < self._started_at,
                 )
                 .values(status=EnterpriseDirectoryEntryStatus.DISABLED)
+                .execution_options(synchronize_session="fetch")
             )
             while True:
                 stale_ids = list(
@@ -515,6 +516,7 @@ async def upsert_external_user(
     display_name: str,
     email: str | None,
     user: User | None = None,
+    synchronize_status: bool = False,
 ) -> User:
     """Upsert the canonical provider identity used by both sync and OAuth/JIT."""
     external_user_id = _required_external_id(external_user_id, "external_user_id")
@@ -558,6 +560,22 @@ async def upsert_external_user(
         user.display_name = name
         if email is not None:
             user.email = email
+    if (
+        synchronize_status
+        and identity is not None
+        and user.status != UserStatus.ACTIVE
+        and user.external_id == f"{provider_key}:{external_user_id}"
+        and user.auth_provider == AuthProvider.OIDC
+        and not await session.scalar(
+            select(
+                exists().where(
+                    UserExternalIdentity.user_id == user.id,
+                    UserExternalIdentity.id != identity.id,
+                )
+            )
+        )
+    ):
+        user.status = UserStatus.ACTIVE
     directory_user = (
         await session.execute(
             select(EnterpriseDirectoryUser).where(
@@ -575,7 +593,7 @@ async def upsert_external_user(
             status=EnterpriseDirectoryEntryStatus.ACTIVE,
         )
         session.add(directory_user)
-    else:
+    elif synchronize_status:
         directory_user.display_name = name
         if email is not None:
             directory_user.email = email
@@ -682,6 +700,7 @@ async def replace_directory_snapshot(
             external_user_id=external_user_id,
             display_name=str(record.get("display_name") or external_user_id),
             email=str(record["email"]) if record.get("email") is not None else None,
+            synchronize_status=True,
         )
         user_ids.add(external_user_id)
     group_ids: set[str] = set()
@@ -711,6 +730,7 @@ async def replace_directory_snapshot(
             .where(EnterpriseDirectoryUser.identity_source_id == source.id)
             .values(status=EnterpriseDirectoryEntryStatus.DISABLED)
         )
+    await _disable_source_owned_users(session, source)
     if group_ids:
         await session.execute(
             update(EnterpriseDirectoryGroup)
@@ -751,6 +771,500 @@ async def replace_directory_snapshot(
     await session.flush()
 
 
+async def _external_scope_items(scopes: Iterable[Any] | AsyncIterable[Any]) -> AsyncIterator[Any]:
+    if isinstance(scopes, AsyncIterable):
+        iterator = scopes.__aiter__()
+        try:
+            async for scope in iterator:
+                yield scope
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if close is not None:
+                await close()
+    else:
+        for scope in scopes:
+            yield scope
+
+
+async def import_external_knowledge_scopes(
+    session: AsyncSession,
+    source: EnterpriseIdentitySource,
+    external_knowledge_scopes: Iterable[Any] | AsyncIterable[Any],
+    *, record_identity_warning: bool = True,
+) -> dict[str, Any]:
+    """Import scope streams with per-scope isolation and generation fencing."""
+    from server.core.external_knowledge_scope_sync import (
+        ExternalKnowledgeScopeStaleSnapshotError,
+        ExternalKnowledgeScopeSyncError,
+        ImportedGrant,
+        ImportedSnapshot,
+        discard_external_knowledge_scope_snapshot,
+        import_external_knowledge_scope_snapshot,
+    )
+
+    scope_errors: dict[str, int] = {}
+    processed = 0
+    async with aclosing(_external_scope_items(external_knowledge_scopes)) as scopes:
+        async for external_scope in scopes:
+            processed += 1
+            imported_snapshot = ImportedSnapshot(
+                snapshot_id=external_scope.snapshot_id,
+                tenant_key=external_scope.tenant_key,
+                source_scope_type=external_scope.source_scope_type,
+                source_scope_id=external_scope.source_scope_id,
+                source_scope_name=external_scope.source_scope_name,
+                space_id=external_scope.space_id,
+                kb_id=external_scope.kb_id,
+                generation=external_scope.generation,
+                fingerprint=external_scope.fingerprint,
+                status=external_scope.status,
+                source_updated_at=external_scope.source_updated_at,
+                grants=tuple(
+                    ImportedGrant(
+                        subject_type=grant.subject_type,
+                        subject_id=grant.subject_id,
+                    )
+                    for grant in external_scope.grants
+                ),
+            )
+            try:
+                async with session.begin_nested():
+                    await import_external_knowledge_scope_snapshot(
+                        session,
+                        identity_source_id=source.id,
+                        snapshot=imported_snapshot,
+                    )
+            except ExternalKnowledgeScopeStaleSnapshotError as exc:
+                error_code = str(exc)
+                scope_errors[error_code] = scope_errors.get(error_code, 0) + 1
+                logger.warning(
+                    "enterprise_identity.external_knowledge_scope_stale",
+                    extra={
+                        "identity_source_id": source.id,
+                        "snapshot_id": external_scope.snapshot_id,
+                        "error": error_code,
+                    },
+                )
+            except ExternalKnowledgeScopeSyncError as exc:
+                await discard_external_knowledge_scope_snapshot(
+                    session,
+                    identity_source_id=source.id,
+                    snapshot_id=external_scope.snapshot_id,
+                )
+                error_code = str(exc)
+                scope_errors[error_code] = scope_errors.get(error_code, 0) + 1
+                logger.warning(
+                    "enterprise_identity.external_knowledge_scope_skipped",
+                    extra={
+                        "identity_source_id": source.id,
+                        "snapshot_id": external_scope.snapshot_id,
+                        "error": error_code,
+                    },
+                )
+    if scope_errors and record_identity_warning:
+        warning: dict[str, Any] = {}
+        if source.sync_warning_json:
+            try:
+                decoded = json.loads(source.sync_warning_json)
+                if isinstance(decoded, dict):
+                    warning.update(decoded)
+            except ValueError:
+                pass
+        warning["external_knowledge_scopes"] = {
+            "code": "SCOPES_PARTIAL",
+            "errors": scope_errors,
+            "skipped_count": sum(scope_errors.values()),
+        }
+        source.sync_warning_json = json.dumps(warning, sort_keys=True)
+
+    return {"snapshots_processed": processed, "snapshots_skipped": sum(scope_errors.values()), "errors": scope_errors}
+
+
+async def reconcile_feishu_groups(
+    session: AsyncSession,
+    source: EnterpriseIdentitySource,
+    *,
+    feishu_client_factory: Callable[..., Any] | None = None,
+    acl_snapshot_client_factory: Callable[..., Any] | None = None,
+) -> None:
+    """Refresh Feishu contact groups without scanning users or departments."""
+    from server.core.crypto import decrypt
+    from server.enterprise_identity.feishu import FeishuDirectoryClient
+
+    if source.provider != IdentitySourceProvider.FEISHU or not source.config_ciphertext:
+        raise ValueError("Feishu identity source configuration is missing")
+    config = json.loads(decrypt(source.config_ciphertext))
+    app_id = config.get("app_id") if isinstance(config, dict) else None
+    app_secret = config.get("app_secret") if isinstance(config, dict) else None
+    if not isinstance(app_id, str) or not isinstance(app_secret, str):
+        raise ValueError("Feishu identity source configuration is invalid")
+    factory = feishu_client_factory or FeishuDirectoryClient
+    fetched_at = datetime.now(UTC)
+    async with factory(app_id=app_id, app_secret=app_secret) as client:
+        snapshot = await client.fetch_group_snapshot()
+    extra_groups, extra_memberships, external_knowledge_scopes = await directory_sync_adapter_for(
+        source.provider
+    ).extra_snapshot(
+        source,
+        config,
+        acl_snapshot_client_factory=acl_snapshot_client_factory,
+    )
+
+    from server.enterprise_identity.sync import _feishu_event_lock
+
+    async with _feishu_event_lock:
+        await _apply_feishu_group_snapshot(
+            session,
+            source,
+            snapshot,
+            fetched_at=fetched_at,
+            extra_groups=extra_groups,
+            extra_memberships=extra_memberships,
+        )
+        await import_external_knowledge_scopes(session, source, external_knowledge_scopes)
+        await session.commit()
+
+
+async def _apply_feishu_group_snapshot(
+    session: AsyncSession,
+    source: EnterpriseIdentitySource,
+    snapshot: Any,
+    *,
+    fetched_at: datetime,
+    extra_groups: Iterable[Mapping[str, object]] = (),
+    extra_memberships: Iterable[Mapping[str, object]] = (),
+) -> None:
+    owner = (
+        await session.execute(
+            select(
+                EnterpriseIdentitySource.sync_worker_id,
+                EnterpriseIdentitySource.sync_kind,
+                EnterpriseIdentitySource.full_sync_requested_at,
+            )
+            .where(EnterpriseIdentitySource.id == source.id)
+            .with_for_update()
+        )
+    ).one()
+    if source.sync_worker_id is not None and owner[:2] != (source.sync_worker_id, "groups"):
+        raise RuntimeError("Feishu group reconciliation lease was lost")
+    if owner[2] is not None:
+        raise RuntimeError("Full reconciliation requested during Feishu group reconciliation")
+    changed_user_ids = set(
+        (
+            await session.execute(
+                select(EnterpriseIdentitySourceEvent.subject_id).where(
+                    EnterpriseIdentitySourceEvent.identity_source_id == source.id,
+                    EnterpriseIdentitySourceEvent.status == EnterpriseIdentitySourceEventStatus.PROCESSED,
+                    EnterpriseIdentitySourceEvent.event_type.like("contact.user.%"),
+                    EnterpriseIdentitySourceEvent.updated_at >= fetched_at,
+                )
+            )
+        ).scalars()
+    )
+    preserved_memberships = (
+        list(
+            (
+                await session.execute(
+                    select(
+                        EnterpriseDirectoryMembership.external_group_id,
+                        EnterpriseDirectoryMembership.external_member_id,
+                    ).where(
+                        EnterpriseDirectoryMembership.identity_source_id == source.id,
+                        EnterpriseDirectoryMembership.member_type == EnterpriseDirectoryMembershipType.USER,
+                        EnterpriseDirectoryMembership.external_member_id.in_(changed_user_ids),
+                    )
+                )
+            ).all()
+        )
+        if changed_user_ids
+        else []
+    )
+    etl_groups = [
+        group for group in extra_groups if group.get("principal_type") == EnterpriseDirectoryPrincipalType.GROUP.value
+    ]
+    group_ids = {str(group["id"]) for group in (*snapshot.groups, *etl_groups)}
+    existing_group_ids = set(
+        (
+            await session.execute(
+                select(EnterpriseDirectoryGroup.external_group_id).where(
+                    EnterpriseDirectoryGroup.identity_source_id == source.id,
+                    EnterpriseDirectoryGroup.principal_type == EnterpriseDirectoryPrincipalType.GROUP,
+                )
+            )
+        ).scalars()
+    )
+    for group in (*etl_groups, *snapshot.groups):
+        await upsert_directory_group(
+            session,
+            source,
+            external_group_id=str(group["id"]),
+            display_name=str(group["display_name"]),
+            principal_type=EnterpriseDirectoryPrincipalType.GROUP,
+        )
+    removed_group_ids = existing_group_ids - group_ids
+    if removed_group_ids:
+        await session.execute(
+            update(EnterpriseDirectoryGroup)
+            .where(
+                EnterpriseDirectoryGroup.identity_source_id == source.id,
+                EnterpriseDirectoryGroup.external_group_id.in_(removed_group_ids),
+            )
+            .values(status=EnterpriseDirectoryEntryStatus.DISABLED)
+        )
+    if existing_group_ids | group_ids:
+        await session.execute(
+            delete(EnterpriseDirectoryMembership).where(
+                EnterpriseDirectoryMembership.identity_source_id == source.id,
+                EnterpriseDirectoryMembership.external_group_id.in_(existing_group_ids | group_ids),
+            )
+        )
+    etl_memberships = [member for member in extra_memberships if str(member["group_id"]) in group_ids]
+    user_ids = {str(member["member_id"]) for member in (*snapshot.memberships, *etl_memberships)} | changed_user_ids
+    known_user_ids = (
+        set(
+            (
+                await session.execute(
+                    select(EnterpriseDirectoryUser.external_user_id).where(
+                        EnterpriseDirectoryUser.identity_source_id == source.id,
+                        EnterpriseDirectoryUser.status == EnterpriseDirectoryEntryStatus.ACTIVE,
+                        EnterpriseDirectoryUser.external_user_id.in_(user_ids),
+                    )
+                )
+            ).scalars()
+        )
+        if user_ids
+        else set()
+    )
+    desired_memberships = {
+        (str(member["group_id"]), str(member["member_id"]))
+        for member in (*snapshot.memberships, *etl_memberships)
+        if member["member_id"] in known_user_ids and member["member_id"] not in changed_user_ids
+    }
+    for group_id, user_id in preserved_memberships:
+        if group_id in group_ids and user_id in known_user_ids:
+            desired_memberships.add((group_id, user_id))
+    for group_id, user_id in desired_memberships:
+        session.add(
+            EnterpriseDirectoryMembership(
+                identity_source_id=source.id,
+                external_group_id=group_id,
+                member_type=EnterpriseDirectoryMembershipType.USER,
+                external_member_id=user_id,
+            )
+        )
+    source.last_group_synced_at = datetime.now(UTC)
+    source.last_group_error = None
+    source.group_next_retry_at = None
+    await session.flush()
+
+
+async def fetch_feishu_directory_event(
+    source: EnterpriseIdentitySource,
+    *,
+    event_type: str,
+    subject_id: str | None,
+    client_factory: Callable[..., Any] | None = None,
+    acl_snapshot_client_factory: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
+    """Fetch event facts without acquiring database locks."""
+    if source.provider != IdentitySourceProvider.FEISHU:
+        raise ValueError("Feishu directory event source is invalid")
+    if event_type not in _FEISHU_DIRECTORY_UPDATE_EVENTS:
+        return {}
+    if not subject_id:
+        raise ValueError("Feishu directory event subject is missing")
+    from server.core.crypto import decrypt
+    from server.enterprise_identity.feishu import FeishuDirectoryClient
+
+    if not source.config_ciphertext:
+        raise ValueError("identity source configuration is missing")
+    config = json.loads(decrypt(source.config_ciphertext))
+    app_id = config.get("app_id") if isinstance(config, dict) else None
+    app_secret = config.get("app_secret") if isinstance(config, dict) else None
+    if not isinstance(app_id, str) or not isinstance(app_secret, str):
+        raise ValueError("identity source configuration is invalid")
+    factory = client_factory or FeishuDirectoryClient
+    async with factory(app_id=app_id, app_secret=app_secret) as client:
+        if event_type.startswith("contact.user."):
+            user = await client.fetch_user(subject_id)
+            memberships = await client.fetch_user_memberships(subject_id)
+            groups: list[dict[str, Any]] = []
+            snapshot_config = acl_membership_snapshot_config(config)
+            if snapshot_config is not None:
+                from server.enterprise_identity.acl_snapshot import FeishuAclMembershipSnapshotClient
+
+                acl_factory = acl_snapshot_client_factory or FeishuAclMembershipSnapshotClient
+                acl_snapshot = await acl_factory(**snapshot_config).fetch_user_snapshot(
+                    tenant_id=source.tenant_id, user_id=subject_id,
+                )
+                groups = acl_snapshot.groups
+                memberships.extend(acl_snapshot.memberships)
+            return {"user": user, "memberships": memberships, "groups": groups}
+        department = await client.fetch_department(subject_id)
+        users = await client.fetch_department_users(subject_id)
+        return {"department": department, "users": users}
+
+
+async def apply_feishu_directory_event(
+    session: AsyncSession,
+    source: EnterpriseIdentitySource,
+    *,
+    event_type: str,
+    subject_id: str | None,
+    client_factory: Callable[..., Any] | None = None,
+    acl_snapshot_client_factory: Callable[..., Any] | None = None,
+    data: dict[str, Any] | None = None,
+) -> bool:
+    """Apply one normalized Feishu event and return whether a full sync is needed."""
+    if data is None:
+        data = await fetch_feishu_directory_event(
+            source, event_type=event_type, subject_id=subject_id,
+            client_factory=client_factory, acl_snapshot_client_factory=acl_snapshot_client_factory,
+        )
+    return await apply_directory_event_facts(
+        session, source, provider=IdentitySourceProvider.FEISHU,
+        event_type=event_type, subject_id=subject_id, data=data,
+    )
+
+
+async def apply_directory_event_facts(session, source, *, provider, event_type, subject_id, data):
+    """Apply authoritative provider facts, scoped to one source and subject."""
+    if event_type == "contact.scope.updated_v3":
+        return True
+    if not subject_id:
+        raise ValueError("Feishu directory event subject is missing")
+    if source.provider != provider:
+        raise ValueError("Directory event source is invalid")
+
+    if event_type == "contact.user.deleted_v3":
+        await session.execute(
+            update(EnterpriseDirectoryUser)
+            .where(
+                EnterpriseDirectoryUser.identity_source_id == source.id,
+                EnterpriseDirectoryUser.external_user_id == subject_id,
+            )
+            .values(status=EnterpriseDirectoryEntryStatus.DISABLED)
+        )
+        await _disable_source_owned_users(session, source, external_user_id=subject_id)
+        await session.execute(
+            delete(EnterpriseDirectoryMembership).where(
+                EnterpriseDirectoryMembership.identity_source_id == source.id,
+                EnterpriseDirectoryMembership.member_type == EnterpriseDirectoryMembershipType.USER,
+                EnterpriseDirectoryMembership.external_member_id == subject_id,
+            )
+        )
+        await session.flush()
+        return False
+
+    if event_type == "contact.department.deleted_v3":
+        await session.execute(
+            update(EnterpriseDirectoryGroup)
+            .where(
+                EnterpriseDirectoryGroup.identity_source_id == source.id,
+                EnterpriseDirectoryGroup.external_group_id == subject_id,
+            )
+            .values(status=EnterpriseDirectoryEntryStatus.DISABLED)
+        )
+        await session.execute(
+            delete(EnterpriseDirectoryMembership).where(
+                EnterpriseDirectoryMembership.identity_source_id == source.id,
+                or_(
+                    EnterpriseDirectoryMembership.external_group_id == subject_id,
+                    (EnterpriseDirectoryMembership.member_type == EnterpriseDirectoryMembershipType.GROUP)
+                    & (EnterpriseDirectoryMembership.external_member_id == subject_id),
+                ),
+            )
+        )
+        await session.flush()
+        return False
+
+    if event_type not in _FEISHU_DIRECTORY_UPDATE_EVENTS:
+        raise ValueError("Feishu directory event type is unsupported")
+
+    if event_type.startswith("contact.user."):
+        user = data["user"]
+        memberships = data["memberships"]
+        for group in data["groups"]:
+            await upsert_directory_group(
+                session, source,
+                external_group_id=str(group["id"]),
+                display_name=str(group["display_name"]),
+                principal_type=EnterpriseDirectoryPrincipalType(str(group["principal_type"])),
+            )
+        await upsert_external_user(
+            session,
+            source,
+            external_user_id=str(user.get("id") or ""),
+            display_name=str(user.get("display_name") or subject_id),
+            email=str(user["email"]) if user.get("email") is not None else None,
+            synchronize_status=True,
+        )
+        await session.execute(
+            delete(EnterpriseDirectoryMembership).where(
+                EnterpriseDirectoryMembership.identity_source_id == source.id,
+                EnterpriseDirectoryMembership.member_type == EnterpriseDirectoryMembershipType.USER,
+                EnterpriseDirectoryMembership.external_member_id == subject_id,
+            )
+        )
+        for membership in memberships:
+            await upsert_directory_membership(
+                session,
+                source,
+                external_group_id=str(membership.get("group_id") or ""),
+                member_type=EnterpriseDirectoryMembershipType.USER,
+                external_member_id=subject_id,
+            )
+    else:
+        department = data["department"]
+        users = data["users"]
+        await upsert_directory_group(
+            session,
+            source,
+            external_group_id=str(department.get("id") or ""),
+            display_name=str(department.get("display_name") or subject_id),
+            principal_type=EnterpriseDirectoryPrincipalType.DEPARTMENT,
+        )
+        await session.execute(
+            delete(EnterpriseDirectoryMembership).where(
+                EnterpriseDirectoryMembership.identity_source_id == source.id,
+                EnterpriseDirectoryMembership.member_type == EnterpriseDirectoryMembershipType.GROUP,
+                EnterpriseDirectoryMembership.external_member_id == subject_id,
+            )
+        )
+        parent_id = department.get("parent_id")
+        if isinstance(parent_id, str) and parent_id:
+            await upsert_directory_membership(
+                session,
+                source,
+                external_group_id=parent_id,
+                member_type=EnterpriseDirectoryMembershipType.GROUP,
+                external_member_id=subject_id,
+            )
+        await session.execute(
+            delete(EnterpriseDirectoryMembership).where(
+                EnterpriseDirectoryMembership.identity_source_id == source.id,
+                EnterpriseDirectoryMembership.external_group_id == subject_id,
+                EnterpriseDirectoryMembership.member_type == EnterpriseDirectoryMembershipType.USER,
+            )
+        )
+        for user in users:
+            await upsert_external_user(
+                session, source,
+                external_user_id=str(user["id"]),
+                display_name=str(user["display_name"]),
+                email=str(user["email"]) if user["email"] is not None else None,
+                synchronize_status=True,
+            )
+            await upsert_directory_membership(
+                session, source,
+                external_group_id=subject_id,
+                member_type=EnterpriseDirectoryMembershipType.USER,
+                external_member_id=str(user["id"]),
+            )
+    await session.flush()
+    return False
+
+
 async def sync_identity_source(
     session: AsyncSession,
     source: EnterpriseIdentitySource,
@@ -758,8 +1272,11 @@ async def sync_identity_source(
     feishu_client_factory: Callable[..., Any] | None = None,
     sharepoint_client_factory: Callable[..., Any] | None = None,
     acl_snapshot_client_factory: Callable[..., Any] | None = None,
+    provider_client_factories: Mapping[IdentitySourceProvider, Callable[..., Any]] | None = None,
 ) -> Any | None:
     """Synchronize an enabled source without exposing provider credentials."""
+    started_at = datetime.now(UTC)
+    is_dingtalk = source.provider == IdentitySourceProvider.DINGTALK
     try:
         from server.core.crypto import decrypt
 
@@ -770,84 +1287,44 @@ async def sync_identity_source(
             raise ValueError("identity source configuration is invalid")
         if source.tenant_id is None:
             raise ValueError("identity source tenant is missing")
-        extra_groups: list[Mapping[str, object]] = []
-        extra_memberships: list[Mapping[str, object]] = []
+        adapter = directory_sync_adapter_for(source.provider)
+        client_factories = {
+            IdentitySourceProvider.FEISHU: feishu_client_factory,
+            IdentitySourceProvider.SHAREPOINT: sharepoint_client_factory,
+        }
+        if provider_client_factories is not None:
+            client_factories.update(provider_client_factories)
+        override_factory = client_factories.get(source.provider)
+        client = adapter.make_client(source, config, client_factory=override_factory)
         checkpoint_client: Any | None = None
         directory_snapshot: Any | None = None
-        if source.provider == IdentitySourceProvider.FEISHU:
-            from server.enterprise_identity.feishu import FeishuDirectoryClient
-
-            app_id = config.get("app_id")
-            app_secret = config.get("app_secret")
-            if not isinstance(app_id, str) or not isinstance(app_secret, str):
-                raise ValueError("identity source configuration is invalid")
-            if feishu_client_factory is None:
-                checkpoint_client = FeishuDirectoryClient(
-                    app_id=app_id,
-                    app_secret=app_secret,
-                    max_concurrency=_feishu_sync_concurrency(
-                        initial_sync=source.last_synced_at is None,
-                    ),
-                    checkpoint_key=source.id,
+        if override_factory is None and source.provider != IdentitySourceProvider.DINGTALK:
+            checkpoint_client = client
+            async with checkpoint_client:
+                await checkpoint_client.sync_to_sink(
+                    _StreamingDirectorySink(session, source, sync_worker_id=source.sync_worker_id)
                 )
-                async with checkpoint_client:
-                    await checkpoint_client.sync_to_sink(
-                        _StreamingDirectorySink(
-                            session,
-                            source,
-                            sync_worker_id=source.sync_worker_id,
-                        )
-                    )
-            else:
-                async with feishu_client_factory(app_id=app_id, app_secret=app_secret) as client:
-                    directory_snapshot = await client.fetch_snapshot()
-            snapshot_config = _acl_membership_snapshot_config(config)
-            if snapshot_config is not None:
-                if acl_snapshot_client_factory is None:
-                    from server.enterprise_identity.acl_snapshot import FeishuAclMembershipSnapshotClient
-
-                    acl_snapshot_client_factory = FeishuAclMembershipSnapshotClient
-                snapshot_client_factory: Callable[..., Any] = acl_snapshot_client_factory
-                acl_snapshot = await snapshot_client_factory(**snapshot_config).fetch_snapshot(
-                    tenant_id=source.tenant_id
-                )
-                extra_groups = acl_snapshot.groups
-                extra_memberships = acl_snapshot.memberships
-        elif source.provider == IdentitySourceProvider.SHAREPOINT:
-            from server.enterprise_identity.sharepoint import SharePointDirectoryClient
-
-            client_id = config.get("client_id")
-            client_secret = config.get("client_secret")
-            cloud = config.get("cloud", "global")
-            if not isinstance(client_id, str) or not isinstance(client_secret, str) or cloud not in {"global", "china"}:
-                raise ValueError("identity source configuration is invalid")
-            if sharepoint_client_factory is None:
-                checkpoint_client = SharePointDirectoryClient(
-                    tenant_id=source.tenant_id,
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    cloud=cloud,
-                    max_concurrency=_sharepoint_sync_concurrency(),
-                    checkpoint_key=source.id,
-                )
-                async with checkpoint_client:
-                    await checkpoint_client.sync_to_sink(
-                        _StreamingDirectorySink(
-                            session,
-                            source,
-                            sync_worker_id=source.sync_worker_id,
-                        )
-                    )
-            else:
-                async with sharepoint_client_factory(
-                    tenant_id=source.tenant_id,
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    cloud=cloud,
-                ) as client:
-                    directory_snapshot = await client.fetch_snapshot()
         else:
-            raise ValueError("identity source provider is not supported")
+            async with client:
+                directory_snapshot = await client.fetch_snapshot()
+        extra_groups, extra_memberships, external_knowledge_scopes = await adapter.extra_snapshot(
+            source,
+            config,
+            acl_snapshot_client_factory=acl_snapshot_client_factory,
+        )
+        if source.provider == IdentitySourceProvider.DINGTALK:
+            from server.enterprise_identity.dingtalk_auth import dingtalk_config_digest
+            initial_digest = dingtalk_config_digest(source, config)
+            await session.refresh(source, with_for_update=True)
+            live_config = json.loads(decrypt(source.config_ciphertext))
+            if source.status == EnterpriseIdentitySourceStatus.DISABLED or initial_digest != dingtalk_config_digest(source, live_config):
+                raise ValueError("DINGTALK_SOURCE_CHANGED")
+            pending_event = await session.scalar(select(EnterpriseIdentitySourceEvent.id).where(
+                EnterpriseIdentitySourceEvent.identity_source_id == source.id,
+                EnterpriseIdentitySourceEvent.created_at >= started_at,
+                EnterpriseIdentitySourceEvent.status == EnterpriseIdentitySourceEventStatus.PENDING).limit(1))
+            if pending_event:
+                raise ValueError("DINGTALK_DIRECTORY_CHANGED_DURING_SYNC")
         if directory_snapshot is not None:
             groups, memberships = _merge_directory_snapshots(
                 groups=directory_snapshot.groups,
@@ -872,8 +1349,26 @@ async def sync_identity_source(
             await sink.begin_sync(datetime.now(UTC).isoformat())
             await sink.upsert_groups(extra_groups)
             await sink.upsert_memberships(extra_memberships)
-        if checkpoint_client is not None:
+        if checkpoint_client is not None or source.provider == IdentitySourceProvider.DINGTALK:
             source.last_synced_at = datetime.now(UTC)
+        adapter.after_full_sync(source)
+        if source.provider == IdentitySourceProvider.DINGTALK:
+            source.status = EnterpriseIdentitySourceStatus.ACTIVE
+            source.permission_error = None
+            source.permission_observed_at = datetime.now(UTC)
+        if external_knowledge_scopes:
+            imported = await import_external_knowledge_scopes(session, source, external_knowledge_scopes)
+            if source.provider == IdentitySourceProvider.DINGTALK:
+                if imported["snapshots_skipped"]:
+                    raise ValueError("DINGTALK_PERMISSION_SNAPSHOT_REJECTED")
+                source.permission_observed_at = datetime.now(UTC)
+                source.permission_error = None
+        if source.provider == IdentitySourceProvider.DINGTALK:
+            await session.execute(update(EnterpriseIdentitySourceEvent).where(
+                EnterpriseIdentitySourceEvent.identity_source_id == source.id,
+                EnterpriseIdentitySourceEvent.created_at < started_at,
+                EnterpriseIdentitySourceEvent.status != EnterpriseIdentitySourceEventStatus.PROCESSED).values(
+                    status=EnterpriseIdentitySourceEventStatus.PROCESSED))
         source.status = EnterpriseIdentitySourceStatus.ACTIVE
         source.last_error = None
         await session.flush()
@@ -881,5 +1376,13 @@ async def sync_identity_source(
     except Exception as exc:
         source.status = EnterpriseIdentitySourceStatus.STALE
         source.last_error = type(exc).__name__
+        from server.enterprise_identity.dingtalk import DingTalkIdentityError
+
+        # A transport failure does not prove a directory change. Keep only the
+        # existing bounded snapshot; never restore a marker invalidated by an event.
+        transient = isinstance(exc, DingTalkIdentityError) and str(exc) == "TRANSIENT_UPSTREAM"
+        if is_dingtalk and not transient:
+            source.last_synced_at = None
+            source.permission_error = "RECONCILIATION_FAILED"
         await session.flush()
         raise

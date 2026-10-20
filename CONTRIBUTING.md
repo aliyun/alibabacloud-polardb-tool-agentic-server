@@ -42,6 +42,9 @@ npm run dev
 
 ## Pull request checks
 
+For console and administration changes, run the real-service
+[browser E2E suite](docs/en/operations/browser-e2e.md) in addition to unit tests.
+
 Run the checks relevant to your change. Before requesting review, the complete
 open-source verification set is:
 

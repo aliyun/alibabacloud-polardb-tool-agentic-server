@@ -1,5 +1,12 @@
 # Local external OAuth Token Exchange test
 
+For reusable Feishu HTTP API and Chrome directory/login regression, see
+[Feishu regression](feishu-regression.md) ([简体中文](feishu-regression.zh-CN.md)).
+
+For private native MySQL/PostgreSQL regression and the remaining external
+acceptance boundaries, see [local regression](local-regression.md)
+([简体中文](local-regression.zh-CN.md)).
+
 This development-only setup tests an external OAuth integration without
 requiring a real identity-provider tenant:
 
@@ -39,7 +46,7 @@ The test has four distinct configuration objects:
 Use the same bootstrap settings in every terminal:
 
 ```bash
-cd /Users/cailu/github/alibabacloud-polardb-tool-agentic-server
+cd /path/to/alibabacloud-polardb-tool-agentic-server
 
 uv sync --extra dev
 mkdir -p data
@@ -111,7 +118,7 @@ Run this after PAS has started and the initial administrator exists. Replace
 `admin` with the administrator's PAS user ID or `external_id` when necessary:
 
 ```bash
-cd /Users/cailu/github/alibabacloud-polardb-tool-agentic-server
+cd /path/to/alibabacloud-polardb-tool-agentic-server
 
 export PAS_DATABASE_URL='sqlite+aiosqlite:///data/polardb_agentic.db'
 export PAS_ENCRYPTION_KEY="file:$PWD/data/pas-root-key"
@@ -157,7 +164,7 @@ selector was already open, select **Refresh** before continuing.
 In another terminal:
 
 ```bash
-cd /Users/cailu/github/alibabacloud-polardb-tool-agentic-server
+cd /path/to/alibabacloud-polardb-tool-agentic-server
 
 uv run python scripts/dev/mock_external_oauth_provider.py \
   --pas-source-id "$PAS_SOURCE_ID" \

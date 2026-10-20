@@ -629,5 +629,5 @@ async def test_external_member_requires_admin_provided_lifecycle_credential(
     )
     assert await worker.run_once() is True
     provisioner.delete_cluster.assert_awaited_once_with(
-        "pc-external-dedicated"
+        "pc-external-dedicated", region_id=None
     )

@@ -117,7 +117,8 @@ class TestBuiltinAuth:
 
 
 class TestChangePassword:
-    async def test_change_password_success(self, engine):
+    @pytest.mark.parametrize("new_password", ["abcdefgh", "abcdefghi", "abcdefghijk", "abcdefghijkl"])
+    async def test_change_password_success(self, engine, new_password):
         from httpx import ASGITransport, AsyncClient
         from server.app import create_app
         from server.mcp.transport import reset_mcp
@@ -145,7 +146,7 @@ class TestChangePassword:
 
             resp = await client.post("/auth/change-password", json={
                 "current_password": "oldpass123",
-                "new_password": "newpass456789",
+                "new_password": new_password,
             }, headers=headers)
             assert resp.status_code == 200
             assert "session_token" not in client.cookies
@@ -161,14 +162,14 @@ class TestChangePassword:
             assert (await client.get("/auth/me", headers=headers)).status_code == 401
             assert (await client.post("/auth/refresh")).status_code == 401
 
-            login2 = await client.post("/auth/login", json={"username": "admin", "password": "newpass456789"})
+            login2 = await client.post("/auth/login", json={"username": "admin", "password": new_password})
             assert login2.status_code == 200
 
         async with engine_mod._session_factory() as s:
             user = await s.scalar(select(User).where(User.external_id == "admin"))
             assert user is not None
             assert user.credential_epoch == 2
-            assert verify_password("newpass456789", user.password_hash or "")
+            assert verify_password(new_password, user.password_hash or "")
 
     async def test_change_password_wrong_current(self, engine):
         from httpx import ASGITransport, AsyncClient

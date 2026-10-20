@@ -365,7 +365,7 @@ export default function ExternalApplications() {
       const { data } = await listEnterpriseIdentitySources()
       setIdentitySources(
         data.items.filter(
-          (source) => source.provider === 'feishu' && source.status === 'active',
+          (source) => source.provider === 'feishu' && (source.snapshot_usable ?? source.status === 'active'),
         ),
       )
     } catch (requestError) {

@@ -187,7 +187,7 @@ def test_token_exchange_only_does_not_require_browser_sso_configuration() -> Non
 
 @pytest.mark.parametrize(
     "external_base_url",
-    [None, "http://pas.example.com"],
+    [None, "", "ftp://pas.example.com"],
 )
 def test_token_exchange_only_requires_safe_external_base_url(
     external_base_url: str | None,
@@ -211,6 +211,34 @@ def test_token_exchange_only_requires_safe_external_base_url(
 
     assert result.valid is False
     assert result.error_code == "EXTERNAL_BASE_URL_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "external_base_url",
+    ["http://pas.example.com", "http://10.20.30.40:18760", "https://pas.example.com"],
+)
+@pytest.mark.parametrize("provider", ["oauth2_introspection", "oauth2_userinfo"])
+def test_token_exchange_only_accepts_http_without_browser_configuration(
+    external_base_url: str, provider: str,
+) -> None:
+    result = validate_module_config(
+        "user_sso",
+        {
+            "browser_login_enabled": False,
+            "external_token_trust": {
+                "enabled": True,
+                "provider": provider,
+                "introspection_endpoint": "http://provider.example.com/introspect",
+                "userinfo_endpoint": "http://provider.example.com/userinfo",
+                "identity_source_id": "test-source",
+                "client_id": "pas-token-validator",
+                "client_secret": "test-secret",
+            },
+        },
+        effective_configs={"runtime_policy": {"external_base_url": external_base_url}},
+    )
+    assert result.valid is True
+    assert result.normalized_config["browser_login_enabled"] is False
 
 
 def test_token_exchange_only_requires_external_token_trust() -> None:

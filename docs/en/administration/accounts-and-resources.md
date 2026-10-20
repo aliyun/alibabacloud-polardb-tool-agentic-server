@@ -48,8 +48,9 @@ and the next request rechecks access.
 
 ## Connect a personal account
 
-Open **My resources** to inspect your own database and knowledge access, then
-**Connect MCP**. No Agent assignment or default-Agent selection is required.
+Open **Knowledge bases** to inspect Agent-scoped knowledge access, then
+**Connect MCP** for Agent Token and general personal connection controls. The
+general personal connection requires no Agent assignment or default-Agent selection.
 Use the displayed address, for example:
 
 ```json
@@ -78,8 +79,11 @@ epoch changes invalidate it. Administrators cannot retrieve another user's
 personal token. Personal tokens cannot authenticate console REST requests or
 be exchanged as refresh tokens.
 
-A personal token uses current personal permissions; it has no independent
-resource scope. SQL-only personal grants also allow resource discovery and
+A personal token uses the account's effective database permissions; it has no
+independent database resource scope. Permission sources include direct grants,
+system-assigned instances the user owns, and SQL permissions inherited from
+departments/user groups, not just direct grants. SQL-only permissions, including
+inherited permissions, also allow resource discovery and
 description without revealing database passwords. Personal clients cannot
 create or delete service-owned databases or select a service account.
 
@@ -97,8 +101,11 @@ Visibility continues to use enterprise identity and ownership. Each search or
 document read sends the employee's resolved ACL context to the upstream service,
 which enforces document permissions. There is no additional per-user knowledge
 grant table or local override of upstream ACLs. Personal MCP supports knowledge
-reads; existing delegated Agent connections continue to provide the configured
-upload/management workflows.
+search and reads only for PERSONAL knowledge bases owned by the current user,
+excluding PUBLIC knowledge bases and other users' PERSONAL knowledge bases.
+Upload, delete, and rechunk require an Agent connection. Agent-scoped document upload, paginated listings,
+permission details, delete, and rechunk are managed on the separate
+**Knowledge bases** page. Force rechunk requires PolarRAG 1.0.7 or later.
 
 ## Existing connections and rollback
 

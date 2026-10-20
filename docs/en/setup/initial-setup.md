@@ -90,7 +90,7 @@ token again. The server cannot recover or display the current plaintext token.
 ## Local setup
 
 Open the setup UI, enter the token printed by the backend, and create the first
-administrator. The administrator password must contain at least 12 characters.
+administrator. The administrator password must contain at least 8 characters.
 
 When running the backend from a source checkout, build the console or run its
 development server as described in the repository README. `/setup` is a browser

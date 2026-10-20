@@ -13,8 +13,6 @@ import {
   Divider,
   Empty,
   Modal,
-  Radio,
-  Select,
   Skeleton,
   Space,
   Table,
@@ -27,18 +25,14 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 
 import {
-  deleteAgentPolarRAGBinding,
   getAgent,
   listAgentPolarRAGBindings,
-  listAgentPolarRAGPublicResources,
   regenerateAgentToken,
   revealAgentToken,
   revokeAgentToken,
   updateAgent,
-  updateAgentPolarRAGPublicResources,
   type Agent,
   type AgentPolarRAGBinding,
-  type AgentPolarRAGPublicResource,
   type AgentToken,
   type AgentTokenStatus,
   type AgentTokenSummary,
@@ -72,8 +66,6 @@ import MCPConnectionPanel from './MCPConnectionPanel'
 import RESTAPIConnectionPanel from './RESTAPIConnectionPanel'
 import DedicatedPoolRoutes from './DedicatedPoolRoutes'
 import PolarRAGAccessPanel from './PolarRAGAccessPanel'
-
-const PUBLIC_RESOURCE_PAGE_SIZE = 50
 
 const { Text, Title } = Typography
 
@@ -116,7 +108,6 @@ type Confirmation =
   | { kind: 'regenerate' }
   | { kind: 'revoke' }
   | { kind: 'delete-access'; access: AgentInstanceAccess }
-  | { kind: 'delete-polarrag-access'; binding: AgentPolarRAGBinding }
   | null
 
 interface RouteScope {
@@ -184,15 +175,6 @@ export default function AgentDetail() {
   const [polarRAGBindings, setPolarRAGBindings] = useState<
     AgentPolarRAGBinding[]
   >([])
-  const [publicScopeBinding, setPublicScopeBinding] =
-    useState<AgentPolarRAGBinding | null>(null)
-  const [publicScopeOptions, setPublicScopeOptions] = useState<
-    AgentPolarRAGPublicResource[]
-  >([])
-  const [publicScopeDraft, setPublicScopeDraft] = useState<string[] | null>(null)
-  const [publicScopeLoading, setPublicScopeLoading] = useState(false)
-  const [publicScopeSearch, setPublicScopeSearch] = useState('')
-  const [publicScopeHasMore, setPublicScopeHasMore] = useState(false)
   const [resources, setResources] = useState<AgentResource[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -298,10 +280,6 @@ export default function AgentDetail() {
     setBackends([])
     setInstanceAccess([])
     setPolarRAGBindings([])
-    setPublicScopeBinding(null)
-    setPublicScopeOptions([])
-    setPublicScopeDraft(null)
-    setPublicScopeLoading(false)
     setResources([])
     setLoading(true)
     setBusy(false)
@@ -410,90 +388,6 @@ export default function AgentDetail() {
     )
   }
 
-  const loadPublicScopeOptions = async (
-    binding: AgentPolarRAGBinding,
-    search = '',
-    offset = 0,
-    append = false,
-  ) => {
-    const scope = { ...scopeRef.current }
-    setPublicScopeLoading(true)
-    try {
-      const response = await listAgentPolarRAGPublicResources(
-        scope.agentId,
-        binding.id,
-        {
-          offset,
-          limit: PUBLIC_RESOURCE_PAGE_SIZE,
-          ...(search ? { search } : {}),
-        },
-      )
-      if (isCurrentScope(scope)) {
-        setPublicScopeOptions((current) =>
-          append ? [...current, ...response.data.items] : response.data.items,
-        )
-        setPublicScopeHasMore(
-          offset + response.data.items.length < response.data.total,
-        )
-      }
-    } catch (requestError) {
-      if (isCurrentScope(scope)) {
-        setError(
-          getAPIErrorMessage(
-            requestError,
-            t('agentDetail.publicScopeLoadFailed'),
-          ),
-        )
-        if (!append) setPublicScopeBinding(null)
-      }
-    } finally {
-      if (isCurrentScope(scope)) setPublicScopeLoading(false)
-    }
-  }
-
-  const openPublicScope = async (binding: AgentPolarRAGBinding) => {
-    setPublicScopeBinding(binding)
-    setPublicScopeDraft(binding.public_knowledge_resource_ids)
-    setPublicScopeOptions([])
-    setPublicScopeSearch('')
-    setPublicScopeHasMore(false)
-    setError(null)
-    await loadPublicScopeOptions(binding)
-  }
-
-  const savePublicScope = async () => {
-    if (!publicScopeBinding) return
-    const scope = { ...scopeRef.current }
-    setBusy(true)
-    setError(null)
-    try {
-      const response = await updateAgentPolarRAGPublicResources(
-        scope.agentId,
-        publicScopeBinding.id,
-        publicScopeDraft,
-      )
-      if (!isCurrentScope(scope)) return
-      setPolarRAGBindings((current) =>
-        current.map((binding) =>
-          binding.id === response.data.id ? response.data : binding,
-        ),
-      )
-      setNotice(t('agentDetail.publicScopeUpdated'))
-      setPublicScopeBinding(null)
-    } catch (requestError) {
-      if (isCurrentScope(scope)) {
-        setError(
-          getAPIErrorMessage(
-            requestError,
-            t('agentDetail.publicScopeSaveFailed'),
-          ),
-        )
-      }
-    } finally {
-      if (isCurrentScope(scope)) setBusy(false)
-    }
-  }
-
   const tokenSummary = (
     row: AgentToken,
     status: AgentTokenStatus,
@@ -569,16 +463,6 @@ export default function AgentDetail() {
           ),
         )
         showReconnectNotice('Instance access removed.')
-      } else if (currentConfirmation.kind === 'delete-polarrag-access') {
-        await deleteAgentPolarRAGBinding(
-          currentAgent.id,
-          currentConfirmation.binding.id,
-        )
-        if (!isCurrentScope(scope)) return
-        setPolarRAGBindings((current) =>
-          current.filter((item) => item.id !== currentConfirmation.binding.id),
-        )
-        showReconnectNotice('PolarRAG instance access removed.')
       } else {
         throw new Error('Unsupported confirmation action')
       }
@@ -1109,158 +993,9 @@ export default function AgentDetail() {
 
                   <Divider style={{ margin: 0 }} />
 
-                  <section aria-labelledby="agent-polarrag-bindings-heading">
-                    <SectionHeading
-                      id="agent-polarrag-bindings-heading"
-                      title={t('agentDetail.polarragBindingsTitle')}
-                      description={t('agentDetail.polarragBindingsDescription')}
-                    />
-                    <Table
-                      rowKey="id"
-                      dataSource={polarRAGBindings}
-                      pagination={false}
-                      style={{ marginTop: 16 }}
-                      locale={{
-                        emptyText: (
-                          <Empty
-                            image={Empty.PRESENTED_IMAGE_SIMPLE}
-                            description={t('agentDetail.noPolarragBindings')}
-                          />
-                        ),
-                      }}
-                      columns={[
-                        {
-                          title: t('instances.instance'),
-                          dataIndex: 'instance_name',
-                        },
-                        {
-                          title: t('agentDetail.permission'),
-                          key: 'permission',
-                          render: () => t('agentDetail.userAcl'),
-                        },
-                        {
-                          title: t('agentDetail.publicScope'),
-                          key: 'publicScope',
-                          render: (_: unknown, binding: AgentPolarRAGBinding) =>
-                            binding.public_knowledge_resource_ids === null
-                              ? t('agentDetail.allPublicResources')
-                              : t('agentDetail.selectedPublicResources', {
-                                  count:
-                                    binding.public_knowledge_resource_ids.length,
-                                }),
-                        },
-                        {
-                          title: t('agentDetail.state'),
-                          key: 'state',
-                          render: () => (
-                            <Tag color="success">{t('agentDetail.bound')}</Tag>
-                          ),
-                        },
-                        {
-                          title: t('instances.actions'),
-                          key: 'actions',
-                          render: (_: unknown, binding: AgentPolarRAGBinding) => (
-                            <Space>
-                              <Button
-                                size="small"
-                                onClick={() => void openPublicScope(binding)}
-                              >
-                                {t('agentDetail.configurePublicScope')}
-                              </Button>
-                              <Button
-                                size="small"
-                                danger
-                                onClick={() =>
-                                  setConfirmation({
-                                    kind: 'delete-polarrag-access',
-                                    binding,
-                                  })
-                                }
-                              >
-                                {t('agentDetail.remove')}
-                              </Button>
-                            </Space>
-                          ),
-                        },
-                      ]}
-                    />
-                  </section>
-
-                  <Modal
-                    open={publicScopeBinding !== null}
-                    title={t('agentDetail.configurePublicScope')}
-                    okText={t('agentDetail.savePublicScope')}
-                    confirmLoading={busy}
-                    okButtonProps={{ disabled: publicScopeLoading }}
-                    onOk={() => void savePublicScope()}
-                    onCancel={() => setPublicScopeBinding(null)}
-                  >
-                    <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                      <Text type="secondary">
-                        {t('agentDetail.publicScopeDescription')}
-                      </Text>
-                      <Radio.Group
-                        aria-label={t('agentDetail.publicScope')}
-                        value={publicScopeDraft === null ? 'all' : 'selected'}
-                        onChange={(event) =>
-                          setPublicScopeDraft(
-                            event.target.value === 'all' ? null : [],
-                          )
-                        }
-                      >
-                        <Space direction="vertical">
-                          <Radio value="all">
-                            {t('agentDetail.allPublicResources')}
-                          </Radio>
-                          <Radio value="selected">
-                            {t('agentDetail.selectedPublicResourceOption')}
-                          </Radio>
-                        </Space>
-                      </Radio.Group>
-                      <Select
-                        mode="multiple"
-                        aria-label={t('agentDetail.publicKnowledgeResources')}
-                        loading={publicScopeLoading}
-                        disabled={publicScopeDraft === null}
-                        showSearch
-                        filterOption={false}
-                        value={publicScopeDraft ?? []}
-                        onChange={setPublicScopeDraft}
-                        onSearch={(search) => {
-                          setPublicScopeSearch(search)
-                          if (publicScopeBinding) {
-                            void loadPublicScopeOptions(publicScopeBinding, search)
-                          }
-                        }}
-                        onPopupScroll={(event) => {
-                          const target = event.currentTarget
-                          if (
-                            publicScopeBinding &&
-                            publicScopeHasMore &&
-                            !publicScopeLoading &&
-                            target.scrollTop + target.clientHeight >= target.scrollHeight - 16
-                          ) {
-                            void loadPublicScopeOptions(
-                              publicScopeBinding,
-                              publicScopeSearch,
-                              publicScopeOptions.length,
-                              true,
-                            )
-                          }
-                        }}
-                        options={publicScopeOptions.map((resource) => ({
-                          value: resource.knowledge_resource_id,
-                          label: `${resource.name} · ${resource.knowledge_space_name}`,
-                        }))}
-                        style={{ width: '100%' }}
-                      />
-                    </Space>
-                  </Modal>
-
-                  <Divider style={{ margin: 0 }} />
-
                   <section aria-label={t('agentDetail.polarragAccessLabel')}>
                     <PolarRAGAccessPanel
+                      key={agent.id}
                       agentId={agent.id}
                       bindings={polarRAGBindings}
                       onBindingsChange={setPolarRAGBindings}

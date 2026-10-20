@@ -5,11 +5,20 @@ import secrets
 import time
 
 import jwt
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import server.auth.jwt_manager as _jm
 from server.auth.jwt_manager import _generate_rsa_key_pair, _load_keys
-from server.models import AgentAPIToken
+from server.models import AgentAPIToken, Base
+
+
+def isolated_model_metadata() -> MetaData:
+    """Keep backend ALTER-constraint compilation off shared ORM table objects."""
+    metadata = MetaData()
+    for table in Base.metadata.tables.values():
+        table.to_metadata(metadata)
+    return metadata
 
 
 def init_test_jwt_keys() -> None:

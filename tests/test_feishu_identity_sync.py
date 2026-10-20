@@ -3,11 +3,24 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+import hashlib
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
 from server.enterprise_identity.feishu import FeishuDirectoryClient
+
+
+def _empty_response(request: httpx.Request) -> httpx.Response:
+    path = request.url.path
+    if path == "/open-apis/auth/v3/tenant_access_token/internal":
+        return httpx.Response(200, json={"code": 0, "tenant_access_token": "tenant-token"})
+    if path == "/open-apis/contact/v3/group/simplelist":
+        return httpx.Response(200, json={"code": 0, "data": {"grouplist": [], "has_more": False}})
+    if path in {"/open-apis/contact/v3/users", "/open-apis/contact/v3/users/find_by_department"}:
+        return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+    raise AssertionError(request.url)
 
 
 @pytest.mark.asyncio
@@ -113,15 +126,25 @@ async def test_feishu_directory_client_uses_tenant_user_ids_and_source_principal
                 },
             })
         if request.url.path == "/open-apis/contact/v3/group/simplelist":
+            groups = (
+                [{"group_id": "g_engineering", "name": "Engineering"}]
+                if request.url.params["type"] == "1"
+                else []
+            )
             return httpx.Response(200, json={
                 "code": 0,
-                "data": {"grouplist": [{"group_id": "g_engineering", "name": "Engineering"}], "has_more": False},
+                "data": {"grouplist": groups, "has_more": False},
             })
-        if request.url.path == "/open-apis/contact/v3/group/member_belong":
+        if request.url.path == "/open-apis/contact/v3/group/g_engineering/member/simplelist":
             assert request.url.params["member_id_type"] == "user_id"
-            user_id = request.url.params["member_id"]
-            groups = ["g_engineering"] if user_id == "u_design" else []
-            return httpx.Response(200, json={"code": 0, "data": {"group_list": groups, "has_more": False}})
+            assert request.url.params["member_type"] == "user"
+            return httpx.Response(200, json={
+                "code": 0,
+                "data": {
+                    "memberlist": [{"member_id": "u_design", "member_type": "user"}],
+                    "has_more": False,
+                },
+            })
         raise AssertionError(f"unexpected request: {request.url}")
 
     async with FeishuDirectoryClient(
@@ -152,7 +175,8 @@ async def test_feishu_directory_client_uses_tenant_user_ids_and_source_principal
         and request.url.params["department_id"] == "0"
         for request in requests
     )
-    assert any(request.url.path.endswith("/member_belong") for request in requests)
+    assert any(request.url.path.endswith("/member/simplelist") for request in requests)
+    assert not any(request.url.path.endswith("/member_belong") for request in requests)
     assert any("department" in request.url.path for request in requests)
 
 
@@ -169,10 +193,6 @@ async def test_feishu_directory_client_fetches_department_work_concurrently():
         active -= 1
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/open-apis/auth/v3/tenant_access_token/internal":
-            return httpx.Response(200, json={"code": 0, "tenant_access_token": "tenant-token"})
-        if request.url.path == "/open-apis/contact/v3/users":
-            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
         if request.url.path == "/open-apis/contact/v3/departments/0/children":
             return httpx.Response(200, json={
                 "code": 0,
@@ -184,15 +204,9 @@ async def test_feishu_directory_client_fetches_department_work_concurrently():
                     "has_more": False,
                 },
             })
-        if request.url.path.startswith("/open-apis/contact/v3/users/find_by_department"):
-            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
         if request.url.path.startswith("/open-apis/contact/v3/departments/"):
             return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
-        if request.url.path == "/open-apis/contact/v3/group/simplelist":
-            return httpx.Response(200, json={"code": 0, "data": {"grouplist": [], "has_more": False}})
-        if request.url.path == "/open-apis/contact/v3/group/member_belong":
-            return httpx.Response(200, json={"code": 0, "data": {"group_list": [], "has_more": False}})
-        raise AssertionError(request.url)
+        return _empty_response(request)
 
     async def transport_handler(request: httpx.Request) -> httpx.Response:
         await mark_work()
@@ -209,12 +223,8 @@ async def test_feishu_directory_client_fetches_department_work_concurrently():
 
 
 @pytest.mark.asyncio
-async def test_feishu_directory_client_skips_a_user_with_unavailable_group_memberships(caplog):
+async def test_feishu_directory_client_skips_a_group_with_unavailable_members(caplog):
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/open-apis/auth/v3/tenant_access_token/internal":
-            return httpx.Response(200, json={"code": 0, "tenant_access_token": "tenant-token"})
-        if request.url.path == "/open-apis/contact/v3/users":
-            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
         if request.url.path == "/open-apis/contact/v3/users/find_by_department":
             return httpx.Response(200, json={
                 "code": 0,
@@ -226,15 +236,20 @@ async def test_feishu_directory_client_skips_a_user_with_unavailable_group_membe
                     "has_more": False,
                 },
             })
+        if request.url.path == "/open-apis/contact/v3/group/simplelist":
+            groups = (
+                [{"group_id": "g-unavailable", "name": "Unavailable"}]
+                if request.url.params["type"] == "1"
+                else []
+            )
+            return httpx.Response(200, json={
+                "code": 0, "data": {"grouplist": groups, "has_more": False},
+            })
+        if request.url.path == "/open-apis/contact/v3/group/g-unavailable/member/simplelist":
+            return httpx.Response(400, json={"code": 99991672, "msg": "group unavailable"})
         if request.url.path.startswith("/open-apis/contact/v3/departments/"):
             return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
-        if request.url.path == "/open-apis/contact/v3/group/simplelist":
-            return httpx.Response(200, json={"code": 0, "data": {"grouplist": [], "has_more": False}})
-        if request.url.path == "/open-apis/contact/v3/group/member_belong":
-            if request.url.params["member_id"] == "u-missing":
-                return httpx.Response(400, json={"code": 99991672, "msg": "user unavailable"})
-            return httpx.Response(200, json={"code": 0, "data": {"group_list": [], "has_more": False}})
-        raise AssertionError(request.url)
+        return _empty_response(request)
 
     caplog.set_level(logging.WARNING, logger="server.enterprise_identity.feishu")
     async with FeishuDirectoryClient(
@@ -261,8 +276,6 @@ async def test_feishu_directory_client_resumes_users_from_persistent_page_checkp
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal pause_second_page
-        if request.url.path == "/open-apis/auth/v3/tenant_access_token/internal":
-            return httpx.Response(200, json={"code": 0, "tenant_access_token": "tenant-token"})
         if request.url.path == "/open-apis/contact/v3/users":
             page_token = request.url.params.get("page_token")
             user_page_requests.append(page_token)
@@ -284,15 +297,9 @@ async def test_feishu_directory_client_resumes_users_from_persistent_page_checkp
                     "has_more": False,
                 },
             })
-        if request.url.path.startswith("/open-apis/contact/v3/users/find_by_department"):
-            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
         if request.url.path.startswith("/open-apis/contact/v3/departments/"):
             return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
-        if request.url.path == "/open-apis/contact/v3/group/simplelist":
-            return httpx.Response(200, json={"code": 0, "data": {"grouplist": [], "has_more": False}})
-        if request.url.path == "/open-apis/contact/v3/group/member_belong":
-            return httpx.Response(200, json={"code": 0, "data": {"group_list": [], "has_more": False}})
-        raise AssertionError(request.url)
+        return _empty_response(request)
 
     async with FeishuDirectoryClient(
         app_id="cli_test",
@@ -316,3 +323,145 @@ async def test_feishu_directory_client_resumes_users_from_persistent_page_checkp
 
     assert user_page_requests == [None, "users-page-2", "users-page-2"]
     assert snapshot.users == [{"id": "u_second", "display_name": "Second", "email": None}]
+
+    async with FeishuDirectoryClient(
+        app_id="cli_test",
+        app_secret="secret",
+        transport=httpx.MockTransport(handler),
+        checkpoint_dir=tmp_path,
+        checkpoint_key="source-1",
+        last_completed_at=datetime.now(UTC),
+    ) as client:
+        snapshot = await client.fetch_snapshot()
+
+    assert user_page_requests == [None, "users-page-2", "users-page-2", None, "users-page-2"]
+    assert [user["id"] for user in snapshot.users] == ["u_first", "u_second"]
+
+    handoff_dir = tmp_path / "handoff"
+    async with FeishuDirectoryClient(
+        app_id="cli_test", app_secret="secret", transport=httpx.MockTransport(handler),
+        checkpoint_dir=handoff_dir, checkpoint_key="source-1", sync_worker_id="worker-a",
+    ) as client:
+        await client.fetch_snapshot()
+
+    pause_second_page = True
+    async with FeishuDirectoryClient(
+        app_id="cli_test", app_secret="secret", transport=httpx.MockTransport(handler),
+        checkpoint_dir=handoff_dir, checkpoint_key="source-1", sync_worker_id="worker-b",
+    ) as client:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(client.fetch_snapshot(), timeout=0.05)
+
+    pause_second_page = False
+    async with FeishuDirectoryClient(
+        app_id="cli_test", app_secret="secret", transport=httpx.MockTransport(handler),
+        checkpoint_dir=handoff_dir, checkpoint_key="source-1", sync_worker_id="worker-c",
+    ) as client:
+        snapshot = await client.fetch_snapshot()
+
+    assert user_page_requests[5:] == [None, "users-page-2", None, "users-page-2", None, "users-page-2"]
+    assert [user["id"] for user in snapshot.users] == ["u_first", "u_second"]
+
+
+@pytest.mark.asyncio
+async def test_feishu_directory_client_restarts_old_user_membership_checkpoint(tmp_path):
+    requests: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request.url.path)
+        if request.url.path == "/open-apis/contact/v3/departments/0/children":
+            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+        return _empty_response(request)
+
+    digest = hashlib.sha256(b"source-1").hexdigest()
+    checkpoint_path = tmp_path / f"feishu-sync-{digest}.json"
+    checkpoint_path.write_text(json.dumps({
+        "version": 2,
+        "source": "source-1",
+        "sync_worker_id": None,
+        "stage": "complete",
+        "has_more": False,
+        "sync_started_at": datetime.now(UTC).isoformat(),
+        "users_done": True,
+        "pending_departments": [],
+        "visited_departments": ["0"],
+        "groups_done": {"1": True, "2": True},
+        "group_page_tokens": {"1": None, "2": None},
+        "memberships_done": True,
+    }), encoding="utf-8")
+
+    async with FeishuDirectoryClient(
+        app_id="cli_test",
+        app_secret="secret",
+        transport=httpx.MockTransport(handler),
+        checkpoint_dir=tmp_path,
+        checkpoint_key="source-1",
+    ) as client:
+        await client.fetch_snapshot()
+
+    assert "/open-apis/contact/v3/users" in requests
+    assert "/open-apis/contact/v3/departments/0/children" in requests
+
+
+@pytest.mark.asyncio
+async def test_feishu_directory_client_preserves_partial_warning_across_checkpoint_resume(
+    tmp_path, caplog,
+):
+    pause_second_group_page = True
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal pause_second_group_page
+        if request.url.path == "/open-apis/contact/v3/group/simplelist":
+            if request.url.params["type"] == "2":
+                return httpx.Response(200, json={
+                    "code": 0, "data": {"grouplist": [], "has_more": False},
+                })
+            if request.url.params.get("page_token") is None:
+                return httpx.Response(200, json={
+                    "code": 0,
+                    "data": {
+                        "grouplist": [{"group_id": "g-failed", "name": "Failed"}],
+                        "has_more": True,
+                        "page_token": "groups-page-2",
+                    },
+                })
+            if pause_second_group_page:
+                await asyncio.sleep(1)
+            return httpx.Response(200, json={
+                "code": 0,
+                "data": {
+                    "grouplist": [{"group_id": "g-ok", "name": "OK"}],
+                    "has_more": False,
+                },
+            })
+        if request.url.path == "/open-apis/contact/v3/group/g-failed/member/simplelist":
+            return httpx.Response(400, json={"code": 99991672, "msg": "group unavailable"})
+        if request.url.path == "/open-apis/contact/v3/group/g-ok/member/simplelist":
+            return httpx.Response(200, json={
+                "code": 0, "data": {"memberlist": [], "has_more": False},
+            })
+        if request.url.path == "/open-apis/contact/v3/departments/0/children":
+            return httpx.Response(200, json={"code": 0, "data": {"items": [], "has_more": False}})
+        return _empty_response(request)
+
+    caplog.set_level(logging.WARNING, logger="server.enterprise_identity.feishu")
+    async with FeishuDirectoryClient(
+        app_id="cli_test", app_secret="secret", transport=httpx.MockTransport(handler),
+        checkpoint_dir=tmp_path, checkpoint_key="source-1",
+    ) as client:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(client.fetch_snapshot(), timeout=0.05)
+
+    pause_second_group_page = False
+    async with FeishuDirectoryClient(
+        app_id="cli_test", app_secret="secret", transport=httpx.MockTransport(handler),
+        checkpoint_dir=tmp_path, checkpoint_key="source-1",
+    ) as client:
+        await client.fetch_snapshot()
+
+    warning = next(
+        record for record in caplog.records
+        if record.getMessage() == "feishu.memberships_partial"
+    )
+    assert warning.skipped_count == 1
+    assert warning.provider_errors == {"99991672": 1}

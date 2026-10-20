@@ -282,13 +282,12 @@ are configurable from 60 to 86400 seconds, and never outlive a known external
 token expiry. A temporary provider outage returns a temporary failure without
 treating the token as invalid.
 
-The Introspection and external UserInfo endpoints can use HTTP only when they
-resolve exclusively to approved private-network ranges. This is intended for
-trusted, isolated intranet deployments. Because PAS-to-provider credentials
-and the external token are then sent without transport encryption, HTTPS is
-still recommended and is required for public endpoints. Link-local and cloud
-metadata targets remain blocked. This exception does not relax the HTTPS
-requirements for interactive browser SSO endpoints.
+The Introspection and external UserInfo endpoints accept HTTP on approved private
+networks. Public HTTP provider addresses are accepted only when browser SSO is
+disabled; HTTPS is accepted in both modes. HTTP sends
+PAS-to-provider credentials and external tokens without transport encryption,
+so HTTPS remains recommended. Link-local and cloud metadata targets remain
+blocked. Interactive browser SSO endpoints still require HTTPS.
 
 For legacy clients that can only send a Bearer Token to `/mcp`, an administrator
 may separately enable direct MCP external tokens. This compatibility mode is

@@ -1,12 +1,10 @@
 {
-  "baseline_head": "fb1c2d3e4f5a",
-  "compatible_manifest_digests": [
-    "814a368a1693949232057c975373f5af969e343f5278b7a0e4d18ba996eec456"
-  ],
-  "generation": 1,
-  "head": "9c1d2e3f4a5b",
+  "baseline_head": "b3c4d5e6f7a8",
+  "compatible_manifest_digests": [],
+  "generation": 2,
+  "head": "c7d8e9f0a1b2",
   "protocol_version": 1,
-  "release_classification": "EXPAND",
+  "release_classification": "CONTRACT",
   "required_sequence": 1,
   "tables": {
     "agent_api_tokens": {
@@ -183,6 +181,38 @@
         "type": "datetime"
       }
     },
+    "agent_knowledge_policies": {
+      "agent_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "excluded_subjects_json": {
+        "length": null,
+        "nullable": false,
+        "type": "text"
+      },
+      "knowledge_resource_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "select_all": {
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
     "agent_knowledge_scope_bindings": {
       "created_at": {
         "length": null,
@@ -288,10 +318,25 @@
         "nullable": false,
         "type": "string"
       },
+      "personal_excluded_resource_ids_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
+      "personal_knowledge_resource_ids_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
+      },
       "polarrag_instance_id": {
         "length": 36,
         "nullable": false,
         "type": "string"
+      },
+      "public_excluded_resource_ids_json": {
+        "length": null,
+        "nullable": true,
+        "type": "text"
       },
       "public_knowledge_resource_ids_json": {
         "length": null,
@@ -460,6 +505,12 @@
       }
     },
     "agents": {
+      "all_builtin_users": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
+      },
       "bulk_assignment_created_count": {
         "default": "0",
         "length": null,
@@ -501,6 +552,12 @@
         "length": null,
         "nullable": true,
         "type": "text"
+      },
+      "external_knowledge_auto_bind_enabled": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "boolean"
       },
       "id": {
         "length": 36,
@@ -1315,6 +1372,58 @@
         "type": "datetime"
       }
     },
+    "dingtalk_login_states": {
+      "browser_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "config_digest": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "created_by_user_id": {
+        "length": 36,
+        "nullable": true,
+        "type": "string"
+      },
+      "expires_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "purpose": {
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "state_hash": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
     "enterprise_directory_groups": {
       "created_at": {
         "length": null,
@@ -1436,6 +1545,55 @@
         "type": "datetime"
       }
     },
+    "enterprise_identity_source_events": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "event_type": {
+        "length": 128,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "next_retry_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "retry_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "status": {
+        "default": "pending",
+        "length": 16,
+        "nullable": false,
+        "type": "string"
+      },
+      "subject_id": {
+        "length": 255,
+        "nullable": true,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
     "enterprise_identity_source_space_bindings": {
       "created_at": {
         "length": null,
@@ -1474,6 +1632,42 @@
         "nullable": false,
         "type": "datetime"
       },
+      "event_listener_lease_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "event_listener_retry_count": {
+        "default": "0",
+        "length": null,
+        "nullable": false,
+        "type": "integer"
+      },
+      "event_listener_status": {
+        "length": 32,
+        "nullable": true,
+        "type": "string"
+      },
+      "event_listener_worker_id": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "event_unavailable_since": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "full_sync_requested_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "group_next_retry_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
       "id": {
         "length": 36,
         "nullable": false,
@@ -1484,6 +1678,16 @@
         "nullable": true,
         "type": "string"
       },
+      "last_group_error": {
+        "length": 128,
+        "nullable": true,
+        "type": "string"
+      },
+      "last_group_synced_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
       "last_synced_at": {
         "length": null,
         "nullable": true,
@@ -1493,6 +1697,16 @@
         "length": 255,
         "nullable": false,
         "type": "string"
+      },
+      "permission_error": {
+        "length": 64,
+        "nullable": true,
+        "type": "string"
+      },
+      "permission_observed_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
       },
       "provider": {
         "length": 32,
@@ -1507,6 +1721,11 @@
       "status": {
         "length": 32,
         "nullable": false,
+        "type": "string"
+      },
+      "sync_kind": {
+        "length": 16,
+        "nullable": true,
         "type": "string"
       },
       "sync_lease_until": {
@@ -1603,6 +1822,105 @@
         "type": "string"
       },
       "valid_until": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "external_knowledge_scope_grants": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "snapshot_id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "subject_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "subject_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      }
+    },
+    "external_knowledge_scope_snapshots": {
+      "created_at": {
+        "length": null,
+        "nullable": false,
+        "type": "datetime"
+      },
+      "fingerprint": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "generation": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "id": {
+        "length": 64,
+        "nullable": false,
+        "type": "string"
+      },
+      "identity_source_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "knowledge_resource_id": {
+        "length": 36,
+        "nullable": false,
+        "type": "string"
+      },
+      "source_scope_id": {
+        "length": 255,
+        "nullable": false,
+        "type": "string"
+      },
+      "source_scope_name": {
+        "length": 512,
+        "nullable": false,
+        "type": "string"
+      },
+      "source_scope_type": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "source_updated_at": {
+        "length": null,
+        "nullable": true,
+        "type": "datetime"
+      },
+      "status": {
+        "length": 32,
+        "nullable": false,
+        "type": "string"
+      },
+      "updated_at": {
         "length": null,
         "nullable": true,
         "type": "datetime"

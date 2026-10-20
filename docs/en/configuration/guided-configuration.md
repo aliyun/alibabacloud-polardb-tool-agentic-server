@@ -114,7 +114,7 @@ For server-to-server Token Exchange without browser login, turn off **Enable
 browser SSO login**. Configure only the external Token validation Provider,
 then save, validate, and activate. This path does not require a callback URL,
 browser endpoints, browser Client credentials, or a browser login test. It
-still requires an HTTPS External Base URL for the Token Exchange resources;
+requires an explicit HTTP or HTTPS External Base URL for the Token Exchange resources;
 ordinary console login remains built-in.
 For the Feishu provider, the caller supplies the verified identity source ID,
 Feishu user ID, and union ID with every Token Exchange request; the form does
@@ -162,10 +162,22 @@ PAS stores fixed credentials encrypted and keeps temporary credentials only
 in process memory; it never exports them to Agents, sandboxes, browsers, or
 the metadata database.
 
-Set `openapi_network` to `vpc` when the service Pod has Alibaba Cloud VPC
-connectivity but no Internet egress. Both PolarDB and STS then use their
-region-specific VPC endpoints. The default is `public`; custom endpoint
-hostnames are intentionally rejected.
+Choose the OpenAPI network and PAS access/default region explicitly in the
+credential form. Region labels and endpoint previews come from the same
+offline reviewed catalog as the backend resolver. Select `openapi_network: vpc`
+and the Pod's deployment region when it has VPC connectivity but no Internet
+egress. Only listed PolarDB and STS endpoints are accepted; no public fallback
+or custom hostname is allowed. See [production networking](../deployment/networking.md)
+for unsupported combinations and same-region restrictions.
+
+Existing configurations retain their values, including historical
+`cn-hangzhou` / `public` defaults when fields were omitted. A new Web
+configuration requires both choices; CLI/API callers retain those defaults
+for compatibility and should provide both fields explicitly for VPC.
+Changing only these fields reuses stored credentials without re-entering
+AccessKey secrets. Any change invalidates the current preflight result;
+validate and activate again. Check existing pools and instances before
+switching the global access network.
 
 Dry run and validation originate from the PAS backend Pod, so that Pod must
 resolve and route to the selected endpoints. The backend performs a read-only
@@ -175,6 +187,7 @@ sanitized failure codes:
 
 - `OPENAPI_DNS_FAILURE`
 - `OPENAPI_CONNECT_FAILURE`
+- `OPENAPI_CHECK_FAILED` (unclassified failure; not evidence of a network outage)
 - `OPENAPI_TLS_FAILURE`
 - `OPENAPI_ENDPOINT_UNSUPPORTED`
 - `OPENAPI_CREDENTIAL_INVALID`
@@ -246,7 +259,7 @@ deployment on a controlled private network may use an HTTP
 `runtime_policy.external_base_url`; the Agent MCP endpoint remains available
 after restart, but interactive MCP OAuth metadata is intentionally not
 advertised at that insecure origin. Configure a trusted, externally reachable
-HTTPS origin before enabling OAuth or OIDC. The service does not infer the
+HTTPS origin before enabling interactive OAuth or OIDC. The service does not infer the
 origin from untrusted proxy headers.
 
 The only HTTP exception for interactive OAuth or OIDC is the explicit

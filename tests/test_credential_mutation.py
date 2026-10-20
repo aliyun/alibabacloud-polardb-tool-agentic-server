@@ -232,10 +232,15 @@ async def test_modify_requires_active_password_state(
     assert user.credential_epoch == 1
 
 
+@pytest.mark.parametrize("mode", list(CredentialMutationMode))
 async def test_invalid_password_policy_changes_nothing(
     session: AsyncSession,
     user: User,
+    mode: CredentialMutationMode,
 ) -> None:
+    if mode is CredentialMutationMode.INITIALIZE:
+        user.password_state = PasswordState.RESET_REQUIRED
+    old_state = user.password_state
     old_hash = user.password_hash
     session.add(_refresh_token(user.id, token_hash="policy-token"))
     await session.commit()
@@ -244,11 +249,13 @@ async def test_invalid_password_policy_changes_nothing(
         await mutate_builtin_password_in_session(
             session,
             user=user,
-            mode=CredentialMutationMode.RESET,
-            new_password="short",
+            mode=mode,
+            old_password="old-password-123" if mode is CredentialMutationMode.MODIFY else None,
+            new_password="short12",
         )
 
-    assert "short" not in repr(captured.value)
+    assert "short12" not in repr(captured.value)
+    assert user.password_state == old_state
     assert user.password_hash == old_hash
     assert user.credential_epoch == 1
     assert await _active_refresh_count(session, user.id) == 1

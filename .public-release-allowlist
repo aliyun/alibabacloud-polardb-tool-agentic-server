@@ -28,6 +28,7 @@ docs/zh-cn/
 scripts/
 security/
 server/
+skills/polar-knowledge/
 tests/
 :(exclude)tests/test_internal_container_build.py
 web/

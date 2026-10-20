@@ -21,7 +21,19 @@ def _connect(url: str):
     return sqlite3.connect(url.removeprefix("sqlite+aiosqlite:///"))
 
 
-def test_expand_migration_publishes_current_and_bridge_contracts(metadata_url: str):
+def test_release_manifest_has_no_duplicate_keys():
+    def unique_keys(pairs):
+        result = {}
+        for key, value in pairs:
+            assert key not in result, f"Duplicate manifest key: {key}"
+            result[key] = value
+        return result
+
+    manifest_path = Path(schema.__file__).with_name("schema_manifest.json")
+    json.loads(manifest_path.read_text(), object_pairs_hook=unique_keys)
+
+
+def test_contract_migration_publishes_new_generation_without_old_readers(metadata_url: str):
     from server.db import schema_contract
 
     with _connect(metadata_url) as connection:
@@ -30,21 +42,25 @@ def test_expand_migration_publishes_current_and_bridge_contracts(metadata_url: s
         ).fetchone()
         assert raw is not None
         contract = json.loads(raw[0])
-        assert contract["generation"] == 1
+        assert contract["generation"] == 2
         assert contract["completed_head"] == schema.required_schema_head()
         assert contract["completed_sequence"] == 1
         assert contract["protocol_version"] == 1
         assert schema_contract.digest(schema_contract.manifest()) in contract["compatible_manifests"]
         assert (
             "814a368a1693949232057c975373f5af969e343f5278b7a0e4d18ba996eec456"
-            in contract["compatible_manifests"]
+            not in contract["compatible_manifests"]
+        )
+        assert (
+            "65f7f798736beb2ba768703e3eb6781794c40c555ed49e56e8d83d0d28633d9a"
+            not in contract["compatible_manifests"]
         )
     before = asyncio.run(schema.inspect_database(metadata_url))
     schema.migrate_database(metadata_url)
     after = asyncio.run(schema.inspect_database(metadata_url))
     assert before["manifest_digest"] == after["manifest_digest"]
     assert after["compatible"] is True
-    assert after["release_classification"] == "EXPAND"
+    assert after["release_classification"] == "CONTRACT"
 
 
 @pytest.mark.parametrize(
@@ -84,7 +100,7 @@ def test_expand_migration_publishes_current_and_bridge_contracts(metadata_url: s
                 "release_classification": "CONTRACT",
                 "required_sequence": 1,
             },
-            False,
+            True,
         ),
     ],
 )
@@ -145,7 +161,7 @@ def test_successful_migration_reports_safe_progress(tmp_path: Path):
     url = f"sqlite+aiosqlite:///{database_path}"
     reports: list[str] = []
 
-    schema.migrate_database(url, reporter=reports.append)
+    schema.migrate_database(url, reporter=reports.append, maintenance=True)
 
     rendered = "\n".join(reports)
     for stage in (
@@ -162,6 +178,58 @@ def test_successful_migration_reports_safe_progress(tmp_path: Path):
     assert 'result="target-schema-verified"' in rendered
     assert str(database_path) not in rendered
     assert url not in rendered
+
+
+@pytest.mark.parametrize("failure_stage", ["repair-ddl", "after-repair", "no-repair"])
+def test_prerelease_repair_failure_reports_schema_changes(
+    tmp_path: Path, monkeypatch, failure_stage: str
+):
+    from alembic import command
+    from sqlalchemy.engine import Connection
+
+    from server.db import schema_contract
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'prerelease.db'}"
+    command.upgrade(schema._alembic_config(url), "9c1d2e3f4a5b")
+    if failure_stage != "no-repair":
+        with _connect(url) as connection:
+            connection.execute(
+                "ALTER TABLE enterprise_directory_memberships "
+                "RENAME TO identity_source_group_memberships"
+            )
+
+    if failure_stage == "repair-ddl":
+        execute = Connection.exec_driver_sql
+
+        def fail_repair(connection, statement, *args, **kwargs):
+            if statement.startswith("ALTER TABLE identity_source_group_memberships"):
+                raise RuntimeError("injected repair DDL failure")
+            return execute(connection, statement, *args, **kwargs)
+
+        monkeypatch.setattr(Connection, "exec_driver_sql", fail_repair)
+    else:
+        def fail_inspection(connection):
+            raise RuntimeError("injected schema inspection failure")
+
+        monkeypatch.setattr(schema_contract, "physical_fingerprint", fail_inspection)
+
+    reports: list[str] = []
+    with pytest.raises(schema.DatabaseSchemaError) as error:
+        schema.migrate_database(url, reporter=reports.append, maintenance=True)
+    assert error.value.code == "DATABASE_MIGRATION_FAILED"
+    failure = reports[-1]
+    assert 'stage="schema-inspection" status="failed"' in failure
+    attempted = "false" if failure_stage == "no-repair" else "true"
+    assert f"schema_changes_attempted={attempted}" in failure
+    with _connect(url) as connection:
+        tables = {
+            row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert ("enterprise_directory_memberships" in tables) == (
+        failure_stage != "repair-ddl"
+    )
 
 
 def test_same_head_missing_required_column_is_rejected(metadata_url: str):
@@ -190,7 +258,7 @@ def test_declared_same_generation_expansion_accepts_source(metadata_url: str):
     assert asyncio.run(schema.check_database_schema(metadata_url)) == "future_expand_1"
 
 
-@pytest.mark.parametrize("field,value", [("generation", 2), ("protocol_version", 99), ("completed_head", "unrelated")])
+@pytest.mark.parametrize("field,value", [("generation", 99), ("protocol_version", 99), ("completed_head", "unrelated")])
 def test_unrecognized_contract_is_rejected(metadata_url: str, field, value):
     with _connect(metadata_url) as connection:
         raw = connection.execute(
@@ -288,3 +356,47 @@ def test_schema_defaults_preserve_text_case_and_literal_parentheses():
     assert normalize_default("'PENDING'::text") != normalize_default("'pending'::text")
     assert normalize_default("'(value)'") == "(value)"
     assert normalize_default("CURRENT_TIMESTAMP()") == "current_timestamp"
+
+
+def test_manifest_tracks_migration_head():
+    from server.db import schema_contract
+
+    assert schema_contract.manifest()["head"] == schema.required_schema_head()
+
+
+def test_missing_knowledge_scope_column_is_rejected(metadata_url: str):
+    with _connect(metadata_url) as connection:
+        connection.execute("ALTER TABLE agents DROP COLUMN knowledge_scope_mode")
+    with pytest.raises(schema.DatabaseSchemaError) as error:
+        asyncio.run(schema.check_database_schema(metadata_url))
+    assert error.value.code == "DATABASE_SCHEMA_PHYSICAL_STATE_UNKNOWN"
+
+
+def test_existing_baseline_requires_explicit_maintenance_and_replays_safely(tmp_path):
+    from alembic import command
+    url = f"sqlite+aiosqlite:///{tmp_path / 'contract.db'}"
+    command.upgrade(schema._alembic_config(url), "b3c4d5e6f7a8")
+    with pytest.raises(schema.DatabaseSchemaError) as error:
+        schema.migrate_database(url)
+    assert error.value.code == "DATABASE_MAINTENANCE_REQUIRED"
+    with _connect(url) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "b3c4d5e6f7a8"
+    schema.migrate_database(url, maintenance=True)
+    schema.migrate_database(url, maintenance=True)
+    assert asyncio.run(schema.check_database_schema(url)) == "c7d8e9f0a1b2"
+
+
+def test_rejected_prerelease_contract_does_not_rename_objects(tmp_path):
+    from alembic import command
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'prerelease-rejected.db'}"
+    command.upgrade(schema._alembic_config(url), "9c1d2e3f4a5b")
+    with _connect(url) as connection:
+        connection.execute("ALTER TABLE enterprise_directory_memberships RENAME TO identity_source_group_memberships")
+    with pytest.raises(schema.DatabaseSchemaError) as error:
+        schema.migrate_database(url)
+    assert error.value.code == "DATABASE_MAINTENANCE_REQUIRED"
+    with _connect(url) as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert "identity_source_group_memberships" in tables
+    assert "enterprise_directory_memberships" not in tables

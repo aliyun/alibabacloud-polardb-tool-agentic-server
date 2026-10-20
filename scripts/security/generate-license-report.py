@@ -52,6 +52,7 @@ PYTHON_LICENSES = _license_map(
             "pytest-asyncio",
             "python-multipart",
             "requests",
+            "requests-toolbelt",
             "types-markdown",
             "types-pyyaml",
             "tzdata",
@@ -81,6 +82,7 @@ PYTHON_LICENSES = _license_map(
             "websockets",
         },
         "MIT": {
+            "dingtalk-stream",
             "aiosqlite",
             "alembic",
             "annotated-doc",
@@ -125,6 +127,7 @@ PYTHON_LICENSES = _license_map(
             "watchfiles",
         },
         "MIT AND PSF-2.0": {"greenlet"},
+        "MIT AND BSD-3-Clause": {"lark-channel-sdk"},
         "MPL-2.0": {"certifi", "pathspec"},
         "PSF-2.0": {"aiohappyeyeballs", "pywin32", "typing-extensions"},
     }

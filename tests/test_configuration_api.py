@@ -6,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from server.api.configuration import router
+from server.auth.builtin import authenticate_builtin, verify_password
 from server.configuration.types import ConfigAction
 from server.models import ConfigBootstrapClaim, User
 from tests._configuration_helpers import create_config_context
@@ -50,6 +51,25 @@ async def test_bootstrap_authorized_describe_is_no_store(
     body = response.json()
     assert body["system_state"] == "SETUP"
     assert body["module"]["effective"]["config"]["private_key"] == {"configured": True}
+
+
+async def test_endpoint_catalog_is_authenticated_and_shared_with_describe(api_context):
+    from server.configuration.bootstrap import rotate_bootstrap_token
+
+    context, client = api_context
+    denied = await client.get("/api/config/aliyun-endpoints")
+    assert denied.status_code == 401
+    token = await rotate_bootstrap_token(context.repository)
+    headers = {"Authorization": f"Bootstrap {token}"}
+    catalog = await client.get("/api/config/aliyun-endpoints", headers=headers)
+    assert catalog.status_code == 200
+    assert catalog.headers["cache-control"] == "no-store"
+    described = await client.post("/api/config", headers=headers, json={
+        "action": "describe", "module": "aliyun_access",
+    })
+    hints = described.json()["module"]["ui_hints"]["endpoint_catalog"]
+    assert hints["regions"] == catalog.json()["regions"]
+    assert "credential" not in str(catalog.json())
 
 
 async def test_polarrag_limits_schema_is_independent_and_described(
@@ -211,8 +231,10 @@ async def test_request_larger_than_one_mib_is_rejected(
     assert response.json()["detail"]["code"] == "CONFIG_TOO_LARGE"
 
 
+@pytest.mark.parametrize("password", ["abcdefgh", "abcdefghi", "abcdefghijk", "abcdefghijkl"])
 async def test_core_admin_activation_is_atomic_and_consumes_claim(
     api_context,
+    password,
 ) -> None:
     context, client = api_context
     from server.configuration.bootstrap import rotate_bootstrap_token
@@ -254,7 +276,7 @@ async def test_core_admin_activation_is_atomic_and_consumes_claim(
                 "validation_id"
             ],
             "idempotency_key": "create-breakglass",
-            "config": {"password": "correct horse battery staple"},
+            "config": {"password": password},
         },
     )
     assert activated.status_code == 200
@@ -268,5 +290,7 @@ async def test_core_admin_activation_is_atomic_and_consumes_claim(
         ).scalars().all()
         claim = await session.get(ConfigBootstrapClaim, "bootstrap")
     assert len(users) == 1
-    assert users[0].password_hash != "correct horse battery staple"
+    assert verify_password(password, users[0].password_hash)
+    async with context.repository.session_factory() as session:
+        assert await authenticate_builtin(session, "breakglass", password) is not None
     assert claim.consumed_at is not None

@@ -56,6 +56,9 @@ async def test_initial_snapshot_projects_safe_defaults(context) -> None:
     assert config.polarrag_tool_limits.retry_after_seconds == 1
     assert config.polarrag_tool_limits.upstream_request_timeout_ms == 20_000
     assert config.enterprise_identity_sync.interval_seconds == 1800
+    assert config.enterprise_identity_sync.feishu_check_interval_seconds == 600
+    assert config.enterprise_identity_sync.feishu_fallback_after_seconds == 86400
+    assert config.enterprise_identity_sync.feishu_group_interval_seconds == 3600
     assert config.enterprise_identity_sync.initial_concurrency == 2
     assert config.enterprise_identity_sync.incremental_concurrency == 1
     assert config.audit.enabled is True

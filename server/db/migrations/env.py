@@ -7,11 +7,12 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from server.bootstrap import load_bootstrap_settings
-from server.db.engine import enable_sqlite_foreign_keys
+from server.db.engine import enable_sqlite_foreign_keys, sqlite_connect_args
 from server.db.legacy_f6_schema_repair import (
     repair_legacy_managed_f6_schema,
 )
 from server.db import mysql_check_compat as _mysql_check_compat  # noqa: F401
+from server.db import legacy_scalability_compat as _legacy_scalability_compat  # noqa: F401
 from server.models import Base
 
 config = context.config
@@ -80,7 +81,8 @@ def do_run_migrations(connection) -> None:
 
 async def run_async_migrations() -> None:
     """Run migrations in 'online' mode with async engine."""
-    engine = create_async_engine(database_url(), poolclass=pool.NullPool)
+    url = database_url()
+    engine = create_async_engine(url, poolclass=pool.NullPool, connect_args=sqlite_connect_args(url))
     enable_sqlite_foreign_keys(engine)
 
     async with engine.connect() as connection:

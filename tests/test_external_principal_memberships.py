@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from server.core.crypto import encrypt
 from server.models import (
     Agent,
+    EnterpriseDirectoryPrincipalType,
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceSpaceBinding,
     EnterpriseIdentitySourceStatus,
@@ -178,6 +179,71 @@ async def test_admin_replaces_local_principal_memberships_and_acl_uses_them(
             agent_id,
             member.id,
         ) == {group_assignment_id}
+
+
+async def test_snapshot_replace_accepts_prerelease_required_metadata_column(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, _member = setup
+    async with factory() as session:
+        source = EnterpriseIdentitySource.create(
+            name="Prerelease snapshot schema",
+            provider=IdentitySourceProvider.FEISHU,
+            tenant_id="tenant-prerelease-snapshot",
+        )
+        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        source.last_synced_at = datetime.now(UTC)
+        source.config_ciphertext = encrypt(
+            json.dumps({"app_id": "app", "app_secret": "secret"})
+        )
+        session.add(source)
+        await session.flush()
+        source_id = source.id
+        await session.execute(
+            text(
+                "ALTER TABLE identity_source_user_principal_snapshot_entries "
+                "ADD COLUMN source_subject_type VARCHAR(32) NOT NULL"
+            )
+        )
+        await session.commit()
+
+    response = await http.put(
+        f"/api/identity-sources/{source_id}/user-principal-memberships",
+        json={
+            "users": [
+                {
+                    "external_user_id": "ou-prerelease",
+                    "principals": [
+                        {
+                            "principal_type": "acl_group",
+                            "principal_id": "oc-prerelease",
+                        }
+                    ],
+                }
+            ]
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200
+    async with factory() as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT external_user_id, principal_id, source_subject_type, id "
+                    "FROM identity_source_user_principal_snapshot_entries"
+                )
+            )
+        ).one()
+    expected = ExternalUserPrincipalMembership.create(
+        identity_source_id=source_id,
+        external_user_id="ou-prerelease",
+        principal_type=EnterpriseDirectoryPrincipalType.ACL_GROUP,
+        principal_id="oc-prerelease",
+        expires_at=None,
+    )
+    assert row == ("ou-prerelease", "oc-prerelease", "local_snapshot", expected.id)
 
     conflict = await http.put(
         f"/api/identity-sources/{source_id}/acl-membership-snapshot",

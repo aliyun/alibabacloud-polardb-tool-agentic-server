@@ -3,15 +3,16 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from server.api.configuration import get_config_service, resolve_config_actor
 from server.auth.dependencies import get_current_user, require_admin
 from server.configuration.service import ConfigService
 from server.configuration.types import ConfigActor, ConfigError
+from server.core.identity_source_space import bind_default_identity_sources_to_space
 from server.features.knowledge import KnowledgeRuntime, validate_read_access
 from server.models import User
 from server.polarrag.connection_config import InstanceCreate
@@ -86,31 +87,106 @@ async def confirm_activation(body: ActivationRequest, feature=Depends(writable_f
 
 
 @router.get("/knowledge/options")
-async def options(_admin: User = Depends(require_admin), service: ConfigService = Depends(get_config_service)):
+async def options(
+    connection_offset: int = Query(default=0, ge=0),
+    connection_limit: int = Query(default=50, ge=1, le=100),
+    connection_search: str | None = Query(default=None, max_length=255),
+    resource_offset: int = Query(default=0, ge=0),
+    resource_limit: int = Query(default=50, ge=1, le=100),
+    resource_search: str | None = Query(default=None, max_length=255),
+    user_offset: int = Query(default=0, ge=0),
+    user_limit: int = Query(default=50, ge=1, le=100),
+    user_search: str | None = Query(default=None, max_length=255),
+    _admin: User = Depends(require_admin),
+    service: ConfigService = Depends(get_config_service),
+):
     from server.models import KnowledgeResource, PolarRAGInstance, UserStatus
 
+    connection_filters = []
+    if connection_search and connection_search.strip():
+        connection_filters.append(
+            PolarRAGInstance.name.ilike(f"%{connection_search.strip()}%")
+        )
+    resource_filters = [KnowledgeResource.enabled.is_(True)]
+    if resource_search and resource_search.strip():
+        pattern = f"%{resource_search.strip()}%"
+        resource_filters.append(
+            or_(
+                KnowledgeResource.name.ilike(pattern),
+                KnowledgeResource.space_id.ilike(pattern),
+                KnowledgeResource.kb_id.ilike(pattern),
+            )
+        )
+    user_filters = [User.status == UserStatus.ACTIVE]
+    if user_search and user_search.strip():
+        pattern = f"%{user_search.strip()}%"
+        user_filters.append(
+            or_(
+                User.display_name.ilike(pattern),
+                User.external_id.ilike(pattern),
+                User.email.ilike(pattern),
+            )
+        )
     async with service.repository.session_factory() as session:
-        instances = (await session.scalars(select(PolarRAGInstance).order_by(PolarRAGInstance.name))).all()
+        connection_total = int(
+            await session.scalar(
+                select(func.count(PolarRAGInstance.id)).where(*connection_filters)
+            )
+            or 0
+        )
+        instances = (
+            await session.scalars(
+                select(PolarRAGInstance)
+                .where(*connection_filters)
+                .order_by(PolarRAGInstance.name, PolarRAGInstance.id)
+                .offset(connection_offset)
+                .limit(connection_limit)
+            )
+        ).all()
+        resource_total = int(
+            await session.scalar(
+                select(func.count(KnowledgeResource.id)).where(*resource_filters)
+            )
+            or 0
+        )
         resources = (
             await session.scalars(
                 select(KnowledgeResource)
-                .where(KnowledgeResource.enabled.is_(True))
-                .order_by(KnowledgeResource.name)
-                .limit(500)
+                .where(*resource_filters)
+                .order_by(KnowledgeResource.name, KnowledgeResource.id)
+                .offset(resource_offset)
+                .limit(resource_limit)
             )
         ).all()
+        user_total = int(
+            await session.scalar(select(func.count(User.id)).where(*user_filters))
+            or 0
+        )
         users = (
             await session.scalars(
-                select(User).where(User.status == UserStatus.ACTIVE).order_by(User.display_name).limit(500)
+                select(User)
+                .where(*user_filters)
+                .order_by(User.display_name, User.id)
+                .offset(user_offset)
+                .limit(user_limit)
             )
         ).all()
     return {
         "connections": [{"id": i.id, "name": i.name, "status": i.status.value} for i in instances],
+        "connection_total": connection_total,
+        "connection_offset": connection_offset,
+        "connection_limit": connection_limit,
         "resources": [
             {"id": r.id, "name": r.name, "instance_id": r.polarrag_instance_id, "space_id": r.space_id}
             for r in resources
         ],
+        "resource_total": resource_total,
+        "resource_offset": resource_offset,
+        "resource_limit": resource_limit,
         "users": [{"id": u.id, "name": u.display_name, "external_id": u.external_id} for u in users],
+        "user_total": user_total,
+        "user_offset": user_offset,
+        "user_limit": user_limit,
     }
 
 
@@ -202,7 +278,7 @@ async def prepare_space(
     from server.core.audit_logger import log_audit
     from server.models import AuditStatus, PolarRAGInstance, PolarRAGInstanceStatus, PolarRAGSpace
     from server.polarrag.client import client_from_instance
-    from server.polarrag.catalog import sync_space_catalog
+    from server.polarrag.catalog import fetch_space_catalog, sync_space_catalog
     from server.polarrag.contracts import PolarRAGUpstreamError
 
     async with feature.state.repository.session_factory() as session:
@@ -214,6 +290,7 @@ async def prepare_space(
             upstream = next((s for s in await client.list_spaces() if s.space_id == body.space_id), None)
             if upstream is None or not upstream.identity_domain or upstream.status.upper() != "ACTIVE":
                 raise HTTPException(422, detail={"code": "KNOWLEDGE_SPACE_UNAVAILABLE"})
+            pages = await fetch_space_catalog(client, upstream.space_id, upstream.identity_domain)
             local = await session.scalar(
                 select(PolarRAGSpace).where(
                     PolarRAGSpace.polarrag_instance_id == instance_id, PolarRAGSpace.space_id == body.space_id
@@ -229,8 +306,9 @@ async def prepare_space(
                 )
                 session.add(local)
                 await session.flush()
+                await bind_default_identity_sources_to_space(session, local)
             local.enabled = True
-            await sync_space_catalog(session, local, client, commit=False)
+            await sync_space_catalog(session, local, client, commit=False, pages=pages)
             await log_audit(
                 session,
                 user_id=admin.id,

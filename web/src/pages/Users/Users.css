@@ -1,0 +1,17 @@
+.users-account-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.users-account-name .ant-typography {
+  margin: 0;
+  max-width: 100%;
+}
+
+.users-account-wrapped-cell .ant-tag {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}

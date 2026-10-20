@@ -16,7 +16,7 @@ from server.auth.oidc_login import (
     create_oidc_login,
 )
 from server.auth.credential_mutation import AdminPasswordAlreadyInitialized
-from server.auth.password_policy import PasswordPolicyError, validate_password
+from server.auth.password_policy import MIN_PASSWORD_LENGTH, PasswordPolicyError, validate_password
 from server.configuration.aliyun_access_mutation import (
     AliyunTransitionError,
     AliyunTransitionAudit,
@@ -639,11 +639,20 @@ class ConfigService:
                 value["effective"]["config"],
             )
         schema = definition.model.model_json_schema()
+        endpoint_hints = {}
+        if module == "aliyun_access":
+            from server.aliyun.endpoints import endpoint_catalog
+
+            catalog = endpoint_catalog()
+            endpoint_hints = {"endpoint_catalog": catalog}
+            schema["properties"]["region_id"]["enum"] = [
+                item["region_id"] for item in catalog["regions"]
+            ]
         if module == "core_admin":
             schema.setdefault("properties", {})["password"] = {
                 "type": "string",
                 "title": "Administrator password",
-                "minLength": 12,
+                "minLength": MIN_PASSWORD_LENGTH,
             }
             schema["required"] = [
                 *schema.get("required", []),
@@ -655,6 +664,7 @@ class ConfigService:
                 "schema": schema,
                 "ui_hints": {
                     **definition.ui_hints,
+                    **endpoint_hints,
                     "secret_fields": [
                         *(spec.path for spec in definition.secret_fields),
                         *(("password",) if module == "core_admin" else ()),
@@ -1058,7 +1068,7 @@ class ConfigService:
                 valid=False,
                 normalized_config=checked.normalized_config,
                 error_code="INVALID_ADMIN_PASSWORD",
-                message=("Administrator password must be at least 12 characters"),
+                message=(f"Administrator password must be at least {MIN_PASSWORD_LENGTH} characters"),
             )
         elif module == "core_admin":
             assert isinstance(password, str)
@@ -1069,7 +1079,7 @@ class ConfigService:
                     valid=False,
                     normalized_config=checked.normalized_config,
                     error_code="INVALID_ADMIN_PASSWORD",
-                    message=("Administrator password must be at least 12 characters"),
+                    message=(f"Administrator password must be at least {MIN_PASSWORD_LENGTH} characters"),
                 )
         external_validation: ExternalValidationResult | None = None
         confirmation_allowed = False
@@ -1101,6 +1111,7 @@ class ConfigService:
                 confirmation_allowed = error.code != "OPENAPI_ENDPOINT_UNSUPPORTED"
                 confirmation_error_code = error.code
                 external_request_id = error.request_id
+                external_validation = error.result
         if module == "aliyun_access":
             self._set_aliyun_audit_context(
                 result="success" if checked.valid else "error",
@@ -1118,7 +1129,7 @@ class ConfigService:
                 "message": checked.message,
                 "config": self._redact_config(
                     definition,
-                    checked.normalized_config if checked.valid else plaintext,
+                    checked.normalized_config or plaintext,
                 ),
                 "dependencies": list(definition.dependencies),
                 "writes": False,
@@ -1509,14 +1520,14 @@ class ConfigService:
                     if not isinstance(password, str):
                         raise ConfigError(
                             "INVALID_ADMIN_PASSWORD",
-                            "Administrator password must be at least 12 characters",
+                            f"Administrator password must be at least {MIN_PASSWORD_LENGTH} characters",
                         )
                     try:
                         validate_password(password)
                     except PasswordPolicyError as exc:
                         raise ConfigError(
                             "INVALID_ADMIN_PASSWORD",
-                            "Administrator password must be at least 12 characters",
+                            f"Administrator password must be at least {MIN_PASSWORD_LENGTH} characters",
                         ) from exc
                     if actor.actor_type != "bootstrap" or actor.credential_hash is None:
                         raise ConfigError(
@@ -1637,7 +1648,7 @@ class ConfigService:
         except PasswordPolicyError as exc:
             raise ConfigError(
                 "INVALID_ADMIN_PASSWORD",
-                "Administrator password must be at least 12 characters",
+                f"Administrator password must be at least {MIN_PASSWORD_LENGTH} characters",
             ) from exc
         claim = await self._claim_managed_command(command, actor)
         if claim.status == "REPLAY":

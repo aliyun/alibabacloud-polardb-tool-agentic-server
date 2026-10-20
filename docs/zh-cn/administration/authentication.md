@@ -244,11 +244,10 @@ PAS 会确保 User Workspace 已创建。PAS Access Token 默认有效 28800 秒
 为 60 至 86400 秒，并且不会超过已知的外部 Token 到期时间。Provider 临时不
 可用时返回临时错误，不会把 Token 当成已失效。
 
-仅当 Introspection 与外部 UserInfo 端点全部解析到允许的私网网段时，才可以
-使用 HTTP。该能力面向可信、隔离的企业内网部署；由于 PAS 调 Provider 的凭证
-和外部 Token 会以未加密方式传输，仍建议优先使用 HTTPS，公网端点则必须使用
-HTTPS。链路本地地址与云元数据目标仍会被拦截。此例外不会放宽交互式浏览器
-SSO 端点的 HTTPS 要求。
+Introspection 与外部 UserInfo 端点在允许的私网地址上可使用 HTTP；只有关闭
+浏览器 SSO 时，公网 Provider 地址才允许 HTTP。两种模式均支持 HTTPS。HTTP 会以
+明文传输 PAS 调 Provider 的凭证和外部 Token，仍建议优先使用 HTTPS。链路本地
+地址与云元数据目标仍会被拦截；交互式浏览器 SSO 端点仍要求 HTTPS。
 
 对于只能向 `/mcp` 发送 Bearer Token 的存量 Client，管理员可以单独开启外部
 Token MCP 直连。该兼容模式默认关闭。PAS 会在每次请求中验证和映射外部 Token，

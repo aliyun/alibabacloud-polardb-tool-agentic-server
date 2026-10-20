@@ -28,7 +28,7 @@ RUN sed -i \
     && apt-get update \
     && apt-get install --yes --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
-RUN python -m pip install --no-cache-dir "uv==${UV_VERSION}"
+RUN python -m pip install --timeout 120 --no-cache-dir "uv==${UV_VERSION}"
 COPY pyproject.toml uv.lock alembic.ini README.md LICENSE NOTICE ./
 COPY server ./server
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 FROM python:3.11.14-slim-bookworm@sha256:65a93d69fa75478d554f4ad27c85c1e69fa184956261b4301ebaf6dbb0a3543d AS runtime
 
-ARG VERSION=0.0.12
+ARG VERSION=0.0.13
 ARG REVISION=unknown
 LABEL org.opencontainers.image.title="Alibaba Cloud PolarDB Tool Agentic Server" \
       org.opencontainers.image.description="MCP and SQL-over-HTTP gateway for PolarDB MySQL" \
@@ -61,6 +61,8 @@ COPY --from=python-builder /app/.venv /app/.venv
 COPY --from=python-builder /src/server /app/server
 COPY --from=python-builder /src/alembic.ini /app/alembic.ini
 COPY --from=web-builder /src/web/dist /app/static
+COPY docs/en /app/docs/en
+COPY docs/zh-cn /app/docs/zh-cn
 COPY LICENSE NOTICE README.md /app/
 
 USER 10001:10001

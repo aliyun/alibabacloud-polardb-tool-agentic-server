@@ -2,7 +2,7 @@
 
 [English](../../en/agents/connect-mcp-client.md)
 
-个人连接请打开**连接 MCP**。管理员在**资源**或**访问管理**中授予个人账号数据库访问权限，无需 Agent。知识库使用企业身份、所有权和上游 ACL。
+打开**连接 MCP**可选择可用 Agent，签发、复制、重新生成或吊销对应的用户专属 Agent Token。页面同时保留通用个人连接。管理员在**资源**或**访问管理**中直接授予个人账号数据库访问权限，该连接无需 Agent。个人 MCP 仅可检索、读取本人拥有的 PERSONAL 知识库，并继续受上游 ACL 约束；不能访问 PUBLIC 或他人的 PERSONAL 知识库，也不能上传、删除或重新分块文档。PUBLIC 知识库及文档管理需使用已授权的 Agent 连接。
 
 ```json
 {
@@ -17,7 +17,7 @@
 
 OAuth 客户端必须将该 URL 用作授权 `resource`，刷新保持个人 audience。不支持 OAuth 的客户端可在 **Token 连接**中生成有有效期、仅显示一次的 `pas_personal_` Token。权限、凭据生命周期和回滚参见[账号与资源](../administration/accounts-and-resources.md)。
 
-以下章节描述现有 `/mcp` 连接，保留其 Agent / Workspace 范围，可从**连接 MCP → 已有 Agent 连接与文档上传**进入。个人凭据不能用于 `/mcp`，旧凭据不能用于 `/mcp/personal`。
+以下章节描述保留 Agent / Workspace 范围的 `/mcp` 连接。知识库和文档操作移至按可用 Agent 展示的独立**知识库**页面（`/my-resources`）。个人凭据不能用于 `/mcp`，Agent 凭据不能用于 `/mcp/personal`。
 
 ## 选择用户默认 Agent
 

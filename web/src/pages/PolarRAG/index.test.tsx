@@ -78,10 +78,10 @@ describe('PolarRAG instance inventory', () => {
     render(<InstancesPanel />)
 
     expect(
-      await screen.findByText('POLARRAG_CATALOG_CAPABILITY_MISSING'),
+      (await screen.findAllByText('Capability missing'))[0],
     ).toBeInTheDocument()
     expect(
-      screen.getByText(/trusted Space and KB catalog APIs/i),
+      screen.getByText(/missing required Space or KB catalog capabilities/i),
     ).toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: /register instance/i }),

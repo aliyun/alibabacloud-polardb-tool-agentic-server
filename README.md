@@ -184,14 +184,17 @@ Resources have no automatic lifetime in this release—call
 `delete_db_instance` explicitly.
 
 Agents can use the same lifecycle through the Bearer-only REST endpoints at
-`/mcp/rest/db-instances`; their canonical schema is
-`/mcp/rest/openapi.json`. Dedicated delete first disconnects access, then uses
+`/mcp/rest/db-instances`; export their version-matched schema offline with
+`python -m server.openapi --surface agent` (online documentation is disabled).
+Dedicated delete first disconnects access, then uses
 the configured cooldown before destroy or sanitize/reuse.
 
 See the [database instance access and provisioning guide](docs/en/database-instances/access-and-provisioning.md)
 for the complete UI workflow, security model, Tool examples, and lifecycle.
 
 ## Documentation
+
+- [Browser end-to-end tests](docs/en/operations/browser-e2e.md)
 
 - [English documentation](docs/en/README.md)
 - [简体中文文档](docs/zh-cn/README.md)
@@ -202,6 +205,7 @@ for the complete UI workflow, security model, Tool examples, and lifecycle.
 - [Dedicated database hot pools](docs/en/database-instances/dedicated-hot-pools.md)
 - [Agent REST database provisioning](docs/en/database-instances/agent-rest-provisioning.md)
 - [Enable and disable knowledge](docs/en/knowledge/activation.md)
+- [Polar knowledge Q&A skill](skills/polar-knowledge/README.md)
 - [PolarRAG administrator onboarding](docs/en/knowledge/polarrag-onboarding.md)
 - [PolarRAG MCP and enterprise identities](docs/en/knowledge/polarrag-mcp.md)
 - [PolarRAG platform HTTP API](docs/en/knowledge/polarrag-platform-http-api.md)

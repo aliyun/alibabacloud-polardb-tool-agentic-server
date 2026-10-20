@@ -5,6 +5,7 @@ import { FileSearchOutlined, UploadOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 import api, { getAPIErrorMessage } from '../../api/client'
 import type { MyAgentConnection } from '../../api/agentConnections'
+import { listMyAgentConnections } from '../../api/agentConnections'
 import PageContainer from '../../components/PageContainer'
 import MCPConnections from './MCPConnections'
 import DocumentManager from './DocumentManager'
@@ -31,6 +32,7 @@ interface AccessibleKnowledgeResource {
   kb_id: string
   kb_type: string
   upload_ready?: boolean
+  force_rechunk_supported?: boolean
 }
 
 interface AccessibleKnowledgeSpace {
@@ -60,9 +62,10 @@ function uniqueKnowledgeSpaces(
 
 interface MyInstancesProps {
   isAdmin?: boolean
+  knowledgeOnly?: boolean
 }
 
-export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
+export default function MyInstances({ isAdmin = false, knowledgeOnly = false }: MyInstancesProps) {
   const { t } = useTranslation()
   const { knowledge } = useFeatures()
   const [databaseInstances, setDatabaseInstances] = useState<
@@ -92,6 +95,10 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   const [manageResource, setManageResource] =
     useState<AccessibleKnowledgeResource | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<MyAgentConnection | null>(null)
+  const [availableAgents, setAvailableAgents] = useState<MyAgentConnection[]>([])
+  const [availableAgentTotal, setAvailableAgentTotal] = useState(0)
+  const [availableAgentPage, setAvailableAgentPage] = useState(1)
+  const [availableAgentLoading, setAvailableAgentLoading] = useState(false)
   const resourceRequest = useRef(0)
 
   const loadOverview = useCallback((page = 1, cursor: string | null = null) => {
@@ -158,8 +165,22 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
   }, [])
 
   useEffect(() => {
-    void loadOverview()
-  }, [loadOverview])
+    if (!knowledgeOnly) void loadOverview()
+  }, [knowledgeOnly, loadOverview])
+
+  useEffect(() => {
+    if (!knowledgeOnly) return
+    setAvailableAgentLoading(true)
+    void listMyAgentConnections({ offset: (availableAgentPage - 1) * 20, limit: 20 })
+      .then((response) => {
+        setAvailableAgents(response.data.items)
+        setAvailableAgentTotal(response.data.total)
+      })
+      .catch((requestError) =>
+        setOverviewError(getAPIErrorMessage(requestError, t('mcpConnections.loadFailed'))),
+      )
+      .finally(() => setAvailableAgentLoading(false))
+  }, [availableAgentPage, knowledgeOnly, t])
 
   const selectKnowledgeBases = (agent: MyAgentConnection) => {
     setSelectedAgent(agent)
@@ -312,16 +333,40 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
 
   return (
     <PageContainer
-      title={t('myInstances.title')}
-      description={t('myInstances.combinedDescription')}
+      title={t(knowledgeOnly ? 'myInstances.knowledgeResources' : 'myInstances.title')}
+      description={t(knowledgeOnly ? 'myInstances.selectAgentKnowledgeBases' : 'myInstances.combinedDescription')}
     >
       <Space direction="vertical" size={20} style={{ width: '100%' }}>
         {(overviewError || operationError) && (
           <Alert type="error" showIcon message={overviewError || operationError} />
         )}
         {uploadResult && <Alert type="success" showIcon message={uploadResult} />}
-        {!isAdmin && <MCPConnections onSelectKnowledgeBases={selectKnowledgeBases} />}
-        <Typography.Text strong>{t('myInstances.databaseInstances')}</Typography.Text>
+        {!knowledgeOnly && !isAdmin && <MCPConnections onSelectKnowledgeBases={selectKnowledgeBases} />}
+        {knowledgeOnly && <Table
+          dataSource={availableAgents}
+          rowKey="agent_id"
+          loading={availableAgentLoading}
+          pagination={{
+            current: availableAgentPage,
+            pageSize: 20,
+            total: availableAgentTotal,
+            showSizeChanger: false,
+            onChange: setAvailableAgentPage,
+          }}
+          columns={[
+            { title: t('mcpConnections.agent'), dataIndex: 'agent_name' },
+            {
+              title: t('myInstances.actions'),
+              render: (_value: unknown, agent: MyAgentConnection) => <Button
+                type="primary"
+                disabled={agent.agent_status !== 'active' || agent.polarrag_instances.length === 0}
+                onClick={() => selectKnowledgeBases(agent)}
+              >{t('mcpConnections.knowledgeBases')}</Button>,
+            },
+          ]}
+          locale={{ emptyText: t('mcpConnections.empty') }}
+        />}
+        {!knowledgeOnly && <><Typography.Text strong>{t('myInstances.databaseInstances')}</Typography.Text>
         <Table
           dataSource={databaseInstances}
           columns={databaseColumns}
@@ -352,7 +397,7 @@ export default function MyInstances({ isAdmin = false }: MyInstancesProps) {
           loading={overviewLoading}
           pagination={{ pageSize: 10, showSizeChanger: true }}
           locale={{ emptyText: t('myInstances.noAccessibleKnowledgeSpaces') }}
-        /></>}
+        /></>}</>}
         <Drawer
           title={
             selectedAgent

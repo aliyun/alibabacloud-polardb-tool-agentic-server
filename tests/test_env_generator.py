@@ -5,7 +5,6 @@ import io
 import os
 import pty
 import select
-import shutil
 import stat
 import subprocess
 import sys
@@ -28,6 +27,13 @@ from server.deployment.env_generator import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_candidate_image_acceptance_can_use_an_explicit_mysql_mirror(monkeypatch):
+    from tests.integration.test_env_generator_mysql import _pinned_mysql_image
+    image = "registry.example.com/mysql:8.0.44"
+    monkeypatch.setenv("PAS_TEST_MYSQL_IMAGE", image)
+    assert _pinned_mysql_image() == image
 
 
 def _connection_input(**overrides: object) -> MySQLConnectionInput:
@@ -456,17 +462,8 @@ async def test_create_environment_file_can_keep_container_loopback(
 async def test_generated_env_survives_compose_interpolation(
     tmp_path: Path,
 ) -> None:
-    docker = shutil.which("docker")
-    if docker is None:
-        pytest.skip("Docker Compose is unavailable")
-    compose = subprocess.run(
-        [docker, "compose", "version"],
-        cwd=ROOT,
-        capture_output=True,
-        check=False,
-    )
-    if compose.returncode != 0:
-        pytest.skip("Docker Compose is unavailable")
+    from tests._compose_harness import compose_command
+    command = compose_command()
 
     password = "$@:/?#% space"
     output = tmp_path / ".env"
@@ -484,8 +481,7 @@ async def test_generated_env_survives_compose_interpolation(
 
     result = subprocess.run(
         [
-            docker,
-            "compose",
+            *command,
             "--env-file",
             str(output),
             "-f",

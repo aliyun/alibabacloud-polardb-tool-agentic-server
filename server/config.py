@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 
 class ServerConfig(BaseModel):
@@ -50,6 +50,7 @@ class ExternalTokenTrustRuntimeConfig(BaseModel):
         "oauth2_introspection",
         "oauth2_userinfo",
         "feishu",
+        "dingtalk",
         "buc",
     ] = "oidc_jwt"
     direct_mcp_enabled: bool = False
@@ -444,8 +445,24 @@ class LoggingConfig(BaseModel):
 
 class EnterpriseIdentitySyncConfig(BaseModel):
     interval_seconds: int = Field(default=1800, ge=60, le=86400)
+    feishu_check_interval_seconds: int = Field(default=600, ge=60, le=86400)
+    feishu_fallback_after_seconds: int = Field(default=86400, ge=600, le=30 * 86400)
+    feishu_group_and_knowledge_scope_interval_seconds: int = Field(
+        default=3600,
+        ge=600,
+        le=30 * 86400,
+        validation_alias=AliasChoices(
+            "feishu_group_and_knowledge_scope_interval_seconds", "feishu_group_interval_seconds"
+        ),
+    )
     initial_concurrency: int = Field(default=2, ge=1, le=32)
     incremental_concurrency: int = Field(default=1, ge=1, le=32)
+
+    @property
+    def feishu_group_interval_seconds(self) -> int:
+        """Read compatibility for the released group-only configuration name."""
+        return self.feishu_group_and_knowledge_scope_interval_seconds
+
 
 
 class KnowledgeConfig(BaseModel):

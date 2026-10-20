@@ -5,7 +5,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -13,22 +13,32 @@ from server.api.identity_sources import list_identity_sources
 from server.core.agent_access import has_agent_access
 from server.enterprise_identity.service import (
     _StreamingDirectorySink,
+    apply_feishu_directory_event,
     identity_source_snapshot_is_usable,
+    replace_directory_snapshot,
+    upsert_directory_group,
+    upsert_external_user,
 )
 from server.models import (
     Agent,
     AgentGroupAssignment,
     AuthProvider,
+    EnterpriseDirectoryEntryStatus,
     EnterpriseDirectoryPrincipalType,
+    EnterpriseDirectoryUser,
     EnterpriseIdentitySource,
     EnterpriseIdentitySourceSpaceBinding,
     EnterpriseIdentitySourceStatus,
     IdentitySourceProvider,
+    ExternalTokenSession,
+    OAuthRefreshToken,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
     PolarRAGSpace,
     User,
     UserExternalIdentity,
+    UserRefreshToken,
+    UserStatus,
 )
 from server.polarrag.catalog import claim_space_catalog_sync
 from server.polarrag.identity import resolve_acl_context
@@ -200,5 +210,129 @@ async def test_scalability_database_paths_are_cross_backend() -> None:
                 space.knowledge_space_id,
                 f"catalog-duplicate-{unique}",
             )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("sync_mode", ["streaming", "snapshot", "event"])
+async def test_directory_removal_preserves_account_ownership_and_revokes_sessions(sync_mode) -> None:
+    engine = create_async_engine(_database_url())
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    unique = secrets.token_hex(8)
+    now = datetime.now(UTC).replace(microsecond=0)
+    old_revocation = now - timedelta(days=1)
+    try:
+        async with factory() as session:
+            if engine.dialect.name == "mysql":
+                # The regression must also pass with derived-table merging enabled.
+                await session.execute(text("SET SESSION optimizer_switch='derived_merge=on'"))
+            source = EnterpriseIdentitySource.create(
+                name=f"Removal {unique}", provider=IdentitySourceProvider.FEISHU,
+                tenant_id=f"removal-{unique}",
+            )
+            other_source = EnterpriseIdentitySource.create(
+                name=f"Other {unique}", provider=IdentitySourceProvider.FEISHU,
+                tenant_id=f"other-{unique}",
+            )
+            session.add_all([source, other_source])
+            await session.flush()
+            users = {}
+            tokens = {}
+            for name in ("removed", "another", "present", "builtin", "noncanonical", "multiple", "other"):
+                mapped = None
+                if name in {"builtin", "noncanonical"}:
+                    mapped = User(
+                        external_id=(
+                            f"feishu:{source.tenant_id}:{name}"
+                            if name == "builtin" else f"local-{name}-{unique}"
+                        ),
+                        display_name=name,
+                        auth_provider=AuthProvider.BUILTIN if name == "builtin" else AuthProvider.OIDC,
+                    )
+                    session.add(mapped)
+                    await session.flush()
+                user = await upsert_external_user(
+                    session, other_source if name == "other" else source,
+                    external_user_id=name, display_name=name, email=None, user=mapped,
+                )
+                users[name] = user
+                if name == "multiple":
+                    session.add(UserExternalIdentity(
+                        user_id=user.id, identity_provider=f"secondary-{unique}", external_subject=name,
+                    ))
+                family = secrets.token_hex(16)
+                tokens[name] = []
+                for revoked_at in (None, old_revocation):
+                    refresh = UserRefreshToken(
+                        user_id=user.id, token_hash=secrets.token_hex(32), token_family=family,
+                        expires_at=now + timedelta(days=1), revoked_at=revoked_at,
+                    )
+                    oauth = OAuthRefreshToken(
+                        user_id=user.id, token_hash=secrets.token_hex(32), token_family=family,
+                        client_id="regression-client", scopes='["mcp"]',
+                        expires_at=now + timedelta(days=1), revoked_at=revoked_at,
+                    )
+                    external = ExternalTokenSession(
+                        user_id=user.id, token_family=family, provider_type="feishu",
+                        provider_key=f"feishu:{other_source.tenant_id if name == 'other' else source.tenant_id}",
+                        provider_fingerprint="test",
+                        external_subject=name, subject_token_ciphertext="test",
+                        last_validated_at=now, expires_at=now + timedelta(days=1), revoked_at=revoked_at,
+                    )
+                    tokens[name].append((refresh, oauth, external))
+                    session.add_all([refresh, oauth, external])
+            await session.flush()
+            directories = (await session.scalars(select(EnterpriseDirectoryUser).where(
+                EnterpriseDirectoryUser.identity_source_id.in_([source.id, other_source.id]),
+            ))).all()
+            for directory in directories:
+                directory.updated_at = now - timedelta(days=2)
+                if directory.external_user_id in {"another", "other"}:
+                    directory.status = EnterpriseDirectoryEntryStatus.DISABLED
+            stale_group = await upsert_directory_group(
+                session, source, external_group_id="stale-department", display_name="Stale",
+                principal_type=EnterpriseDirectoryPrincipalType.DEPARTMENT,
+            )
+            stale_group.updated_at = now - timedelta(days=2)
+            await session.commit()
+            await session.refresh(stale_group)
+
+            async def synchronize():
+                if sync_mode == "streaming":
+                    sink = _StreamingDirectorySink(session, source)
+                    await sink.begin_sync(now.isoformat())
+                    await sink.upsert_users([{"id": "present", "display_name": "present"}])
+                    await sink.complete_sync()
+                elif sync_mode == "snapshot":
+                    await replace_directory_snapshot(
+                        session, source, users=[{"id": "present", "display_name": "present"}],
+                        groups=[], memberships=[],
+                    )
+                else:
+                    for name in ("removed", "builtin", "noncanonical", "multiple"):
+                        await apply_feishu_directory_event(
+                            session, source, event_type="contact.user.deleted_v3", subject_id=name,
+                        )
+                await session.commit()
+
+            for _ in range(2):
+                await synchronize()
+                if sync_mode == "streaming":
+                    assert stale_group.status == EnterpriseDirectoryEntryStatus.DISABLED
+                for name, user in users.items():
+                    should_disable = name == "removed" or (name == "another" and sync_mode != "event")
+                    await session.refresh(user)
+                    assert user.status == (UserStatus.DISABLED if should_disable else UserStatus.ACTIVE), name
+                    for index, family_tokens in enumerate(tokens[name]):
+                        for token in family_tokens:
+                            await session.refresh(token)
+                            if index == 1:
+                                assert token.revoked_at.replace(tzinfo=UTC) == old_revocation
+                            else:
+                                assert (token.revoked_at is not None) == should_disable, name
+                for directory in directories:
+                    await session.refresh(directory)
+                    if directory.identity_source_id == source.id and directory.external_user_id == "removed":
+                        assert directory.status == EnterpriseDirectoryEntryStatus.DISABLED
     finally:
         await engine.dispose()

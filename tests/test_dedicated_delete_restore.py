@@ -103,6 +103,7 @@ async def dedicated_lifecycle_context(tmp_path):
         )
         instance = Instance(
             cluster_id="pc-dedicated-life",
+            region="cn-shenzhen",
             name="Dedicated life member",
             topology=InstanceTopology.SINGLE_TENANT,
             allocation_mode=AllocationMode.DEDICATED_POOL,
@@ -231,7 +232,7 @@ async def test_dedicated_delete_disconnects_then_destroys_after_cooldown(
     resource, member = await _rows(dedicated_lifecycle_context)
     assert resource.status == DBInstanceStatus.DELETED
     assert member.status == DedicatedMemberStatus.DELETED
-    provisioner.delete_cluster.assert_awaited_once_with("pc-dedicated-life")
+    provisioner.delete_cluster.assert_awaited_once_with("pc-dedicated-life", region_id="cn-shenzhen")
 
 
 async def test_dedicated_restore_reuses_exact_credential(

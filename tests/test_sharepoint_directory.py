@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 
@@ -124,6 +126,8 @@ async def test_sharepoint_directory_client_uses_china_cloud_endpoints() -> None:
 
 @pytest.mark.asyncio
 async def test_sharepoint_directory_client_streams_pages_and_clears_checkpoint(tmp_path) -> None:
+    fail_group = False
+
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/tenant-001/oauth2/v2.0/token":
             return httpx.Response(200, json={"access_token": "graph-token"})
@@ -141,6 +145,8 @@ async def test_sharepoint_directory_client_streams_pages_and_clears_checkpoint(t
                 },
             )
         if request.url.path == "/v1.0/groups":
+            if fail_group:
+                return httpx.Response(503)
             return httpx.Response(
                 200,
                 json={"value": [{"id": "group-1", "displayName": "Engineering"}]},
@@ -192,13 +198,51 @@ async def test_sharepoint_directory_client_streams_pages_and_clears_checkpoint(t
         transport=httpx.MockTransport(handler),
         checkpoint_dir=tmp_path,
         checkpoint_key="source-001",
+        sync_worker_id="worker-a",
     ) as client:
         await client.sync_to_sink(sink)
         assert list(tmp_path.glob("sharepoint-sync-*.json"))
+
+    fail_group = True
+    async with SharePointDirectoryClient(
+        tenant_id="tenant-001", client_id="client-id", client_secret="client-secret",
+        authority_url="https://login.microsoft.test", graph_url="https://graph.microsoft.test/v1.0",
+        transport=httpx.MockTransport(handler), checkpoint_dir=tmp_path,
+        checkpoint_key="source-001", sync_worker_id="worker-b",
+    ) as client:
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.sync_to_sink(Sink())
+
+    fail_group = False
+    resumed_sink = Sink()
+    async with SharePointDirectoryClient(
+        tenant_id="tenant-001",
+        client_id="client-id",
+        client_secret="client-secret",
+        authority_url="https://login.microsoft.test",
+        graph_url="https://graph.microsoft.test/v1.0",
+        transport=httpx.MockTransport(handler),
+        checkpoint_dir=tmp_path,
+        checkpoint_key="source-001",
+        sync_worker_id="worker-c",
+    ) as client:
+        await client.sync_to_sink(resumed_sink)
+
+    completed_sink = Sink()
+    async with SharePointDirectoryClient(
+        tenant_id="tenant-001", client_id="client-id", client_secret="client-secret",
+        authority_url="https://login.microsoft.test", graph_url="https://graph.microsoft.test/v1.0",
+        transport=httpx.MockTransport(handler), checkpoint_dir=tmp_path,
+        checkpoint_key="source-001", sync_worker_id="worker-c",
+        last_completed_at=datetime.now(UTC),
+    ) as client:
+        await client.sync_to_sink(completed_sink)
         await client.clear_checkpoint()
 
     assert sink.started_at is not None
     assert sink.users == [{"id": "user-1", "display_name": "Alice", "email": "alice@example.test"}]
     assert sink.groups == [{"id": "group-1", "display_name": "Engineering", "principal_type": "group"}]
     assert sink.memberships == [{"group_id": "group-1", "member_type": "user", "member_id": "user-1"}]
+    assert resumed_sink.users == sink.users
+    assert completed_sink.users == sink.users
     assert not list(tmp_path.glob("sharepoint-sync-*.json"))

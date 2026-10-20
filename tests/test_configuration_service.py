@@ -483,7 +483,10 @@ async def test_confirm_impact_never_bypasses_a_dependency_failure(
 @pytest.mark.parametrize(
     ("password", "valid", "error_code"),
     [
-        ("too-short", False, "INVALID_ADMIN_PASSWORD"),
+        ("short12", False, "INVALID_ADMIN_PASSWORD"),
+        ("abcdefgh", True, None),
+        ("abcdefghi", True, None),
+        ("abcdefghijk", True, None),
         ("correct horse battery staple", True, None),
     ],
 )
@@ -504,6 +507,8 @@ async def test_core_admin_plan_checks_transient_password_without_writing(
         ADMIN,
     )
 
+    described = await context.service.execute(command(ConfigAction.DESCRIBE, "core_admin"), ADMIN)
+    assert described.module["schema"]["properties"]["password"]["minLength"] == 8
     assert result.plan["valid"] is valid
     assert result.plan["error_code"] == error_code
     assert result.plan["writes"] is False

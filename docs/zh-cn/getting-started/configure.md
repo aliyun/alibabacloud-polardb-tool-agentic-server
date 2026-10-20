@@ -20,7 +20,7 @@
 
 - `access_key_id` / `access_key_secret`：具备 PolarDB 集群管理权限的 RAM 凭证。
 - `region_id`：目标地域。
-- `endpoint_network`：选择 `public`（公网）或 `vpc`（内网）以决定调用
+- `openapi_network`：选择 `public`（公网）或 `vpc`（内网）以决定调用
   PolarDB OpenAPI 的接入网络。若 PAS 运行在与 PolarDB 同一 VPC，建议选择
   `vpc`。
 

@@ -13,7 +13,7 @@ vi.mock('../../api/accessConsole', () => ({
   issuePersonalToken: vi.fn(),
   revokePersonalToken: vi.fn(),
 }))
-vi.mock('./MyResources', () => ({ default: () => <div /> }))
+vi.mock('../MyInstances/MCPConnections', () => ({ default: () => <div>Agent connections</div> }))
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(listPersonalTokens).mockResolvedValue({
@@ -31,6 +31,7 @@ it('uses the personal endpoint and shows an issued token only once', async () =>
     </MemoryRouter>,
   )
   expect(await screen.findByText('https://pas.test/mcp/personal')).toBeVisible()
+  expect(screen.getByText('Agent connections')).toBeInTheDocument()
   await user.click(screen.getByRole('tab', { name: 'Token connection' }))
   await user.click(
     screen.getByRole('button', { name: 'Generate personal token' }),

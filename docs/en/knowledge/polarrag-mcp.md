@@ -10,9 +10,12 @@ built-in user login, User Token, MCP OAuth, metadata database, audit log, and
 For administrator setup of a Feishu directory source and its Space bindings,
 see [Enterprise identity sources](../administration/enterprise-identity-sources.md).
 
+For bilingual, evidence-based Q&A in Qwen Work, see the
+[Polar knowledge Q&A skill](../../../skills/polar-knowledge/README.md).
+
 ## Security boundary
 
-Personal `/mcp/personal` connections use the employee identity directly, without an Agent boundary. Visibility and each upstream document ACL check remain mandatory. Personal connections expose reads; the delegated upload/management workflows below retain their existing Agent connection. See [Accounts and resources](../administration/accounts-and-resources.md).
+Personal `/mcp/personal` connections use the employee identity directly, without selecting an Agent, but can only search and read PERSONAL knowledge bases owned by that user. PUBLIC knowledge bases and another user's PERSONAL knowledge bases are excluded. Visibility and each upstream document ACL check remain mandatory. PUBLIC knowledge bases and the delegated upload/management workflows below require an authorized Agent connection. See [Accounts and resources](../administration/accounts-and-resources.md).
 
 Only an MCP access token whose subject is `user:<pas_user_id>` can list or call
 the PolarRAG tools. For legacy `/mcp` browser OAuth, PAS resolves the user's Workspace default
@@ -70,8 +73,8 @@ PolarRAG administration is integrated into the existing PAS pages:
   synchronized Feishu or SharePoint identity, and to add, disable, or delete
   manual Feishu, SharePoint, or native PolarRAG user/group principals. PAS
   departments and external groups remain independent.
-- Open **My Instances** as the authenticated user to review accessible database
-  instances and knowledge spaces. A non-administrator can choose an assigned
+- Open **Knowledge bases** (`/my-resources`) as the authenticated user to review
+  accessible knowledge resources under each assigned Agent. A non-administrator can choose an assigned
   Agent to open its paginated **Knowledge bases** drawer. The drawer shows each
   knowledge-base name and its opaque PAS knowledge-resource ID. Registering
   a PolarRAG instance alone does not grant user access; the Space must be
@@ -87,20 +90,42 @@ PolarRAG administration is integrated into the existing PAS pages:
   by filename and lets the user request deletion or rechunking. PAS forwards
   the same trusted identity context, and PolarRAG enforces `MANAGE` for delete
   and `EXECUTE` for rechunk. Administrators cannot upload or manage documents.
+  On narrow screens, scroll the document table horizontally to inspect permissions;
+  permission labels wrap within their column and the action column remains pinned.
   If **Upload** is disabled, its tooltip directs the user to ask an
   administrator to configure and validate the Space OSS AccessKey credentials.
-  After PolarRAG accepts an upload, PAS leaves the user on **My Instances** with
+  After PolarRAG accepts an upload, PAS leaves the user on **Knowledge bases** with
   the acceptance result. Opening **Manage documents** loads one ACL-filtered
   page of 20 documents and their current statuses. **Previous**, **Next**, and
   **Refresh** are explicit user actions; PAS does not poll in the background.
-  The table displays the document size, chunk count, and upload time when
-  PolarRAG provides them.
+  With PolarRAG 1.0.7 or later, the console uses numbered pages, displays the
+  exact total, and preserves the plugin's `updated_at` descending order. The
+  table displays the document size, chunk count, and update time when
+  PolarRAG provides them. It also displays the current caller's effective
+  document actions and shows the validated principal grants in a hover panel.
+  Earlier plugins continue to use opaque document cursors, do not expose a
+  total, and show permissions as unavailable.
+  The rechunk dialog offers **Force rechunk** only when the registered plugin
+  version is PolarRAG 1.0.7 or later. PAS rejects `force=true` for earlier or
+  unknown versions; ordinary rechunking remains available.
   Administrator status does not bypass knowledge access rules.
 - On an Agent detail page, use **Configure enterprise access** for normal
   Source, subject, and Space setup; the existing instance, PUBLIC-scope, user,
-  and group controls remain available for advanced changes. An assigned user
-  manages their own `pas_user_agent_` Token under
-  **My Instances > MCP connections**. Administrators see status only and can
+  and group controls remain available for advanced changes. A synchronized
+  directory user can be selected alongside local users in the backend-paginated
+  **Users** tab when the directory identity is mapped to a PAS user. The
+  **Identity source** column lists associated source names, or `PAS` for local
+  users. Each user occupies one row even when linked to multiple sources, and
+  the assigned/unassigned Agent filter remains available. Binding an enterprise
+  identity source also places its eligible mapped users and directory groups
+  under **Joined Agent**, labeled with the inherited source. To manage these
+  children individually, first unbind the source from the Agent; existing direct
+  bindings remain. This classification uses backend pagination and does not
+  grant additional access. Unmapped directory
+  users are excluded; source snapshot validity is still enforced during access
+  authorization. Unbinding the final Source–Space relation leaves the Agent's empty
+  PolarRAG instance binding in place. An assigned user manages their own
+  `pas_user_agent_` Token under **Connect MCP**. Administrators see status only and can
   force-revoke the Token without reading its plaintext. Built-in and SSO users
   reveal their own existing Token under the current authenticated session;
   PAS does not request their password again. `issue` and `regenerate` return
@@ -284,6 +309,34 @@ verifies that the document belongs to that resource and never accepts
 caller-supplied identity or ACL fields. Successful mutations are recorded in
 the existing PolarRAG audit-log category.
 
+## PolarRAG 1.0.7 compatibility
+
+PAS requires PolarRAG 1.0.6 or later when registering or updating an instance;
+older or unrecognized plugin versions are rejected with
+`POLARRAG_VERSION_UNSUPPORTED`. PAS reads `GET /_plugins/_polar_rag/_version`
+and enables the newer document
+contracts only for an explicit PolarRAG semantic version of 1.0.7 or later,
+including package versions such as
+`t-polardb-rag-1.0.7-20260914161410.al8.x86_64`. Version 1.0.6 remains on the
+legacy document-read and single-KB search contracts. Both supported versions
+use `managed_documents/_bulk` for PAS batch document submission.
+
+For 1.0.7 or later, PAS sends trusted resource-derived `kb_ids` to protected
+document reads, context, chunk listing, filename lookup, within-document
+search, and knowledge search. A caller still supplies only opaque PAS resource
+IDs. Searches and filename lookups for multiple authorized knowledge bases in
+one instance and Space use upstream `kb_ids` requests split at the runtime
+`max_kb_ids` limit; PAS maps every result back through its authorized
+KB-to-resource set and rejects results outside it. PolarRAG 1.0.6 retains one
+request per KB and its existing partial-failure behavior.
+
+Document listing uses the plugin's managed-document page API with
+`sort_by=updated_at`, and returns `total`, `page`, and `size`. The corresponding
+platform list route accepts `page` while retaining `cursor` for old plugins.
+Chunk listing trusts an exact `hits.total` only when the plugin returns
+`relation=eq`; legacy responses keep the compatibility probe used to determine
+whether another chunk page exists.
+
 Space enablement accepts only `space_id`. The Space name and immutable
 `identity_domain` must come from the trusted upstream enumeration response;
 administrators cannot type or override them.
@@ -343,7 +396,7 @@ The user-only catalog contains:
 - `kb_search(query, knowledge_resource_ids?, search_mode?, top_k?,
   min_score?, reranker?)`;
 - `kb_fetch_context(knowledge_resource_id, doc_id, chunk_index,
-  window_size?)`;
+  window_size?, expected_doc_generation?, query?)`;
 - `doc_list_chunks(knowledge_resource_id, doc_id, offset?, limit?)`;
 - `doc_find_by_name(knowledge_resource_ids, filename, limit?)`;
 - `doc_status(knowledge_resource_id, doc_id)`;
@@ -351,11 +404,32 @@ The user-only catalog contains:
 - `doc_get_original(knowledge_resource_id, doc_id)`;
 - `doc_delete(knowledge_resource_id, doc_id)`;
 - `doc_rechunk(knowledge_resource_id, doc_id, chunk_strategy?,
-  chunk_max_tokens?)`.
+  chunk_max_tokens?, force?)`.
 
 Chunk sources returned by `kb_search`, `kb_fetch_context`, `doc_list_chunks`,
 and `doc_recall` include `image_resources`; it is an empty array when no
 extracted image belongs to the Chunk.
+
+Search hits preserve `doc_generation`, the indexing generation (not a business
+document version). Pass it unchanged as `expected_doc_generation` when expanding
+that hit with `kb_fetch_context`; generation 0 is valid. The optional pin accepts
+integers from 0 through 2147483647. Existing unpinned calls remain supported,
+but cannot guarantee consistency with an earlier search hit.
+
+A pinned read returns `citation_source_changed` when the published generation
+changes, becomes invisible or unavailable, or the selected Chunk no longer exists.
+Discard the old hit and any assembled context. If the optional original `query`
+is supplied, PAS re-runs `doc_recall` within the same document and KB once, then
+fetches using the fresh hit's `chunk_index` and `doc_generation`. This re-locates a
+passage within one document; it does not repeat a cross-KB search. No new hit,
+missing generation, or another conflict ends recovery with `citation_source_changed`.
+Never remove the pin or reuse an old Chunk to recover.
+
+Without `query`, the MCP caller receives the conflict and must re-run the original
+`kb_search` or `doc_recall` with the original query and selectors at most once,
+then expand a fresh hit with its generation pin. If PAS already attempted recovery
+with `query`, stop on the returned conflict instead of starting another retry loop.
+ACL errors retain their existing codes and do not trigger generation recovery.
 
 The user-specific Agent Token catalog additionally contains:
 
@@ -368,8 +442,8 @@ resources in the effective Agent and user scope. Explicit IDs and the effective
 scope are limited by `max_exhaustive_knowledge_resources` (default 1,000); PAS
 never silently truncates the scope.
 PAS groups resources by PolarRAG instance and Space, merges and deduplicates
-hits by score, and returns sanitized `partial_failures`. PolarRAG 1.0.6 and
-earlier receive legacy single-`kb_id` requests. For 1.0.7 and later, PAS reads
+hits by score, and returns sanitized `partial_failures`. PolarRAG 1.0.6 receives
+legacy single-`kb_id` requests. For 1.0.7 and later, PAS reads
 `GET /_plugins/_polar_rag/_search_capabilities` and batches `kb_ids` by the
 reported `max_kb_ids` value.
 
@@ -419,7 +493,9 @@ the file, generate a signed URL, or handle OSS credentials.
 `doc_delete` is destructive and calls PolarRAG only after it has authorized
 `MANAGE`. `doc_rechunk` requires PolarRAG `EXECUTE`; `chunk_strategy` can be
 `hybrid`, `hierarchical`, or `inherit`. `inherit` restores the current Space
-default and can return `noop`. Both tools first verify the document against the
+default and can return `noop`. `force` defaults to `false`; `true` requires
+PolarRAG 1.0.7 or later, otherwise the tool returns
+`POLARRAG_VERSION_UNSUPPORTED`. Both tools first verify the document against the
 selected knowledge resource and use only the server-derived ACL context.
 Knowledge resources marked `EXTERNAL_SYNC` are read-only through PAS: upload
 preparation/completion, upload, delete, and rechunk return
@@ -487,3 +563,30 @@ the trusted actor and derives the ACL from the active KB.
 An incompatible instance is recorded as `capability_missing`; Space
 enumeration or enablement returns `OPERATION_NOT_SUPPORTED`. PAS does not
 accept manually supplied catalog facts as a fallback.
+
+## Feishu knowledge-scope discovery
+
+An ETL Link may import a generation-fenced snapshot that associates one
+Feishu Wiki space with one PolarRAG knowledge resource. PAS stores the source
+subjects separately from document ACLs and projects them into existing
+`EXTERNAL_SYNC` Agent knowledge scopes. Projection occurs only when the Agent
+already has the target PolarRAG instance, uses `SCOPED` knowledge access, and
+has explicitly enabled external knowledge auto-binding. It never grants Agent
+membership to a Feishu user.
+
+The ETL row `updated_at` value orders different snapshot generations. PAS
+locks the existing snapshot while applying an update, rejects an older or
+unordered different generation, and accepts an identical generation
+idempotently. A direct import that changes `generation` must therefore include
+`source_updated_at`; the opaque generation value is never compared
+lexicographically. PAS resolves `space_id + kb_id` only within knowledge Spaces
+bound to the identity source. If more than one bound resource still matches,
+the snapshot fails closed as ambiguous.
+
+Administrators can inspect a Feishu user's projected resources with
+`GET /api/admin/identity-sources/{source_id}/agents/{agent_id}/users/{external_user_id}/knowledge-resources?access_origin=EXTERNAL_SYNC`.
+An authenticated user can inspect their own projected resources with
+`GET /api/me/agents/{agent_id}/knowledge-resources?access_origin=FEISHU`.
+Both endpoints are read-only and cursor-paginated. Search still applies the
+existing document-level ACL context; source-scope discovery does not replace or
+weaken that enforcement.

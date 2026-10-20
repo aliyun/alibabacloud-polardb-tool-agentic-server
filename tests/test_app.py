@@ -57,6 +57,12 @@ class TestHealthEndpoints:
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
 
+    async def test_api_openapi_alias(self, client):
+        canonical = await client.get("/openapi.json")
+        alias = await client.get("/api/openapi.json")
+
+        assert alias.status_code == canonical.status_code == 404
+
     async def test_healthz_dependencies(self, client):
         resp = await client.get("/healthz/dependencies")
         assert resp.status_code == 200
@@ -64,7 +70,10 @@ class TestHealthEndpoints:
         assert data["status"] == "ok"
         assert "dependencies" in data
 
-    async def test_enterprise_identity_source_help_renders_html(self, client):
+    async def test_enterprise_identity_source_help_renders_html(self, app, client):
+        from server.auth.dependencies import require_admin
+
+        app.dependency_overrides[require_admin] = lambda: object()
         response = await client.get(
             "/help/enterprise-identity-sources?locale=zh-CN"
         )

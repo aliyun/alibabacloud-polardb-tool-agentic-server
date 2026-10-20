@@ -21,6 +21,14 @@
 - **PolarRAG 运行策略**（`polarrag_tool_limits`）：PolarRAG MCP Tool
   的进程本地速率、突发、实例并发、扇出治理及上游请求超时。
 - `observability`：应用日志与全局审计生命周期行为。
+- `enterprise_identity_sync`：SharePoint 全量刷新周期，以及飞书全量兜底检查、不可用阈值、
+  用户组与知识权限对账和请求并发设置。
+
+PAS Dashboard 的**企业身份同步**模块提供 `interval_seconds`（SharePoint，默认 `1800`）、
+`feishu_check_interval_seconds`（全量兜底检查，默认 `600`）、
+`feishu_fallback_after_seconds`（增量不可用触发全量的阈值，默认 `86400`）和
+`feishu_group_and_knowledge_scope_interval_seconds`（用户组与知识权限对账，默认 `3600`）。飞书用户和部门变更由长连接
+事件驱动，不按这些周期轮询。
 
 可选模块可以保持 `SKIPPED`。停用依赖项前先停用所有有效下游模块。
 
@@ -112,6 +120,19 @@ PolarRAG 上游请求超时以及 MCP Tool 准入与上游扇出。安全默认�
 
 `openapi_network` 只接受 `public` 或 `vpc`，自定义主机名会被拒绝。
 
+`aliyun_access` 的 describe 结果包含 `ui_hints.endpoint_catalog`，
+schema 同时提供地域枚举，供 Web 和 CLI 使用。需要认证的只读接口
+`GET /api/config/aliyun-endpoints` 返回同一份审核目录及已激活的 `defaults`
+（凭证未激活时为 `null`），并设置 `Cache-Control: no-store`。
+目录项包含本地化地域名称、独立的 `polardb` / `sts` 公网及 VPC 端点，
+缺失端点为 `null`。运行时不依赖公网文档或地域发现 API。
+
+失败计划保留规范化的 `region_id` / `openapi_network`，
+以及安全的 `external_validation.checks`：包括 `region_id`、`stage`、
+`status: FAILED` 和 `error_code`。`OPENAPI_CHECK_FAILED` 表示未分类失败。
+`POST /api/instances/discover?region_id=<region>` 可选择目标地域；
+省略时使用已激活的默认地域。VPC 跨地域请求会被拒绝。
+
 对于 `user_sso`，OIDC Discovery 提供可信 issuer。使用手工端点配置时必须
 显式提供 `issuer`、`authorization_endpoint` 和 `token_endpoint`。OIDC 模式
 会按该 issuer 精确验证 ID Token；OAuth 2.0 UserInfo 模式支持不返回 OIDC ID
@@ -151,7 +172,7 @@ EXTERNAL_BASE_URL/auth/oidc/callback
 
 当 `browser_login_enabled=false` 时，PAS 进入纯 Token Exchange 模式，不再要求
 回调 URL、Discovery/授权/Token/JWKS 端点、浏览器 Client ID 与 Secret，也不要求
-浏览器登录测试；但仍必须配置 HTTPS External Base URL，用于标识 Token Exchange
+浏览器登录测试；但仍必须配置明确的 HTTP 或 HTTPS External Base URL，用于标识 Token Exchange
 Resource。此时必须启用外部 Token 信任，并选择
 `oauth2_introspection`、`oauth2_userinfo` 或 `feishu`；Provider 校验通过后即可
 直接激活。Introspection 必须配置独立的 PAS-to-provider `client_id` 和
@@ -204,9 +225,9 @@ Token 的实际生命周期不会超过已知的外部 Token 到期时间。
 Token。标准 Token Exchange 同时支持 `/token` 和
 `/api/v1/external-auth/token`，只返回 PAS Access Token，不返回 Refresh Token。
 
-当 Introspection 与外部 UserInfo 端点解析出的地址全部位于允许的私网网段时，
-可以使用 HTTP，以支持隔离的 VPC 和企业内网部署。此时 Provider 凭证与外部
-Token 在传输中不会加密，仍建议优先使用 HTTPS；公网端点必须使用 HTTPS。
+Introspection 与外部 UserInfo 端点在允许的私网地址上可使用 HTTP；只有
+`browser_login_enabled=false` 时，公网 Provider 地址才允许 HTTP。两种模式均
+支持 HTTPS。HTTP 会以明文传输 Provider 凭证与外部 Token，仍建议优先使用 HTTPS。
 链路本地地址、云元数据地址、组播、未指定、保留地址、公私网混合解析以及未经
 允许的回环地址仍会被拒绝。浏览器 SSO 端点继续执行更严格的公网 HTTPS 策略。
 请求仍受超时、禁止重定向和响应大小限制。Provider 凭证与外部 Token 不会从
@@ -258,3 +279,7 @@ ECS 角色，再进行同样的只读检查。PolarDB 预检调用 `DescribeDBCl
 
 Secret 字段在根密钥下独立加密。省略已有 Secret 会保留原值，显式支持的清除
 动作才会删除。Describe 和导出响应只包含已配置/脱敏标记。
+
+`feishu_group_and_knowledge_scope_interval_seconds` 在增量订阅 `error` 时仍生效；
+全量兜底阈值不暂停权限对账。旧输入字段 `feishu_group_interval_seconds` 保持兼容，
+schema 和序列化配置使用新字段名。

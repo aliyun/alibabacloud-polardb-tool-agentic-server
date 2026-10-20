@@ -3,10 +3,13 @@ from __future__ import annotations
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.core.knowledge_subjects import batch_user_knowledge_subjects
 from server.models import (
+    Agent,
     AgentGroupAssignment,
     AgentGroupKind,
     AgentUserAssignment,
+    AuthProvider,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
@@ -19,6 +22,8 @@ from server.models import (
     EnterpriseIdentitySourceStatus,
     UserExternalIdentity,
     UserDepartment,
+    User,
+    UserStatus,
 )
 from server.models.base import utc_now
 from server.enterprise_identity.service import (
@@ -26,6 +31,17 @@ from server.enterprise_identity.service import (
     identity_source_snapshot_is_usable,
 )
 from server.enterprise_identity.principals import resolve_external_user_principals
+
+
+def _builtin_user_agent_ids(user_id: str):
+    return select(Agent.id).where(
+        Agent.all_builtin_users.is_(True),
+        select(User.id).where(
+            User.id == user_id,
+            User.auth_provider == AuthProvider.BUILTIN,
+            User.status == UserStatus.ACTIVE,
+        ).exists(),
+    )
 
 
 def _department_agent_ids(user_id: str):
@@ -115,34 +131,37 @@ async def _identity_source_group_assignments(
     for source in source_rows:
         if not identity_source_snapshot_is_usable(source):
             continue
-        external_user_id = (
-            await session.execute(
-                select(UserExternalIdentity.external_subject)
-                .where(
-                    UserExternalIdentity.user_id == user_id,
-                    UserExternalIdentity.identity_provider
-                    == identity_provider_key(source),
+        external_user_ids = set(
+            (
+                await session.execute(
+                    select(UserExternalIdentity.external_subject).where(
+                        UserExternalIdentity.user_id == user_id,
+                        UserExternalIdentity.identity_provider == identity_provider_key(source),
+                    )
                 )
-            )
-        ).scalar_one_or_none()
-        if external_user_id is None:
-            continue
-        directory_user_exists = (
-            await session.execute(
-                select(EnterpriseDirectoryUser.id).where(
-                    EnterpriseDirectoryUser.identity_source_id == source.id,
-                    EnterpriseDirectoryUser.external_user_id == external_user_id,
-                    EnterpriseDirectoryUser.status
-                    == EnterpriseDirectoryEntryStatus.ACTIVE,
-                )
-            )
-        ).first() is not None
-        local_principals = await resolve_external_user_principals(
-            session,
-            source.id,
-            external_user_id,
+            ).scalars()
         )
-        if not directory_user_exists and not local_principals:
+        if not external_user_ids:
+            continue
+        active_directory_ids = set(
+            (
+                await session.execute(
+                    select(EnterpriseDirectoryUser.external_user_id).where(
+                        EnterpriseDirectoryUser.identity_source_id == source.id,
+                        EnterpriseDirectoryUser.external_user_id.in_(external_user_ids),
+                        EnterpriseDirectoryUser.status == EnterpriseDirectoryEntryStatus.ACTIVE,
+                    )
+                )
+            ).scalars()
+        )
+        local_principals_by_user = {
+            external_user_id: await resolve_external_user_principals(session, source.id, external_user_id)
+            for external_user_id in external_user_ids
+        }
+        matched_ids = active_directory_ids | {
+            external_user_id for external_user_id, principals in local_principals_by_user.items() if principals
+        }
+        if not matched_ids:
             continue
         all_users_query = select(
             AgentGroupAssignment.id,
@@ -157,7 +176,11 @@ async def _identity_source_group_assignments(
                 AgentGroupAssignment.agent_id == agent_id
             )
         result.update((await session.execute(all_users_query)).tuples().all())
-        local_group_ids = {principal_id for _principal_type, principal_id in local_principals}
+        local_group_ids = {
+            principal_id
+            for external_user_id in matched_ids
+            for _principal_type, principal_id in local_principals_by_user[external_user_id]
+        }
         if local_group_ids:
             local_group_query = select(
                 AgentGroupAssignment.id,
@@ -173,7 +196,7 @@ async def _identity_source_group_assignments(
                     AgentGroupAssignment.agent_id == agent_id
                 )
             result.update((await session.execute(local_group_query)).tuples().all())
-        frontier = {external_user_id}
+        frontier = matched_ids
         member_type = EnterpriseDirectoryMembershipType.USER
         visited: set[str] = set()
         while frontier:
@@ -318,7 +341,8 @@ async def list_accessible_agent_ids(
         (await session.execute(_enterprise_group_agent_ids(user_id))).scalars()
     )
     identity_source = await _identity_source_group_agent_ids(session, user_id)
-    return direct | departments | enterprise | identity_source
+    builtin = set((await session.execute(_builtin_user_agent_ids(user_id))).scalars())
+    return direct | departments | enterprise | identity_source | builtin
 
 
 async def has_group_agent_access(
@@ -326,6 +350,8 @@ async def has_group_agent_access(
     agent_id: str,
     user_id: str,
 ) -> bool:
+    if await session.scalar(_builtin_user_agent_ids(user_id).where(Agent.id == agent_id)):
+        return True
     for query in (
         _department_agent_ids(user_id),
         _enterprise_group_agent_ids(user_id),
@@ -346,3 +372,110 @@ async def has_agent_access(
     user_id: str,
 ) -> bool:
     return agent_id in await list_accessible_agent_ids(session, user_id)
+
+
+async def list_agent_accessible_user_ids(
+    session: AsyncSession,
+    agent: Agent,
+    user_ids: set[str],
+) -> set[str]:
+    """Resolve Agent access in batches instead of issuing queries per user."""
+    if not user_ids:
+        return set()
+
+    accessible = set(
+        (
+            await session.execute(
+                select(AgentUserAssignment.user_id).where(
+                    AgentUserAssignment.agent_id == agent.id,
+                    AgentUserAssignment.user_id.in_(user_ids),
+                    AgentUserAssignment.is_direct.is_(True),
+                )
+            )
+        ).scalars()
+    )
+    if agent.all_builtin_users:
+        accessible.update(
+            (
+                await session.execute(
+                    select(User.id).where(
+                        User.id.in_(user_ids),
+                        User.auth_provider == AuthProvider.BUILTIN,
+                        User.status == UserStatus.ACTIVE,
+                    )
+                )
+            ).scalars()
+        )
+
+    subject_keys: set[tuple[str, ...]] = set()
+    for assignment in (
+        await session.execute(
+            select(AgentGroupAssignment).where(
+                AgentGroupAssignment.agent_id == agent.id,
+                AgentGroupAssignment.group_kind.in_(
+                    {
+                        AgentGroupKind.DEPARTMENT,
+                        AgentGroupKind.IDENTITY_SOURCE,
+                        AgentGroupKind.IDENTITY_SOURCE_ALL,
+                    }
+                ),
+            )
+        )
+    ).scalars():
+        if assignment.group_kind == AgentGroupKind.DEPARTMENT:
+            if assignment.department_id:
+                subject_keys.add(("DEPARTMENT", assignment.department_id))
+        elif assignment.group_kind == AgentGroupKind.IDENTITY_SOURCE_ALL:
+            if assignment.identity_source_id:
+                subject_keys.add(("IDENTITY_SOURCE", assignment.identity_source_id))
+        elif assignment.identity_source_id and assignment.principal_id:
+            subject_keys.add(
+                ("GROUP", assignment.identity_source_id, assignment.principal_id)
+            )
+
+    if subject_keys:
+        subjects_by_user = await batch_user_knowledge_subjects(
+            session, sorted(user_ids)
+        )
+        accessible.update(
+            user_id
+            for user_id, subjects in subjects_by_user.items()
+            if subjects & subject_keys
+        )
+
+    accessible.update(
+        (
+            await session.execute(
+                select(EnterprisePrincipalAssignment.pas_user_id)
+                .join(
+                    AgentGroupAssignment,
+                    (
+                        EnterprisePrincipalAssignment.identity_domain
+                        == AgentGroupAssignment.identity_domain
+                    )
+                    & (
+                        EnterprisePrincipalAssignment.provider
+                        == AgentGroupAssignment.provider
+                    )
+                    & (
+                        EnterprisePrincipalAssignment.principal_id
+                        == AgentGroupAssignment.principal_id
+                    ),
+                )
+                .where(
+                    AgentGroupAssignment.agent_id == agent.id,
+                    AgentGroupAssignment.group_kind == AgentGroupKind.ENTERPRISE,
+                    EnterprisePrincipalAssignment.pas_user_id.in_(user_ids),
+                    EnterprisePrincipalAssignment.principal_type
+                    == EnterprisePrincipalType.GROUP,
+                    EnterprisePrincipalAssignment.status
+                    == EnterprisePrincipalStatus.ACTIVE,
+                    or_(
+                        EnterprisePrincipalAssignment.valid_until.is_(None),
+                        EnterprisePrincipalAssignment.valid_until > utc_now(),
+                    ),
+                )
+            )
+        ).scalars()
+    )
+    return accessible

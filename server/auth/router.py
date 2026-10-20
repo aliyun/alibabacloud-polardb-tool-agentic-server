@@ -53,7 +53,10 @@ from server.enterprise_identity.feishu_tenant_verification import (
     feishu_tenant_verification_callback_url,
     feishu_user_login_callback_url,
 )
-from server.enterprise_identity.service import upsert_external_user
+from server.enterprise_identity.service import (
+    identity_source_snapshot_is_usable,
+    upsert_external_user,
+)
 from server.enterprise_identity.sharepoint_auth import (
     SharePointAuthenticationError,
     authenticate_sharepoint_user,
@@ -67,6 +70,7 @@ from server.models import (
     EnterpriseIdentitySourceStatus,
     FeishuTenantVerificationState,
     FeishuUserLoginState,
+    DingTalkLoginState,
     IdentitySourceProvider,
     SharePointUserLoginState,
     User,
@@ -138,10 +142,7 @@ async def start_oidc_login(
     config = get_config()
     if config.auth.mode != "oidc":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-    callback_url = (
-        config.auth.oidc.redirect_uri
-        or f"{config.server.public_base_url.rstrip('/')}/auth/oidc/callback"
-    )
+    callback_url = config.auth.oidc.redirect_uri or f"{config.server.public_base_url.rstrip('/')}/auth/oidc/callback"
     try:
         _, authorize_url = await create_oidc_login(
             session,
@@ -177,17 +178,23 @@ async def _active_login_sources(
     session: AsyncSession,
     provider: IdentitySourceProvider,
 ) -> list[EnterpriseIdentitySource]:
-    return list(
+    sources = list(
         (
             await session.execute(
                 select(EnterpriseIdentitySource).where(
                     EnterpriseIdentitySource.provider == provider,
-                    EnterpriseIdentitySource.status == EnterpriseIdentitySourceStatus.ACTIVE,
+                    EnterpriseIdentitySource.status.in_(
+                        (
+                            EnterpriseIdentitySourceStatus.ACTIVE,
+                            EnterpriseIdentitySourceStatus.STALE,
+                        )
+                    ),
                     EnterpriseIdentitySource.tenant_id.is_not(None),
                 )
             )
         ).scalars()
     )
+    return [source for source in sources if identity_source_snapshot_is_usable(source)]
 
 
 def _identity_source_selection(
@@ -283,7 +290,7 @@ async def feishu_login_callback(
         return _feishu_login_error(400)
     if (
         source.provider != IdentitySourceProvider.FEISHU
-        or source.status != EnterpriseIdentitySourceStatus.ACTIVE
+        or not identity_source_snapshot_is_usable(source)
         or source.tenant_id is None
         or not source.config_ciphertext
     ):
@@ -439,7 +446,7 @@ async def sharepoint_login_callback(
         return _sharepoint_login_error(400)
     if (
         source.provider != IdentitySourceProvider.SHAREPOINT
-        or source.status != EnterpriseIdentitySourceStatus.ACTIVE
+        or not identity_source_snapshot_is_usable(source)
         or source.tenant_id is None
     ):
         return _sharepoint_login_error(400)
@@ -696,11 +703,7 @@ async def recovery_login(
         body.username,
         body.password,
     )
-    if (
-        user is None
-        or user.role != UserRole.ADMIN
-        or user.status != UserStatus.ACTIVE
-    ):
+    if user is None or user.role != UserRole.ADMIN or user.status != UserStatus.ACTIVE:
         attempted_user = user
         if attempted_user is None:
             attempted_user = await session.scalar(
@@ -888,21 +891,9 @@ async def get_auth_mode():
     config = get_config()
     return {
         "mode": config.auth.mode,
-        "provider_name": (
-            config.auth.oidc.provider_name
-            if config.auth.mode == "oidc"
-            else None
-        ),
-        "sso_login_url": (
-            "/auth/oidc/login"
-            if config.auth.mode == "oidc"
-            else None
-        ),
-        "recovery_login_path": (
-            "/login/recovery"
-            if config.auth.mode == "oidc"
-            else None
-        ),
+        "provider_name": (config.auth.oidc.provider_name if config.auth.mode == "oidc" else None),
+        "sso_login_url": ("/auth/oidc/login" if config.auth.mode == "oidc" else None),
+        "recovery_login_path": ("/login/recovery" if config.auth.mode == "oidc" else None),
     }
 
 
@@ -964,3 +955,147 @@ async def change_password(
         samesite="lax",
     )
     return {"message": "Password changed successfully"}
+
+
+# DingTalk state is single-use, browser-bound and fenced against app rotation.
+def _dingtalk_error(code: int, *, callback_configuration: bool = False) -> HTMLResponse:
+    content = "<h3>DingTalk authentication failed</h3>"
+    if code == 409:
+        content = (
+            '<html lang="zh-CN"><meta charset="utf-8"><title>钉钉登录暂不可用</title>'
+            '<h3>钉钉登录暂不可用 / DingTalk sign-in unavailable</h3>'
+            '<p>请管理员先登录控制台，在企业身份源中点击“验证钉钉企业”，'
+            '完成企业授权并同步目录，再使用钉钉登录。</p>'
+            '<p>An administrator must select “Verify DingTalk enterprise” in Enterprise identity sources, '
+            'complete authorization and synchronize the directory before sign-in is available.</p>'
+            '<p><a href="/login">返回登录 / Back to sign in</a></p></html>'
+        )
+    if callback_configuration:
+        content = (
+            '<html lang="zh-CN"><meta charset="utf-8"><title>钉钉登录暂不可用</title>'
+            '<h3>钉钉登录暂不可用 / DingTalk sign-in unavailable</h3>'
+            '<p>请管理员在运行策略中配置有效的外部访问基础 URL '
+            '（runtime_policy.external_base_url），再重试钉钉登录。</p>'
+            '<p>An administrator must configure runtime_policy.external_base_url '
+            'as an absolute HTTP(S) URL before retrying DingTalk sign-in.</p>'
+            '<p><a href="/login">返回登录 / Back to sign in</a></p></html>'
+        )
+    return HTMLResponse(content, status_code=code, headers={"Cache-Control": "no-store"})
+
+
+async def begin_dingtalk_authorization(session, source, request, *, purpose, admin_id=None):
+    from server.enterprise_identity.dingtalk_auth import (
+        build_dingtalk_authorization_url, dingtalk_callback_url, dingtalk_config_digest,
+    )
+    redirect_uri = dingtalk_callback_url(get_config().server.public_base_url)
+    config = json.loads(decrypt(source.config_ciphertext))
+    if not isinstance(config, dict) or not source.tenant_id or not config.get("client_id"):
+        raise ValueError("Invalid DingTalk source")
+    await session.execute(delete(DingTalkLoginState).where(DingTalkLoginState.expires_at < datetime.now(timezone.utc)))
+    state, browser = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+    session.add(DingTalkLoginState(identity_source_id=source.id, created_by_user_id=admin_id,
+        state_hash=_hash_token(state), browser_hash=_hash_token(browser), purpose=purpose,
+        config_digest=dingtalk_config_digest(source, config),
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=10)))
+    await session.flush()
+    url = build_dingtalk_authorization_url(client_id=config["client_id"], tenant_id=source.tenant_id,
+        redirect_uri=redirect_uri, state=state)
+    return url, browser
+
+
+def set_dingtalk_state_cookie(response, browser, request):
+    response.set_cookie("dingtalk_state", browser, httponly=True, secure=_secure_cookie(request),
+                        samesite="lax", max_age=600, path="/auth/dingtalk")
+
+
+@router.get("/dingtalk/login")
+async def start_dingtalk_login(request: Request, source_id: str | None = None,
+                              session: AsyncSession = Depends(get_session)):
+    from server.enterprise_identity.dingtalk_auth import DingTalkCallbackConfigurationError
+    sources = await _active_login_sources(session, IdentitySourceProvider.DINGTALK)
+    source = next((s for s in sources if s.id == source_id), None) if source_id else (sources[0] if len(sources) == 1 else None)
+    if source is None:
+        if sources and not source_id:
+            return _identity_source_selection(login_path="/auth/dingtalk/login", provider_name="DingTalk", sources=sources)
+        return _dingtalk_error(409)
+    try:
+        from server.enterprise_identity.dingtalk_auth import verified_dingtalk_config
+        verified_dingtalk_config(source)
+        url, browser = await begin_dingtalk_authorization(session, source, request, purpose="login")
+        await session.commit()
+    except DingTalkCallbackConfigurationError:
+        await session.rollback()
+        return _dingtalk_error(409, callback_configuration=True)
+    except (ValueError, TypeError):
+        await session.rollback()
+        return _dingtalk_error(409)
+    response = RedirectResponse(url, status_code=303, headers={"Cache-Control": "no-store"})
+    set_dingtalk_state_cookie(response, browser, request)
+    return response
+
+
+@router.get("/dingtalk/callback")
+async def dingtalk_callback(request: Request, session: AsyncSession = Depends(get_session)):
+    from server.enterprise_identity.dingtalk_auth import authenticate_dingtalk_user, dingtalk_config_digest
+    code = request.query_params.get("authCode") or request.query_params.get("code", "")
+    state, browser = request.query_params.get("state", ""), request.cookies.get("dingtalk_state", "")
+    if not code or not state or not browser:
+        return _dingtalk_error(400)
+    record = (await session.execute(select(DingTalkLoginState).where(
+        DingTalkLoginState.state_hash == _hash_token(state)))).scalar_one_or_none()
+    if record is None or record.expires_at < _utc_now_comparable(record.expires_at) or not secrets.compare_digest(record.browser_hash, _hash_token(browser)):
+        return _dingtalk_error(400)
+    source = await session.get(EnterpriseIdentitySource, record.identity_source_id)
+    consumed = await session.execute(delete(DingTalkLoginState).where(DingTalkLoginState.id == record.id,
+        DingTalkLoginState.state_hash == _hash_token(state)))
+    await session.commit()
+    if consumed.rowcount != 1 or source is None or source.provider != IdentitySourceProvider.DINGTALK:
+        return _dingtalk_error(400)
+    try:
+        config = json.loads(decrypt(source.config_ciphertext))
+        if not secrets.compare_digest(record.config_digest, dingtalk_config_digest(source, config)):
+            raise ValueError("Source changed")
+        if record.purpose == "verify":
+            admin = await session.get(User, record.created_by_user_id)
+            if admin is None or admin.status != UserStatus.ACTIVE or admin.role != UserRole.ADMIN or source.status != EnterpriseIdentitySourceStatus.PENDING_TENANT_VERIFICATION:
+                raise ValueError("Verification not permitted")
+        elif record.purpose != "login" or not identity_source_snapshot_is_usable(source):
+            raise ValueError("Login source unavailable")
+        identity = await authenticate_dingtalk_user(client_id=config["client_id"], client_secret=config["client_secret"],
+                                                    tenant_id=source.tenant_id, code=code)
+        # Re-read after network IO: source update/deletion must invalidate this authorization.
+        await session.refresh(source)
+        live_config = json.loads(decrypt(source.config_ciphertext))
+        if not secrets.compare_digest(record.config_digest, dingtalk_config_digest(source, live_config)):
+            raise ValueError("Source changed")
+        if record.purpose == "verify":
+            live_config["tenant_verified_digest"] = record.config_digest
+            source.config_ciphertext = encrypt(json.dumps(live_config))
+            source.status = EnterpriseIdentitySourceStatus.PENDING_BINDING
+            await log_audit(session, user_id=record.created_by_user_id, action="identity_source.dingtalk_verification_complete",
+                            target_type="enterprise_identity_source", target_id=source.id,
+                            status=AuditStatus.SUCCESS, required=True, commit=False)
+            await session.commit()
+            response = RedirectResponse("/users?identity_source_verified=1", status_code=303)
+        else:
+            if not identity_source_snapshot_is_usable(source):
+                raise ValueError("Source stale")
+            user = await upsert_external_user(session, source, external_user_id=identity["user_id"],
+                                             display_name=identity["display_name"], email=None)
+            if user.status != UserStatus.ACTIVE:
+                raise ValueError("User disabled")
+            token = create_access_token({
+                "sub": user.id, "role": user.role.value, "credential_epoch": user.credential_epoch,
+            })
+            refresh = _create_refresh_record(session, user.id)
+            await session.commit()
+            response = RedirectResponse("/dashboard", status_code=303)
+            response.set_cookie("session_token", token, httponly=True, secure=_secure_cookie(request), samesite="lax",
+                                max_age=get_config().auth.jwt.access_token_expire_minutes * 60)
+            response.set_cookie("refresh_token", refresh, httponly=True, secure=_secure_cookie(request), samesite="lax", max_age=_refresh_cookie_max_age())
+        response.delete_cookie("dingtalk_state", path="/auth/dingtalk")
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    except (ValueError, TypeError, KeyError, httpx.HTTPError):
+        await session.rollback()
+        return _dingtalk_error(400)

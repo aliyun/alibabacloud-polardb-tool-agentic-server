@@ -536,10 +536,14 @@ async def remove_instance(
 
 @router.post("/discover")
 async def discover_instances(
+    region_id: str | None = None,
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    clusters = await instance_manager.discover_instances(session)
+    try:
+        clusters = await instance_manager.discover_instances(session, region_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
     return {"clusters": clusters}
 
 

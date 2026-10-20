@@ -11,7 +11,7 @@ from server.aliyun.diagnostics import (
     error_detail_from_error,
     request_id_from_error,
 )
-from server.aliyun.endpoints import resolve_openapi_endpoint
+from server.aliyun.endpoints import resolve_openapi_endpoint, validate_resource_region
 from server.aliyun.polardb_client import OpenAPIError, PolarDBClient
 from server.logging import safe_request_id
 
@@ -21,17 +21,38 @@ logger = logging.getLogger(__name__)
 class AliyunPolarDBClient(PolarDBClient):
     """PolarDBClient backed by the alibabacloud_polardb20170801 SDK."""
 
-    def __init__(self, credential_provider: CredentialProvider) -> None:
+    def __init__(
+        self, credential_provider: CredentialProvider, *, region_id: str | None = None
+    ) -> None:
         self._credential_provider = credential_provider
+        self._region_id = region_id or credential_provider.region_id
+        self._regional_clients: dict[str, AliyunPolarDBClient] = {}
         self._sdk: object | None = None
         self._sdk_endpoint: str | None = None
         self.last_request_id: str | None = None
 
+    def for_region(self, region_id: str | None) -> AliyunPolarDBClient:
+        region = validate_resource_region(
+            region_id, access_region=self._credential_provider.region_id,
+            network=self._credential_provider.openapi_network,
+        )
+        if region == self._region_id:
+            return self
+        if region not in self._regional_clients:
+            self._regional_clients[region] = AliyunPolarDBClient(
+                self._credential_provider, region_id=region
+            )
+        return self._regional_clients[region]
+
     async def _get_sdk(self):
         """Return the SDK client backed by the refreshing credentials client."""
+        validate_resource_region(
+            self._region_id, access_region=self._credential_provider.region_id,
+            network=self._credential_provider.openapi_network,
+        )
         endpoint = resolve_openapi_endpoint(
             "polardb",
-            self._credential_provider.region_id,
+            self._region_id,
             self._credential_provider.openapi_network,
         )
         if self._sdk is not None and endpoint == self._sdk_endpoint:
@@ -43,7 +64,7 @@ class AliyunPolarDBClient(PolarDBClient):
         self._sdk = Client(
             Config(
                 credential=self._credential_provider.credential_client,
-                region_id=self._credential_provider.region_id,
+                region_id=self._region_id,
                 endpoint=endpoint,
             )
         )
@@ -80,7 +101,7 @@ class AliyunPolarDBClient(PolarDBClient):
     async def discover_clusters(self, region_id: str) -> list[dict]:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
 
-        sdk = await self._get_sdk()
+        sdk = await self.for_region(region_id)._get_sdk()
         try:
             req = m.DescribeDBClustersRequest(region_id=region_id)
             resp = await sdk.describe_dbclusters_async(req)
@@ -178,12 +199,11 @@ class AliyunPolarDBClient(PolarDBClient):
     async def create_agentic_db(self, settings: Mapping[str, str]) -> dict:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
 
-        sdk = await self._get_sdk()
+        region_id = settings.get("region_id", self._region_id)
+        sdk = await self.for_region(region_id)._get_sdk()
         try:
             req = m.CreateDBClusterRequest(
-                region_id=settings.get(
-                    "region_id", self._credential_provider.region_id
-                ),
+                region_id=region_id,
                 dbtype=settings.get("db_type", "MySQL"),
                 dbversion=settings.get("db_version", "8.0"),
                 dbminor_version=settings.get("db_minor_version", "8.0.2"),
@@ -241,7 +261,7 @@ class AliyunPolarDBClient(PolarDBClient):
     ) -> dict:
         from alibabacloud_polardb20170801 import models as m  # type: ignore[import-untyped]
 
-        sdk = await self._get_sdk()
+        sdk = await self.for_region(params.get("region_id"))._get_sdk()
         try:
             req = m.CreateDBClusterRequest(
                 region_id=params.get("region_id"),

@@ -20,10 +20,11 @@ AGENTIC_DB_REVISION = "c0f1a2b3c4d5"
 DEDICATED_POOL_BASE_REVISION = "d4e5f6a7b8c9"
 DEDICATED_POOL_REVISION = "f3a4b5c6d7e8"
 LEGACY_MANAGED_F6_REVISION = "f6a7b8c9d0e1"
-HEAD_REVISION = "9c1d2e3f4a5b"
-ENCRYPTION_KEY = base64.b64encode(
-    b"01234567890123456789012345678901"
-).decode()
+PRE_KB_EXCLUSIONS_REVISION = "9c1d2e3f4a5b"
+KB_EXCLUSIONS_REVISION = "be3f4a5b6c7d"
+DIRECTORY_REVISION = "2c3d4e5f6a7b"
+HEAD_REVISION = "c7d8e9f0a1b2"
+ENCRYPTION_KEY = base64.b64encode(b"01234567890123456789012345678901").decode()
 NEW_TABLES = {
     "agents",
     "agent_api_tokens",
@@ -68,12 +69,15 @@ NEW_TABLES = {
     "identity_source_user_principal_snapshot_entries",
     "feishu_tenant_verification_states",
     "feishu_user_login_states",
+    "enterprise_identity_source_events",
     "sharepoint_user_login_states",
     "polarrag_upload_cleanups",
     "user_workspaces",
     "oidc_login_states",
     "external_token_sessions",
     "oauth_external_applications",
+    "external_knowledge_scope_snapshots",
+    "external_knowledge_scope_grants",
 }
 REMOVED_TABLES = {
     "db_accounts",
@@ -147,19 +151,14 @@ def _tables(connection: sqlite3.Connection) -> set[str]:
 
 def _mark_as_legacy_managed_f6(connection: sqlite3.Connection) -> None:
     """Reproduce the schema shipped before managed-pas-core was rebased."""
-    connection.execute(
-        "ALTER TABLE users ADD COLUMN password_state VARCHAR(32)"
-    )
+    connection.execute("ALTER TABLE users ADD COLUMN password_state VARCHAR(32)")
     for definition in (
         "lease_owner VARCHAR(255)",
         "lease_expires_at DATETIME",
         "instance_id VARCHAR(255)",
         "instance_generation BIGINT",
     ):
-        connection.execute(
-            "ALTER TABLE config_operation_receipts ADD COLUMN "
-            f"{definition}"
-        )
+        connection.execute(f"ALTER TABLE config_operation_receipts ADD COLUMN {definition}")
     connection.execute(
         "CREATE TABLE managed_instance_bindings ("
         "instance_id VARCHAR(255) NOT NULL PRIMARY KEY, "
@@ -169,10 +168,7 @@ def _mark_as_legacy_managed_f6(connection: sqlite3.Connection) -> None:
         "updated_at DATETIME"
         ")"
     )
-    connection.execute(
-        "ALTER TABLE users ADD COLUMN credential_epoch "
-        "INTEGER DEFAULT 1 NOT NULL"
-    )
+    connection.execute("ALTER TABLE users ADD COLUMN credential_epoch INTEGER DEFAULT 1 NOT NULL")
     connection.execute(
         "UPDATE alembic_version SET version_num = ?",
         (LEGACY_MANAGED_F6_REVISION,),
@@ -187,16 +183,13 @@ def test_target_migration_has_single_head_and_new_tables(tmp_path, monkeypatch):
 
     with sqlite3.connect(database) as connection:
         assert NEW_TABLES <= _tables(connection)
+        assert "enterprise_identity_source_events" in _tables(connection)
+        assert "feishu_directory_events" not in _tables(connection)
         assert REMOVED_TABLES.isdisjoint(_tables(connection))
-        columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(knowledge_resources)")
-        }
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(knowledge_resources)")}
         assert "catalog_sync_token" in columns
         identity_source_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(enterprise_identity_sources)"
-            )
+            row[1] for row in connection.execute("PRAGMA table_info(enterprise_identity_sources)")
         }
         assert {
             "sync_warning_json",
@@ -204,11 +197,27 @@ def test_target_migration_has_single_head_and_new_tables(tmp_path, monkeypatch):
             "sync_lease_until",
             "sync_retry_count",
             "sync_next_retry_at",
+            "event_listener_status",
+            "event_listener_worker_id",
+            "event_listener_lease_until",
+            "event_unavailable_since",
+            "last_group_synced_at",
+            "last_group_error",
+            "group_next_retry_at",
+            "sync_kind",
+            "full_sync_requested_at",
+            "event_listener_retry_count",
         } <= identity_source_columns
-        space_columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(polarrag_spaces)")
-        }
+        assert (
+            not {
+                "event_last_connected_at",
+                "event_last_received_at",
+                "event_last_processed_at",
+                "event_last_error",
+            }
+            & identity_source_columns
+        )
+        space_columns = {row[1] for row in connection.execute("PRAGMA table_info(polarrag_spaces)")}
         assert {
             "catalog_sync_status",
             "catalog_sync_result_json",
@@ -216,9 +225,7 @@ def test_target_migration_has_single_head_and_new_tables(tmp_path, monkeypatch):
             "catalog_sync_worker_id",
             "catalog_sync_lease_until",
         } <= space_columns
-        agent_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(agents)")
-        }
+        agent_columns = {row[1] for row in connection.execute("PRAGMA table_info(agents)")}
         assert {
             "bulk_assignment_status",
             "bulk_assignment_created_count",
@@ -236,10 +243,49 @@ def test_target_migration_has_single_head_and_new_tables(tmp_path, monkeypatch):
             LEGACY_MANAGED_F6_REVISION,
         )
     ] == [
+        "c7d8e9f0a1b2",
+        "b3c4d5e6f7a8",
+        "2c3d4e5f6a7b",
+        "cf4a5b6c7d8e",
+        "be3f4a5b6c7d",
         "9c1d2e3f4a5b",
         "fb1c2d3e4f5a",
         "c3d4e5f6a7b8",
     ]
+
+
+@pytest.mark.parametrize("source_revision", ["cf4a5b6c7d8e", DIRECTORY_REVISION])
+def test_external_scope_migration_upgrades_pre_feature_versions(tmp_path, monkeypatch, source_revision):
+    database = tmp_path / "pre-external-scope.db"
+    _upgrade(monkeypatch, database, source_revision)
+    with sqlite3.connect(database) as connection:
+        assert "external_knowledge_scope_snapshots" not in _tables(connection)
+    _upgrade(monkeypatch, database, "head")
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD_REVISION,)
+        assert "external_knowledge_scope_snapshots" in _tables(connection)
+        assert "enterprise_identity_source_events" in _tables(connection)
+    _check(monkeypatch, database)
+
+
+def test_external_scope_completed_head_replay_preserves_grants(tmp_path, monkeypatch):
+    database = tmp_path / "completed-external-scope.db"
+    _upgrade(monkeypatch, database, "head")
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO external_knowledge_scope_grants "
+            "(id,snapshot_id,identity_source_id,subject_type,subject_id,created_at) "
+            "VALUES (?,?,?,?,?,?)",
+            ("test-grant", "test-snapshot", "test-source", "user", "test-user", "2026-10-14"),
+        )
+        connection.commit()
+        before = list(connection.execute("SELECT * FROM external_knowledge_scope_grants"))
+        schema_before = list(connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name"))
+    _upgrade(monkeypatch, database, "head")
+    with sqlite3.connect(database) as connection:
+        assert list(connection.execute("SELECT * FROM external_knowledge_scope_grants")) == before
+        assert list(connection.execute("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")) == schema_before
+    _check(monkeypatch, database)
 
 
 def test_identity_membership_migration_preserves_legacy_table_and_adds_prune_index(
@@ -288,20 +334,17 @@ def test_identity_membership_migration_preserves_legacy_table_and_adds_prune_ind
         assert "enterprise_directory_memberships" in _tables(connection)
         assert "identity_source_group_memberships" not in _tables(connection)
         assert connection.execute(
-            "SELECT external_group_id, external_member_id "
-            "FROM enterprise_directory_memberships"
+            "SELECT external_group_id, external_member_id FROM enterprise_directory_memberships"
         ).fetchall() == [("group-rename", "user-rename")]
         prune_index = next(
             row[1]
-            for row in connection.execute(
-                "PRAGMA index_list(enterprise_directory_memberships)"
-            )
+            for row in connection.execute("PRAGMA index_list(enterprise_directory_memberships)")
             if row[1] == "ix_identity_source_group_memberships_prune"
         )
-        assert [
-            row[2]
-            for row in connection.execute(f"PRAGMA index_info({prune_index})")
-        ] == ["identity_source_id", "updated_at"]
+        assert [row[2] for row in connection.execute(f"PRAGMA index_info({prune_index})")] == [
+            "identity_source_id",
+            "updated_at",
+        ]
 
 
 def test_knowledge_scope_indexes_are_additive(tmp_path, monkeypatch):
@@ -311,25 +354,18 @@ def test_knowledge_scope_indexes_are_additive(tmp_path, monkeypatch):
     with sqlite3.connect(database) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         assert "source_subject_type" not in {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(identity_source_user_principal_snapshot_entries)"
-            )
+            row[1] for row in connection.execute("PRAGMA table_info(identity_source_user_principal_snapshot_entries)")
         }
         indexes = {
             row[1]: bool(row[2])
-            for row in connection.execute(
-                "PRAGMA index_list(identity_source_user_principal_snapshot_entries)"
-            )
+            for row in connection.execute("PRAGMA index_list(identity_source_user_principal_snapshot_entries)")
         }
         assert indexes["ix_identity_source_user_principal_snapshot_key"] is False
         scope_indexes = {
-            row[1]: bool(row[2])
-            for row in connection.execute(
-                "PRAGMA index_list(agent_knowledge_scopes)"
-            )
+            row[1]: bool(row[2]) for row in connection.execute("PRAGMA index_list(agent_knowledge_scopes)")
         }
         assert scope_indexes["ix_agent_knowledge_scope_external"] is False
+
 
 def test_identity_source_stale_ttl_migration_preserves_existing_sources(
     tmp_path,
@@ -359,8 +395,7 @@ def test_identity_source_stale_ttl_migration_preserves_existing_sources(
 
     with sqlite3.connect(database) as connection:
         assert connection.execute(
-            "SELECT stale_after_seconds FROM enterprise_identity_sources "
-            "WHERE id = ?",
+            "SELECT stale_after_seconds FROM enterprise_identity_sources WHERE id = ?",
             ("identity-source-stale-ttl",),
         ).fetchone() == (1800,)
         connection.execute(
@@ -377,8 +412,7 @@ def test_identity_source_stale_ttl_migration_preserves_existing_sources(
             ),
         )
         assert connection.execute(
-            "SELECT stale_after_seconds FROM enterprise_identity_sources "
-            "WHERE id = ?",
+            "SELECT stale_after_seconds FROM enterprise_identity_sources WHERE id = ?",
             ("identity-source-new-default",),
         ).fetchone() == (1800,)
 
@@ -392,40 +426,23 @@ def test_upgrade_repairs_pre_rebase_managed_f6_schema(
 
     with sqlite3.connect(database) as connection:
         _mark_as_legacy_managed_f6(connection)
-        assert connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone() == (LEGACY_MANAGED_F6_REVISION,)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (LEGACY_MANAGED_F6_REVISION,)
         assert "polarrag_upload_cleanups" not in _tables(connection)
-        backend_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(provisioning_backends)"
-            )
-        }
+        backend_columns = {row[1] for row in connection.execute("PRAGMA table_info(provisioning_backends)")}
         assert "backend_type" not in backend_columns
 
     _upgrade(monkeypatch, database, "head")
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone() == (HEAD_REVISION,)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD_REVISION,)
         assert {
             "managed_instance_bindings",
             "polarrag_upload_cleanups",
             "dedicated_pools",
         } <= _tables(connection)
-        backend_columns = {
-            row[1]
-            for row in connection.execute(
-                "PRAGMA table_info(provisioning_backends)"
-            )
-        }
+        backend_columns = {row[1] for row in connection.execute("PRAGMA table_info(provisioning_backends)")}
         assert "backend_type" in backend_columns
-        user_columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(users)")
-        }
+        user_columns = {row[1] for row in connection.execute("PRAGMA table_info(users)")}
         assert {"password_state", "credential_epoch"} <= user_columns
 
     _check(monkeypatch, database)
@@ -440,9 +457,7 @@ def test_upgrade_rejects_partial_pre_rebase_managed_f6_schema(
 
     with sqlite3.connect(database) as connection:
         _mark_as_legacy_managed_f6(connection)
-        connection.execute(
-            "CREATE TABLE polarrag_instances (id VARCHAR(36) PRIMARY KEY)"
-        )
+        connection.execute("CREATE TABLE polarrag_instances (id VARCHAR(36) PRIMARY KEY)")
         connection.commit()
 
     with pytest.raises(RuntimeError, match="LEGACY_F6_SCHEMA_PARTIAL"):
@@ -459,19 +474,13 @@ def test_schema_check_does_not_repair_pre_rebase_managed_f6_schema(
     with sqlite3.connect(database) as connection:
         _mark_as_legacy_managed_f6(connection)
 
-    monkeypatch.setenv(
-        "PAS_DATABASE_URL", f"sqlite+aiosqlite:///{database}"
-    )
+    monkeypatch.setenv("PAS_DATABASE_URL", f"sqlite+aiosqlite:///{database}")
     monkeypatch.setenv("PAS_ENCRYPTION_KEY", ENCRYPTION_KEY)
     reset_config()
     from server.db.schema import DatabaseSchemaError, check_database_schema
 
     with pytest.raises(DatabaseSchemaError) as captured:
-        asyncio.run(
-            check_database_schema(
-                f"sqlite+aiosqlite:///{database}"
-            )
-        )
+        asyncio.run(check_database_schema(f"sqlite+aiosqlite:///{database}"))
     assert captured.value.code == "DATABASE_SCHEMA_REPAIR_REQUIRED"
 
     with pytest.raises((AutogenerateDiffsDetected, CommandError)):
@@ -480,9 +489,7 @@ def test_schema_check_does_not_repair_pre_rebase_managed_f6_schema(
 
     with sqlite3.connect(database) as connection:
         assert "polarrag_upload_cleanups" not in _tables(connection)
-        assert connection.execute(
-            "SELECT version_num FROM alembic_version"
-        ).fetchone() == (LEGACY_MANAGED_F6_REVISION,)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (LEGACY_MANAGED_F6_REVISION,)
 
 
 def test_polarrag_migration_downgrades_and_reupgrades_cleanly(
@@ -490,7 +497,7 @@ def test_polarrag_migration_downgrades_and_reupgrades_cleanly(
     monkeypatch,
 ):
     database = tmp_path / "polarrag-roundtrip.db"
-    _upgrade(monkeypatch, database, "head")
+    _upgrade(monkeypatch, database, PRE_KB_EXCLUSIONS_REVISION)
 
     with sqlite3.connect(database) as connection:
         assert POLARRAG_TABLES <= _tables(connection)
@@ -499,9 +506,29 @@ def test_polarrag_migration_downgrades_and_reupgrades_cleanly(
     with sqlite3.connect(database) as connection:
         assert POLARRAG_TABLES.isdisjoint(_tables(connection))
 
+    _upgrade(monkeypatch, database, PRE_KB_EXCLUSIONS_REVISION)
     _upgrade(monkeypatch, database, "head")
     with sqlite3.connect(database) as connection:
         assert POLARRAG_TABLES <= _tables(connection)
+
+
+def test_knowledge_visibility_exclusions_require_backup_for_downgrade(
+    tmp_path,
+    monkeypatch,
+):
+    database = tmp_path / "knowledge-visibility-downgrade.db"
+    _upgrade(monkeypatch, database, KB_EXCLUSIONS_REVISION)
+
+    with pytest.raises(RuntimeError, match="Restore the pre-upgrade metadata backup"):
+        _downgrade(monkeypatch, database, PRE_KB_EXCLUSIONS_REVISION)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (KB_EXCLUSIONS_REVISION,)
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_polarrag_instance_bindings)")}
+        assert {
+            "public_excluded_resource_ids_json",
+            "personal_excluded_resource_ids_json",
+        } <= columns
 
 
 def test_native_polarrag_principal_constraint_round_trip(
@@ -509,7 +536,7 @@ def test_native_polarrag_principal_constraint_round_trip(
     monkeypatch,
 ):
     database = tmp_path / "native-principal-roundtrip.db"
-    _upgrade(monkeypatch, database, "head")
+    _upgrade(monkeypatch, database, PRE_KB_EXCLUSIONS_REVISION)
 
     with sqlite3.connect(database) as connection:
         table_sql = connection.execute(
@@ -528,6 +555,7 @@ def test_native_polarrag_principal_constraint_round_trip(
         assert "ck_enterprise_principal_native_user" not in table_sql
         assert "ck_enterprise_principal_native_admin" not in table_sql
 
+    _upgrade(monkeypatch, database, PRE_KB_EXCLUSIONS_REVISION)
     _upgrade(monkeypatch, database, "head")
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (HEAD_REVISION,)
@@ -936,7 +964,7 @@ def test_consolidated_migration_can_reupgrade_after_downgrade(
 ):
     database = tmp_path / "permission-policy-reupgrade.db"
 
-    _upgrade(monkeypatch, database, "head")
+    _upgrade(monkeypatch, database, PRE_KB_EXCLUSIONS_REVISION)
     monkeypatch.setenv("PAS_DATABASE_URL", f"sqlite+aiosqlite:///{database}")
     monkeypatch.setenv("PAS_ENCRYPTION_KEY", ENCRYPTION_KEY)
     reset_config()

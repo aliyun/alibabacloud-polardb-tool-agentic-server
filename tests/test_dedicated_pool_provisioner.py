@@ -37,6 +37,10 @@ from server.models import (
 
 
 class FakeClient:
+    def for_region(self, region_id):
+        self.region_id = region_id
+        return self
+
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.fail_super_once = False
@@ -282,6 +286,55 @@ async def test_prewarmer_normalizes_legacy_pool_network_before_purchase(
     assert purchase[1]["zone_id"] == "cn-beijing-k"
     assert purchase[1]["vpc_id"] == "vpc-legacy"
     assert purchase[1]["vswitch_id"] == "vsw-legacy"
+
+
+async def test_lifecycle_keeps_instance_region_after_pool_edit(provisioner_context):
+    factory, member_id, client, mysql = provisioner_context
+    provisioner = DedicatedPoolProvisioner(factory, client, mysql)
+    await provisioner.advance(member_id)
+    async with factory() as session:
+        member = await session.get(DedicatedPoolMember, member_id)
+        assert member.instance.region == "cn-hangzhou"
+    await provisioner.advance(member_id)
+    async with factory() as session:
+        member = await session.get(DedicatedPoolMember, member_id)
+        member.pool.region_id = "cn-shenzhen"
+        await session.commit()
+    await provisioner.advance(member_id)
+    assert client.region_id == "cn-hangzhou"
+    async with factory() as session:
+        member = await session.get(DedicatedPoolMember, member_id)
+        assert member.instance.region == "cn-hangzhou"
+
+
+async def test_placement_edit_rejected_during_purchase_intent(provisioner_context):
+    from server.core.dedicated_pool_service import update_dedicated_pool, DedicatedPoolStateConflict
+
+    factory, member_id, client, mysql = provisioner_context
+    await DedicatedPoolProvisioner(factory, client, mysql).advance(member_id)
+    async with factory() as session:
+        member = await session.get(DedicatedPoolMember, member_id)
+        with pytest.raises(DedicatedPoolStateConflict, match="purchase is pending"):
+            await update_dedicated_pool(
+                session, pool_id=member.pool_id, changes={"region_id": "cn-shenzhen"},
+                network_change_confirmed=True,
+            )
+
+
+async def test_pool_rejects_vpc_cross_region_placement(provisioner_context):
+    from server.config import get_config
+    from server.core.dedicated_pool_service import update_dedicated_pool, DedicatedPoolServiceError
+
+    factory, member_id, _client, _mysql = provisioner_context
+    get_config().aliyun.openapi_network = "vpc"
+    get_config().aliyun.region_id = "cn-hangzhou"
+    async with factory() as session:
+        member = await session.get(DedicatedPoolMember, member_id)
+        with pytest.raises(DedicatedPoolServiceError, match="must match"):
+            await update_dedicated_pool(
+                session, pool_id=member.pool_id, changes={"region_id": "cn-shenzhen"},
+                network_change_confirmed=True,
+            )
 
 
 async def test_prewarmer_releases_database_transaction_during_purchase(

@@ -17,6 +17,8 @@ from server.models import (
 from server.mcp.agent_user_context import (
     resolve_polarrag_resource_scope_for_agent,
 )
+from server.polarrag.client import supports_optimized_document_apis
+from server.polarrag.access import KnowledgeResourceScope
 
 router = APIRouter(prefix="/me", tags=["my-resources"])
 
@@ -41,7 +43,7 @@ async def list_my_resources(
     )
     if personal and agent_id is not None:
         raise HTTPException(422, "Personal resources cannot use an Agent scope")
-    resource_scope = None
+    resource_scope = KnowledgeResourceScope({}, personal_only=True) if personal else None
     if agent_id is not None:
         agent = await session.get(Agent, agent_id)
         if (
@@ -107,6 +109,7 @@ async def list_my_resources(
                 "knowledge_space_name": resource.space.name,
                 "polarrag_instance_id": resource.polarrag_instance_id,
                 "polarrag_instance_name": resource.space.instance.name,
+                "force_rechunk_supported": supports_optimized_document_apis(resource.space.instance.plugin_version),
                 "name": resource.name,
                 "kb_id": resource.kb_id,
                 "kb_type": resource.kb_type,

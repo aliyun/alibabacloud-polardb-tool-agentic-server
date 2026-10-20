@@ -25,6 +25,7 @@ from server.polarrag.access import (
     KnowledgeResourceScope,
     list_visible_knowledge_resources,
     list_visible_knowledge_resources_cursor_page,
+    list_visible_knowledge_resources_page,
     plan_knowledge_access,
 )
 
@@ -110,6 +111,38 @@ async def seeded():
         await session.commit()
         yield session, user, resources, owner_resource
     await engine.dispose()
+
+
+@pytest.mark.parametrize("kb_type", ["PUBLIC", "PERSONAL"])
+async def test_excluded_resources_are_absent_from_user_pages_and_cursors(seeded, kb_type):
+    session, user, resources, _ = seeded
+    excluded, visible = resources
+    for resource in resources:
+        resource.kb_type = kb_type
+        if kb_type == "PERSONAL":
+            resource.binding_mode = KnowledgeBindingMode.OWNER
+            resource.owner_pas_user_id = user.id
+    await session.commit()
+    scope = KnowledgeResourceScope(
+        {resource.polarrag_instance_id: None for resource in resources},
+        excluded_resource_ids=frozenset({excluded.id}),
+    )
+    page, total = await list_visible_knowledge_resources_page(session, user, resource_scope=scope, limit=1)
+    assert [resource.id for resource in page] == [visible.id]
+    assert total == 1
+    page, has_more, valid = await list_visible_knowledge_resources_cursor_page(
+        session, user, resource_scope=scope, limit=1,
+    )
+    assert [resource.id for resource in page] == [visible.id]
+    assert not has_more and valid
+    page, has_more, valid = await list_visible_knowledge_resources_cursor_page(
+        session, user, resource_scope=scope, cursor=excluded.id, limit=1,
+    )
+    assert page == [] and not has_more and not valid
+    page, has_more, valid = await list_visible_knowledge_resources_cursor_page(
+        session, user, resource_scope=scope, resource_id=excluded.id, limit=1,
+    )
+    assert page == [] and not has_more and valid
 
 
 async def test_access_plan_keeps_inaccessible_resources_as_partial_failures(

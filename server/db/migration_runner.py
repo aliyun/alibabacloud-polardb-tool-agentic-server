@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from server.db import schema_contract as contract
+from server.db.engine import sqlite_connect_args
 
 MigrationReporter = Callable[[str], None]
 
@@ -81,7 +82,7 @@ def _valid_release_manifest(manifest: dict, required_head: str) -> bool:
     compatible = manifest.get("compatible_manifest_digests", [])
     if (
         manifest.get("head") != required_head
-        or classification not in {"NONE", "EXPAND"}
+        or classification not in {"NONE", "EXPAND", "CONTRACT"}
         or type(required_sequence) is not int
         or required_sequence < 0
         or not isinstance(compatible, list)
@@ -91,6 +92,43 @@ def _valid_release_manifest(manifest: dict, required_head: str) -> bool:
     if classification == "NONE":
         return required_head == baseline_head and required_sequence == 0
     return required_head != baseline_head and required_sequence > 0
+
+
+_AGENT_SCOPE_HEAD = "9c1d2e3f4a5b"
+
+
+def _repair_prerelease_agent_scope_table_name(
+    connection, heads: tuple[str, ...], before_ddl: Callable[[], None]
+) -> None:
+    if heads != (_AGENT_SCOPE_HEAD,):
+        return
+    inspector = sa.inspect(connection)
+    tables = set(inspector.get_table_names())
+    if "enterprise_directory_memberships" in tables:
+        return
+    if "identity_source_group_memberships" not in tables:
+        return
+    required_columns = {
+        "id",
+        "identity_source_id",
+        "external_group_id",
+        "member_type",
+        "external_member_id",
+        "created_at",
+        "updated_at",
+    }
+    actual_columns = {
+        column["name"]
+        for column in inspector.get_columns("identity_source_group_memberships")
+    }
+    if actual_columns != required_columns:
+        return
+    before_ddl()
+    connection.exec_driver_sql(
+        "ALTER TABLE identity_source_group_memberships "
+        "RENAME TO enterprise_directory_memberships"
+    )
+    connection.commit()
 
 
 @asynccontextmanager
@@ -142,6 +180,7 @@ async def run_migration(
     url: str,
     operation_id: str | None = None,
     reporter: MigrationReporter | None = None,
+    *, maintenance: bool = False,
 ) -> None:
     from server.db.schema import DatabaseSchemaError, _alembic_config, required_schema_head
 
@@ -237,7 +276,7 @@ async def run_migration(
             database_connected=False,
             schema_changes_attempted=False,
         )
-        engine = create_async_engine(url, poolclass=NullPool)
+        engine = create_async_engine(url, poolclass=NullPool, connect_args=sqlite_connect_args(url))
         async with engine.connect() as connection:
             database_connected = True
             _report_migration(
@@ -276,9 +315,16 @@ async def run_migration(
                         database_connected=True,
                         schema_changes_attempted=False,
                     )
+                    heads = MigrationContext.configure(sync).get_current_heads()
+
+                    def mark_schema_changes_attempted():
+                        nonlocal schema_changes_attempted
+                        schema_changes_attempted = True
+
+                    if maintenance:
+                        _repair_prerelease_agent_scope_table_name(sync, heads, mark_schema_changes_attempted)
                     fingerprint = contract.physical_fingerprint(sync)
                     previous = contract.read_record(sync, key)
-                    heads = MigrationContext.configure(sync).get_current_heads()
                     published = contract.read_record(sync, contract.CONTRACT_KEY)
                     if (
                         len(heads) == 1
@@ -292,6 +338,23 @@ async def run_migration(
                         sync.rollback()
                         result = "compatible-newer-schema-preserved"
                         return
+                    if manifest["release_classification"] == "CONTRACT" and heads and heads != (manifest["head"],) and not maintenance:
+                        from server.db.managed_live_upgrade import allows_managed_live_upgrade, pristine_source
+
+                        version = sync.scalar(sa.text("SELECT @@version")) if sync.dialect.name == "mysql" else ""
+                        allowed = allows_managed_live_upgrade(manifest=manifest, heads=heads, published=published,
+                            dialect=sync.dialect.name, server_version=version, env=os.environ,
+                            source_pristine=pristine_source(sync))
+                        if not allowed:
+                            raise DatabaseSchemaError("DATABASE_MAINTENANCE_REQUIRED",
+                                "CONTRACT migration requires stopped old readers/writers and a paired backup. Use --maintenance after closing the compatibility window.")
+                        _report_migration(reporter, stage="live-upgrade-admission", status="succeeded",
+                            exception="managed-mysql-8.0.13-legacy-to-108", source_heads=list(heads),
+                            target_head=manifest["head"], database_connected=True, schema_changes_attempted=False)
+                    if not maintenance:
+                        _repair_prerelease_agent_scope_table_name(sync, heads, mark_schema_changes_attempted)
+                        if schema_changes_attempted:
+                            fingerprint = contract.physical_fingerprint(sync)
                     if previous and previous.get("status") in {"RUNNING", "FAILED"}:
                         already_complete = heads == (manifest["head"],) and not contract.physical_errors(sync)
                         if not already_complete and previous.get("source_fingerprint") != fingerprint:
@@ -410,5 +473,6 @@ def migrate(
     url: str,
     operation_id: str | None = None,
     reporter: MigrationReporter | None = None,
+    *, maintenance: bool = False,
 ) -> None:
-    asyncio.run(run_migration(url, operation_id, reporter))
+    asyncio.run(run_migration(url, operation_id, reporter, maintenance=maintenance))

@@ -45,6 +45,10 @@ OPENAPI_DUPLICATE_CODES = frozenset({
 class PolarDBClient(abc.ABC):
     """Abstract interface for PolarDB OpenAPI operations."""
 
+    def for_region(self, region_id: str | None) -> PolarDBClient:
+        """Simulation clients have no network; real clients override routing."""
+        return self
+
     @abc.abstractmethod
     async def discover_clusters(self, region_id: str) -> list[dict]: ...
 

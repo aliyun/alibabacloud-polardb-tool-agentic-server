@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.models import Agent, AgentStatus
+from server.models import Agent, AgentKnowledgeScopeMode, AgentStatus
 
 
 async def create_agent(
@@ -14,7 +14,11 @@ async def create_agent(
     max_active_resources: int | None,
     oauth_redirect_uri: str | None,
     admin_id: str,
+    knowledge_scope_mode: AgentKnowledgeScopeMode = AgentKnowledgeScopeMode.LEGACY_ALL,
+    external_knowledge_auto_bind_enabled: bool = False,
 ) -> Agent:
+    if external_knowledge_auto_bind_enabled and knowledge_scope_mode != AgentKnowledgeScopeMode.SCOPED:
+        raise ValueError("External knowledge auto-bind requires SCOPED mode")
     normalized_name = name.strip()
     if not normalized_name:
         raise ValueError("Agent name must not be empty")
@@ -24,6 +28,8 @@ async def create_agent(
         max_active_resources=max_active_resources,
         oauth_redirect_uri=oauth_redirect_uri,
         created_by=admin_id,
+        knowledge_scope_mode=knowledge_scope_mode,
+        external_knowledge_auto_bind_enabled=external_knowledge_auto_bind_enabled,
     )
     session.add(agent)
     await session.flush()

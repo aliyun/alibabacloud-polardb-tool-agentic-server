@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import RegionSelect from '../../components/RegionSelect'
 import {
   Alert,
   Button,
@@ -560,8 +561,8 @@ export default function Instances() {
           >
             {selectedEngine === 'polardb_mysql' && (
               <Col xs={24} md={12}>
-                <Form.Item name="region" label={t('instances.region')} rules={[{ max: 64 }]}>
-                  <Input placeholder="cn-hangzhou" autoComplete="off" />
+                <Form.Item name="region" label={t('instances.region')} rules={[{ max: 64 }]} extra={t('cloudConnection.regionHelp')}>
+                  <RegionSelect allowClear />
                 </Form.Item>
               </Col>
             )}

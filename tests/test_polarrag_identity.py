@@ -5,13 +5,18 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from server.enterprise_identity.service import upsert_external_user
 from server.models import (
     AuthProvider,
     Base,
+    EnterpriseIdentitySource,
+    EnterpriseIdentitySourceSpaceBinding,
+    EnterpriseIdentitySourceStatus,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalStatus,
     EnterprisePrincipalType,
+    IdentitySourceProvider,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
     PolarRAGSpace,
@@ -128,6 +133,70 @@ async def test_resolve_acl_context_allows_native_user_principal_without_assignme
             }
         ],
     }
+
+
+async def test_resolve_acl_context_includes_all_linked_external_identities(session) -> None:
+    user = User(
+        external_id="native-user",
+        display_name="Native User",
+        auth_provider=AuthProvider.BUILTIN,
+    )
+    session.add(user)
+    await session.flush()
+    instance = PolarRAGInstance(
+        name="linked-identities-rag",
+        scheme="https",
+        host="rag.example.test",
+        port=443,
+        username_ciphertext="encrypted",
+        password_ciphertext="encrypted",
+        status=PolarRAGInstanceStatus.ACTIVE,
+        created_by=user.id,
+    )
+    source = EnterpriseIdentitySource.create(
+        name="Feishu directory",
+        provider=IdentitySourceProvider.FEISHU,
+        tenant_id="tenant-001",
+    )
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    source.last_synced_at = datetime.now(UTC)
+    session.add_all([instance, source])
+    await session.flush()
+    space = PolarRAGSpace(
+        polarrag_instance_id=instance.id,
+        space_id="space-a",
+        name="A",
+        identity_domain="tenant-a",
+        enabled=True,
+    )
+    session.add(space)
+    await session.flush()
+    session.add(
+        EnterpriseIdentitySourceSpaceBinding(
+            identity_source_id=source.id,
+            knowledge_space_id=space.knowledge_space_id,
+        )
+    )
+    for external_user_id in ("ou-first", "ou-second"):
+        await upsert_external_user(
+            session,
+            source,
+            external_user_id=external_user_id,
+            display_name=external_user_id,
+            email=None,
+            user=user,
+        )
+    await session.commit()
+
+    context = await resolve_acl_context(session, user.id, space.knowledge_space_id)
+
+    assert context["principals"] == [
+        {"provider": "feishu", "type": "user", "id": "ou-first"},
+        {"provider": "feishu", "type": "user", "id": "ou-second"},
+        {"provider": "polarrag", "type": "user", "id": "feishu:tenant-001:ou-first"},
+        {"provider": "polarrag", "type": "user", "id": "feishu:tenant-001:ou-second"},
+        {"provider": "polarrag", "type": "user", "id": "native-user"},
+    ]
 
 
 async def test_resolve_acl_context_accepts_native_user_assignment_only(

@@ -34,6 +34,7 @@ def _principal_snapshot_id(*parts: str) -> str:
 class IdentitySourceProvider(str, enum.Enum):
     FEISHU = "feishu"
     SHAREPOINT = "sharepoint"
+    DINGTALK = "dingtalk"
 
 
 class EnterpriseIdentitySourceStatus(str, enum.Enum):
@@ -42,6 +43,19 @@ class EnterpriseIdentitySourceStatus(str, enum.Enum):
     ACTIVE = "active"
     STALE = "stale"
     DISABLED = "disabled"
+
+
+class FeishuEventSubscriptionStatus(str, enum.Enum):
+    CONNECTING = "connecting"
+    CONNECTED_UNCONFIRMED = "connected_unconfirmed"
+    ACTIVE = "active"
+    ERROR = "error"
+
+
+class EnterpriseIdentitySourceEventStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSED = "processed"
+    FAILED = "failed"
 
 
 class EnterpriseDirectoryEntryStatus(str, enum.Enum):
@@ -65,12 +79,14 @@ class EnterpriseIdentitySource(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("provider", "tenant_id", name="uq_identity_source_provider_tenant"),
         CheckConstraint(
-            "provider IN ('feishu', 'sharepoint')",
+            "provider IN ('feishu', 'sharepoint', 'dingtalk')",
             name="ck_identity_source_provider",
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    permission_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    permission_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
     provider: Mapped[IdentitySourceProvider] = mapped_column(
         Enum(
@@ -92,6 +108,9 @@ class EnterpriseIdentitySource(TimestampMixin, Base):
     )
     config_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_group_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_group_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    group_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     stale_after_seconds: Mapped[int] = mapped_column(
         Integer,
         default=DEFAULT_IDENTITY_SOURCE_STALE_AFTER_SECONDS,
@@ -99,9 +118,24 @@ class EnterpriseIdentitySource(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(String(512), nullable=True)
     sync_warning_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     sync_worker_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sync_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    full_sync_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sync_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sync_retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     sync_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_listener_status: Mapped[FeishuEventSubscriptionStatus | None] = mapped_column(
+        Enum(
+            FeishuEventSubscriptionStatus,
+            native_enum=False,
+            length=32,
+            values_callable=lambda values: [item.value for item in values],
+        ),
+        nullable=True,
+    )
+    event_listener_worker_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    event_listener_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_listener_retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    event_unavailable_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @classmethod
     def create(
@@ -138,6 +172,34 @@ class EnterpriseIdentitySourceSpaceBinding(TimestampMixin, Base):
     )
 
 
+class EnterpriseIdentitySourceEvent(TimestampMixin, Base):
+    __tablename__ = "enterprise_identity_source_events"
+    __table_args__ = (
+        Index("ix_identity_source_event_created_at", "created_at"),
+        Index(
+            "ix_identity_source_event_pending",
+            "status",
+            "next_retry_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    identity_source_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_type: Mapped[str] = mapped_column(String(128))
+    subject_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[EnterpriseIdentitySourceEventStatus] = mapped_column(
+        Enum(
+            EnterpriseIdentitySourceEventStatus,
+            native_enum=False,
+            length=16,
+            values_callable=lambda values: [item.value for item in values],
+        ),
+        default=EnterpriseIdentitySourceEventStatus.PENDING,
+        server_default=EnterpriseIdentitySourceEventStatus.PENDING.value,
+    )
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 class FeishuTenantVerificationState(TimestampMixin, Base):
     __tablename__ = "feishu_tenant_verification_states"
 
@@ -162,6 +224,19 @@ class FeishuUserLoginState(TimestampMixin, Base):
         index=True,
     )
     state_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class DingTalkLoginState(TimestampMixin, Base):
+    """One-shot, configuration-fenced state; logical references have no FK."""
+    __tablename__ = "dingtalk_login_states"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    identity_source_id: Mapped[str] = mapped_column(String(36), index=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    state_hash: Mapped[str] = mapped_column(String(64), index=True)
+    browser_hash: Mapped[str] = mapped_column(String(64))
+    config_digest: Mapped[str] = mapped_column(String(64))
+    purpose: Mapped[str] = mapped_column(String(16))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 

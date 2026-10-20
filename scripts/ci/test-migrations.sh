@@ -40,5 +40,34 @@ esac
 if [ "${PAS_TEST_SCALABILITY_DATABASE_OK:-0}" = "1" ]; then
   PAS_TEST_SCALABILITY_DATABASE_URL=$PAS_DATABASE_URL
   export PAS_TEST_SCALABILITY_DATABASE_URL
+  case "$MODE" in
+    mysql)
+      PAS_TEST_MYSQL_URL=$PAS_DATABASE_URL
+      PAS_TEST_MYSQL_DATABASE_OK=1
+      export PAS_TEST_MYSQL_URL PAS_TEST_MYSQL_DATABASE_OK
+      uv run pytest tests/test_configuration_cross_backend.py tests/test_knowledge_backends.py -k MYSQL_URL -q
+      ;;
+    postgresql)
+      PAS_TEST_POSTGRES_URL=$PAS_DATABASE_URL
+      PAS_TEST_POSTGRES_SCHEMA_OK=1
+      export PAS_TEST_POSTGRES_URL PAS_TEST_POSTGRES_SCHEMA_OK
+      uv run pytest tests/test_configuration_cross_backend.py tests/test_knowledge_backends.py -k POSTGRES_URL -q
+      ;;
+  esac
   uv run pytest tests/integration/test_pas_scalability_backends.py -q
+  if [ "$MODE" = "mysql" ]; then
+    uv run pytest tests/test_management_accounts_mysql.py -q
+    case "$PAS_DATABASE_URL" in
+      mysql+asyncmy://root@127.0.0.1:*/pas_local_reg_*)
+        uv run pytest tests/integration/test_env_generator_native_mysql.py -q
+        ;;
+    esac
+  fi
+  if [ "$MODE" = "postgresql" ]; then
+    PAS_TEST_POSTGRES_URL=$PAS_DATABASE_URL
+    PAS_TEST_POSTGRES_SCHEMA_OK=1
+    export PAS_TEST_POSTGRES_URL PAS_TEST_POSTGRES_SCHEMA_OK
+    uv run pytest tests/test_provisioning_capacity_postgres.py tests/test_password_session_races_postgres.py \
+      tests/test_credential_mutation.py::test_concurrent_reset_rejects_stale_inflight_self_change -q
+  fi
 fi

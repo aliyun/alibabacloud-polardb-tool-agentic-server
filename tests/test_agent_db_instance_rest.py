@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from server.config import reset_config
 from server.core.crypto import encrypt
 from server.db.engine import get_session
-from server.mcp.agent_openapi import router as agent_openapi_router
 from server.mcp.db_instance_rest import router as agent_db_instance_router
 from server.models import (
     Agent,
@@ -112,7 +111,6 @@ async def rest_context():
 
     app = FastAPI()
     app.include_router(agent_db_instance_router)
-    app.include_router(agent_openapi_router)
 
     async def session_override():
         async with sessions() as session:

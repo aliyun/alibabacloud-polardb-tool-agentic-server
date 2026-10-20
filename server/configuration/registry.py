@@ -52,6 +52,7 @@ class ExternalTokenTrustConfig(_StrictModel):
         "oauth2_introspection",
         "oauth2_userinfo",
         "feishu",
+        "dingtalk",
         "buc",
     ] = "oidc_jwt"
     direct_mcp_enabled: bool = False
@@ -76,7 +77,7 @@ class ExternalTokenTrustConfig(_StrictModel):
         if not self.enabled:
             return self
         if (
-            self.provider == "feishu"
+            self.provider in {"feishu", "dingtalk"}
             and self.direct_mcp_enabled
             and not self.identity_source_id
         ):
@@ -487,6 +488,10 @@ def validate_module_config(
             and (
                 external_base_url.startswith("https://")
                 or (
+                    normalized.get("browser_login_enabled", True) is False
+                    and external_base_url.startswith("http://")
+                )
+                or (
                     allow_insecure_loopback_urls
                     and is_pas_ipv4_loopback_http_origin(external_base_url)
                 )
@@ -498,7 +503,9 @@ def validate_module_config(
                 normalized_config=normalized,
                 error_code="EXTERNAL_BASE_URL_REQUIRED",
                 message=(
-                    "An explicit HTTPS external_base_url is required. "
+                    "An explicit external_base_url is required. Browser SSO "
+                    "requires HTTPS; Token Exchange-only mode permits HTTP "
+                    "or HTTPS. "
                     "Local development mode additionally permits an exact "
                     "localhost or 127.0.0.1 HTTP origin."
                 ),

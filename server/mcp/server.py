@@ -213,7 +213,7 @@ async def delete_branch(
 
 
 @router.get("/tools")
-async def list_tools():
+async def list_tools(_user: User = Depends(get_current_user)):
     """List available MCP tools."""
     return {
         "tools": [

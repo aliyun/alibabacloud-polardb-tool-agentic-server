@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import ssl
 from collections.abc import Callable
 from datetime import datetime
@@ -28,9 +29,7 @@ from server.polarrag.oss import validate_endpoint
 _PLUGIN_ROOT = "/_plugins/_polar_rag"
 _CATALOG_PAGE_SIZE = 100
 _MAX_CATALOG_PAGES = 10_000
-_RERANKER_NOT_CONFIGURED_PREFIX = (
-    "reranker is not configured for space:"
-)
+_RERANKER_NOT_CONFIGURED_PREFIX = "reranker is not configured for space:"
 _DOCUMENT_UPLOAD_FORBIDDEN_TYPES = frozenset(
     {
         "acl_actor_not_in_principals",
@@ -40,6 +39,36 @@ _DOCUMENT_UPLOAD_FORBIDDEN_TYPES = frozenset(
     }
 )
 logger = logging.getLogger(__name__)
+_PLUGIN_MINIMUM_VERSION = (1, 0, 6)
+_PLUGIN_107_VERSION = (1, 0, 7)
+_PLUGIN_PACKAGE_VERSION_RE = re.compile(r"^t-polardb-rag-(\d+)\.(\d+)\.(\d+)(?:-|$)")
+_PLUGIN_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def _plugin_version_tuple(version: str | None) -> tuple[int, int, int] | None:
+    if not isinstance(version, str):
+        return None
+    match = _PLUGIN_PACKAGE_VERSION_RE.match(version)
+    if match is None:
+        match = _PLUGIN_SEMVER_RE.fullmatch(version)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def supports_minimum_plugin_version(version: str | None) -> bool:
+    parsed = _plugin_version_tuple(version)
+    return parsed is not None and parsed >= _PLUGIN_MINIMUM_VERSION
+
+
+def supports_optimized_document_apis(version: str | None) -> bool:
+    parsed = _plugin_version_tuple(version)
+    return parsed is not None and parsed >= _PLUGIN_107_VERSION
+
+
+def supports_targeted_catalog_sync(version: str | None) -> bool:
+    parsed = _plugin_version_tuple(version)
+    return parsed is not None and parsed > _PLUGIN_107_VERSION
 
 
 def _validate_base_url(base_url: str) -> str:
@@ -67,12 +96,18 @@ class HttpPolarRAGClient(PolarRAGClient):
         tls_verify: bool | ssl.SSLContext,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 20.0,
+        plugin_version: str | None = None,
     ) -> None:
         self._base_url = _validate_base_url(base_url)
         self._auth = httpx.BasicAuth(username, password)
         self._verify = tls_verify
         self._transport = transport
         self._timeout = timeout
+        self._plugin_version = plugin_version
+
+    @property
+    def supports_plugin_107(self) -> bool:
+        return supports_optimized_document_apis(self._plugin_version)
 
     async def _request(
         self,
@@ -132,20 +167,27 @@ class HttpPolarRAGClient(PolarRAGClient):
                     PolarRAGErrorCode.KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE,
                     status_code=404,
                 )
-        if response.status_code >= 500:
+        if response.status_code == 429 or response.status_code >= 500:
             raise PolarRAGUpstreamError(
                 PolarRAGErrorCode.UNAVAILABLE,
                 retryable=True,
                 status_code=response.status_code,
             )
-        if (
-            response.status_code == 400
-            and self._is_reranker_not_configured(response)
-        ):
+        if response.status_code == 400 and self._is_reranker_not_configured(response):
             raise PolarRAGUpstreamError(
                 PolarRAGErrorCode.RERANKER_NOT_CONFIGURED,
                 status_code=400,
             )
+        if response.status_code == 409:
+            try:
+                error_payload = response.json()
+            except (json.JSONDecodeError, ValueError):
+                error_payload = None
+            if isinstance(error_payload, dict) and error_payload.get("error_type") == "citation_source_changed":
+                raise PolarRAGUpstreamError(
+                    PolarRAGErrorCode.CITATION_SOURCE_CHANGED,
+                    status_code=409,
+                )
         if response.status_code >= 400:
             raise PolarRAGUpstreamError(
                 PolarRAGErrorCode.INVALID_RESPONSE,
@@ -176,11 +218,7 @@ class HttpPolarRAGClient(PolarRAGClient):
         if not isinstance(decoded, dict):
             return None
         error_type = decoded.get("error_type")
-        return (
-            error_type
-            if error_type in _DOCUMENT_UPLOAD_FORBIDDEN_TYPES
-            else None
-        )
+        return error_type if error_type in _DOCUMENT_UPLOAD_FORBIDDEN_TYPES else None
 
     @staticmethod
     def _is_reranker_not_configured(response: httpx.Response) -> bool:
@@ -203,14 +241,11 @@ class HttpPolarRAGClient(PolarRAGClient):
                 reasons.extend(
                     item["reason"]
                     for item in root_causes
-                    if isinstance(item, dict)
-                    and isinstance(item.get("reason"), str)
+                    if isinstance(item, dict) and isinstance(item.get("reason"), str)
                 )
         return any(
             reason.startswith(_RERANKER_NOT_CONFIGURED_PREFIX)
-            and bool(
-                reason[len(_RERANKER_NOT_CONFIGURED_PREFIX) :].strip()
-            )
+            and bool(reason[len(_RERANKER_NOT_CONFIGURED_PREFIX) :].strip())
             for reason in reasons
         )
 
@@ -221,6 +256,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             f"{_PLUGIN_ROOT}/_version",
         )
         version = version_response.get("version")
+        self._plugin_version = version if isinstance(version, str) else None
         space_catalog = True
         knowledge_base_catalog = True
         spaces: list[PolarRAGSpaceRecord] = []
@@ -239,11 +275,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             try:
                 if spaces:
                     await self._read_catalog(
-                        (
-                            f"{_PLUGIN_ROOT}/spaces/"
-                            f"{quote(spaces[0].space_id, safe='')}"
-                            "/knowledge_bases/_list"
-                        ),
+                        (f"{_PLUGIN_ROOT}/spaces/{quote(spaces[0].space_id, safe='')}/knowledge_bases/_list"),
                         parse_item=lambda item: self._parse_knowledge_base(
                             item,
                             spaces[0].space_id,
@@ -276,13 +308,15 @@ class HttpPolarRAGClient(PolarRAGClient):
         max_kb_ids = response.get("max_kb_ids")
         if (
             schema_version != 1
-            or multi_kb_search is not True
-            or not isinstance(max_kb_ids, int)
-            or isinstance(max_kb_ids, bool)
-            or max_kb_ids < 1
+            or not isinstance(multi_kb_search, bool)
+            or multi_kb_search
+            and (not isinstance(max_kb_ids, int) or isinstance(max_kb_ids, bool) or max_kb_ids < 1)
         ):
             raise self._invalid_response()
-        return PolarRAGSearchCapabilities(max_kb_ids=max_kb_ids)
+        return PolarRAGSearchCapabilities(
+            multi_kb_search=multi_kb_search,
+            max_kb_ids=max_kb_ids if multi_kb_search else None,
+        )
 
     async def list_spaces(self) -> list[PolarRAGSpaceRecord]:
         return await self._read_catalog(
@@ -315,16 +349,11 @@ class HttpPolarRAGClient(PolarRAGClient):
         if (
             not isinstance(items, list)
             or not isinstance(has_more, bool)
-            or (
-                next_cursor is not None
-                and (not isinstance(next_cursor, str) or not next_cursor)
-            )
+            or (next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor))
             or has_more != (next_cursor is not None)
         ):
             raise self._invalid_response()
-        records = [
-            self._parse_space(item) for item in items if isinstance(item, dict)
-        ]
+        records = [self._parse_space(item) for item in items if isinstance(item, dict)]
         if len(records) != len(items) or (has_more and not records):
             raise self._invalid_response()
         return records, next_cursor
@@ -336,10 +365,7 @@ class HttpPolarRAGClient(PolarRAGClient):
         if not space_id:
             raise ValueError("space_id is required")
         return await self._read_catalog(
-            (
-                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-                "/knowledge_bases/_list"
-            ),
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/knowledge_bases/_list"),
             parse_item=lambda item: self._parse_knowledge_base(
                 item,
                 space_id,
@@ -353,12 +379,14 @@ class HttpPolarRAGClient(PolarRAGClient):
         *,
         cursor: str | None,
         page_size: int,
+        kb_ids: list[str] | None = None,
     ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
         return await self._list_knowledge_bases_page(
             space_id,
             cursor=cursor,
             page_size=page_size,
             status="ACTIVE",
+            kb_ids=kb_ids,
         )
 
     async def list_unclaimed_knowledge_bases(
@@ -368,10 +396,7 @@ class HttpPolarRAGClient(PolarRAGClient):
         if not space_id:
             raise ValueError("space_id is required")
         records = await self._read_catalog(
-            (
-                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-                "/knowledge_bases/_list"
-            ),
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/knowledge_bases/_list"),
             parse_item=lambda item: self._parse_knowledge_base(
                 item,
                 space_id,
@@ -404,21 +429,21 @@ class HttpPolarRAGClient(PolarRAGClient):
         cursor: str | None,
         page_size: int,
         status: str,
+        kb_ids: list[str] | None = None,
     ) -> tuple[list[PolarRAGKnowledgeBaseRecord], str | None]:
         if not space_id:
             raise ValueError("space_id is required")
         if page_size < 1:
             raise ValueError("page_size must be positive")
-        path = (
-            f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-            "/knowledge_bases/_list"
-        )
+        path = f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/knowledge_bases/_list"
         payload: dict[str, Any] = {
             "size": page_size,
             "statuses": [status],
         }
         if cursor is not None:
             payload["cursor"] = cursor
+        if kb_ids is not None:
+            payload["kb_ids"] = kb_ids
         page = await self._request("POST", path, payload=payload)
         items = page.get("items")
         has_more = page.get("has_more")
@@ -426,22 +451,16 @@ class HttpPolarRAGClient(PolarRAGClient):
         if (
             not isinstance(items, list)
             or not isinstance(has_more, bool)
-            or (
-                next_cursor is not None
-                and (not isinstance(next_cursor, str) or not next_cursor)
-            )
+            or (next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor))
             or has_more != (next_cursor is not None)
         ):
             raise self._invalid_response()
-        records = [
-            self._parse_knowledge_base(item, space_id, status)
-            for item in items
-            if isinstance(item, dict)
-        ]
-        if len(records) != len(items) or (
-            status == "UNCLAIMED"
-            and any(record.kb_type != "PERSONAL" for record in records)
-        ) or (has_more and not records):
+        records = [self._parse_knowledge_base(item, space_id, status) for item in items if isinstance(item, dict)]
+        if (
+            len(records) != len(items)
+            or (status == "UNCLAIMED" and any(record.kb_type != "PERSONAL" for record in records))
+            or (has_more and not records)
+        ):
             raise self._invalid_response()
         return records, next_cursor
 
@@ -456,10 +475,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             raise ValueError("space_id, kb_id, and owner are required")
         response = await self._request(
             "POST",
-            (
-                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-                f"/knowledge_bases/{quote(kb_id, safe='')}/_claim"
-            ),
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/knowledge_bases/{quote(kb_id, safe='')}/_claim"),
             payload={"owner": owner},
         )
         if (
@@ -487,10 +503,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             raise ValueError("space_id and kb_id are required")
         response = await self._request(
             "POST",
-            (
-                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-                "/managed_documents"
-            ),
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/managed_documents"),
             payload={
                 "kb_id": kb_id,
                 "oss_path": oss_path,
@@ -517,6 +530,69 @@ class HttpPolarRAGClient(PolarRAGClient):
             raise self._invalid_response()
         return document
 
+    async def submit_documents(
+        self,
+        space_id: str,
+        documents: list[dict[str, Any]],
+        *,
+        acl_context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if not space_id or not documents:
+            raise ValueError("space_id and documents are required")
+        payload_documents = [
+            {
+                "kb_id": document["kb_id"],
+                "oss_path": document["oss_path"],
+                "filename": document["filename"],
+                "file_type": document["file_type"],
+                "file_md5": document["file_md5"],
+                "file_size_bytes": document["file_size_bytes"],
+                "metadata": document["metadata"],
+                "acl_context": acl_context,
+                "acl": {"mode": "POLARRAG_DERIVED"},
+            }
+            for document in documents
+        ]
+        response = await self._request(
+            "POST",
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/managed_documents/_bulk"),
+            payload={"documents": payload_documents},
+            document_upload=True,
+        )
+        items = response.get("documents")
+        if not isinstance(items, list) or len(items) != len(documents) or response.get("total") != len(documents):
+            raise self._invalid_response()
+        results: list[dict[str, Any]] = []
+        succeeded = 0
+        failed = 0
+        for expected, item in zip(documents, items, strict=True):
+            if not isinstance(item, dict) or not isinstance(item.get("success"), bool):
+                raise self._invalid_response()
+            if item["success"]:
+                document = item.get("document")
+                if (
+                    not isinstance(document, dict)
+                    or not isinstance(document.get("doc_id"), str)
+                    or not document["doc_id"]
+                    or document.get("space_id") != space_id
+                    or document.get("kb_id") != expected["kb_id"]
+                    or not isinstance(document.get("status"), str)
+                    or not document["status"]
+                ):
+                    raise self._invalid_response()
+                results.append({"success": True, "document": document})
+                succeeded += 1
+            else:
+                doc_id = item.get("doc_id")
+                result: dict[str, Any] = {"success": False}
+                if isinstance(doc_id, str) and doc_id:
+                    result["doc_id"] = doc_id
+                results.append(result)
+                failed += 1
+        if response.get("succeeded") != succeeded or response.get("failed") != failed:
+            raise self._invalid_response()
+        return results
+
     async def delete_document(
         self,
         space_id: str,
@@ -528,10 +604,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             raise ValueError("space_id and doc_id are required")
         return await self._request(
             "DELETE",
-            (
-                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-                f"/managed_documents/{quote(doc_id, safe='')}"
-            ),
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/managed_documents/{quote(doc_id, safe='')}"),
             payload={"acl_context": acl_context},
             document_read=True,
         )
@@ -543,6 +616,7 @@ class HttpPolarRAGClient(PolarRAGClient):
         *,
         chunk_strategy: str | None,
         chunk_max_tokens: int | None,
+        force: bool = False,
         acl_context: dict[str, Any],
     ) -> dict[str, Any]:
         if not space_id or not doc_id:
@@ -552,12 +626,11 @@ class HttpPolarRAGClient(PolarRAGClient):
             payload["chunk_strategy"] = chunk_strategy
         if chunk_max_tokens is not None:
             payload["chunk_max_tokens"] = chunk_max_tokens
+        if force:
+            payload["force"] = True
         return await self._request(
             "PUT",
-            (
-                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-                f"/documents/{quote(doc_id, safe='')}/chunk_strategy"
-            ),
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/documents/{quote(doc_id, safe='')}/chunk_strategy"),
             payload=payload,
             document_read=True,
         )
@@ -586,7 +659,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             try:
                 page = await self._request("POST", path, payload=payload)
             except PolarRAGUpstreamError as exc:
-                if exc.status_code in {404, 501}:
+                if exc.status_code in {404, 405, 501}:
                     raise PolarRAGOperationNotSupported from exc
                 raise
             items = page.get("items")
@@ -595,13 +668,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             if (
                 not isinstance(items, list)
                 or not isinstance(has_more, bool)
-                or (
-                    next_cursor is not None
-                    and (
-                        not isinstance(next_cursor, str)
-                        or not next_cursor
-                    )
-                )
+                or (next_cursor is not None and (not isinstance(next_cursor, str) or not next_cursor))
                 or has_more != (next_cursor is not None)
             ):
                 raise self._invalid_response()
@@ -626,10 +693,7 @@ class HttpPolarRAGClient(PolarRAGClient):
         raise self._invalid_response()
 
     async def _probe_knowledge_base_catalog(self) -> None:
-        path = (
-            f"{_PLUGIN_ROOT}/spaces/__pas_capability_probe__"
-            "/knowledge_bases/_list"
-        )
+        path = f"{_PLUGIN_ROOT}/spaces/__pas_capability_probe__/knowledge_bases/_list"
         try:
             await self._request(
                 "POST",
@@ -708,9 +772,7 @@ class HttpPolarRAGClient(PolarRAGClient):
             "updated_at",
         )
         try:
-            updated_at = datetime.fromisoformat(
-                updated_at_value.replace("Z", "+00:00")
-            )
+            updated_at = datetime.fromisoformat(updated_at_value.replace("Z", "+00:00"))
         except ValueError as exc:
             raise HttpPolarRAGClient._invalid_response() from exc
         if updated_at.tzinfo is None:
@@ -760,7 +822,7 @@ class HttpPolarRAGClient(PolarRAGClient):
     async def search(
         self,
         space_id: str,
-        kb_id: str,
+        kb_id: str | list[str],
         *,
         query: str,
         search_mode: str,
@@ -768,15 +830,21 @@ class HttpPolarRAGClient(PolarRAGClient):
         min_score: float | None,
         reranker: bool,
         acl_context: dict[str, Any],
+        legacy_protocol: bool = False,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "query_text": query,
-            "kb_id": kb_id,
             "search_mode": search_mode,
             "size": top_k,
             "reranker": reranker,
             "acl_context": acl_context,
         }
+        if self.supports_plugin_107 and not legacy_protocol:
+            payload["kb_ids"] = [kb_id] if isinstance(kb_id, str) else kb_id
+        elif isinstance(kb_id, str):
+            payload["kb_id"] = kb_id
+        else:
+            raise ValueError("multiple knowledge bases require PolarRAG 1.0.7")
         if min_score is not None:
             payload["min_score"] = min_score
         return await self._request(
@@ -826,16 +894,22 @@ class HttpPolarRAGClient(PolarRAGClient):
         chunk_index: int,
         window_size: int,
         acl_context: dict[str, Any],
+        kb_id: str | None = None,
+        expected_doc_generation: int | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "chunk_index": chunk_index,
+            "window_size": window_size,
+            "acl_context": acl_context,
+        }
+        if expected_doc_generation is not None:
+            payload["expected_doc_generation"] = expected_doc_generation
+        self._add_document_kb_scope(payload, kb_id)
         return await self._protected_document_call(
             space_id,
             doc_id,
             "chunks/_context",
-            {
-                "chunk_index": chunk_index,
-                "window_size": window_size,
-                "acl_context": acl_context,
-            },
+            payload,
         )
 
     async def list_document_chunks(
@@ -846,36 +920,46 @@ class HttpPolarRAGClient(PolarRAGClient):
         offset: int,
         limit: int,
         acl_context: dict[str, Any],
+        kb_id: str | None = None,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "from": offset,
+            "size": limit,
+            "acl_context": acl_context,
+        }
+        self._add_document_kb_scope(payload, kb_id)
         return await self._protected_document_call(
             space_id,
             doc_id,
             "chunks/_list",
-            {
-                "from": offset,
-                "size": limit,
-                "acl_context": acl_context,
-            },
+            payload,
         )
 
     async def find_by_name(
         self,
         space_id: str,
         *,
-        kb_id: str,
+        kb_id: str | list[str],
         filename: str,
         limit: int,
         acl_context: dict[str, Any],
+        legacy_protocol: bool = False,
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "filename": filename,
+            "size": limit,
+            "acl_context": acl_context,
+        }
+        if self.supports_plugin_107 and not legacy_protocol:
+            payload["kb_ids"] = [kb_id] if isinstance(kb_id, str) else kb_id
+        elif isinstance(kb_id, str):
+            payload["kb_id"] = kb_id
+        else:
+            raise ValueError("multiple knowledge bases require PolarRAG 1.0.7")
         return await self._request(
             "POST",
             f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/managed_documents/_find",
-            payload={
-                "kb_id": kb_id,
-                "filename": filename,
-                "size": limit,
-                "acl_context": acl_context,
-            },
+            payload=payload,
             document_read=True,
         )
 
@@ -885,12 +969,15 @@ class HttpPolarRAGClient(PolarRAGClient):
         doc_id: str,
         *,
         acl_context: dict[str, Any],
+        kb_id: str | None = None,
     ) -> dict[str, Any]:
+        payload = {"acl_context": acl_context}
+        self._add_document_kb_scope(payload, kb_id)
         return await self._protected_document_call(
             space_id,
             doc_id,
             "_info",
-            {"acl_context": acl_context},
+            payload,
         )
 
     async def list_documents(
@@ -901,7 +988,44 @@ class HttpPolarRAGClient(PolarRAGClient):
         size: int,
         after_doc_id: str | None,
         acl_context: dict[str, Any],
+        page: int = 1,
     ) -> dict[str, Any]:
+        if self.supports_plugin_107:
+            response = await self._request(
+                "POST",
+                (
+                    f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
+                    f"/knowledge_bases/{quote(kb_id, safe='')}"
+                    "/managed_documents/_list"
+                ),
+                payload={
+                    "page": page,
+                    "size": size,
+                    "sort_by": "updated_at",
+                    "acl_context": acl_context,
+                },
+                document_read=True,
+            )
+            documents = response.get("documents")
+            total = response.get("total")
+            response_page = response.get("page")
+            response_size = response.get("size")
+            if (
+                not isinstance(documents, list)
+                or not isinstance(total, int)
+                or isinstance(total, bool)
+                or total < 0
+                or not isinstance(response_page, int)
+                or isinstance(response_page, bool)
+                or not isinstance(response_size, int)
+                or isinstance(response_size, bool)
+                or response_page != page
+                or response_size != size
+            ):
+                raise self._invalid_response()
+            response["has_more"] = page * size < total
+            response["next_after_doc_id"] = None
+            return response
         payload: dict[str, Any] = {
             "size": size,
             "acl_context": acl_context,
@@ -924,12 +1048,33 @@ class HttpPolarRAGClient(PolarRAGClient):
         if (
             not isinstance(documents, list)
             or not isinstance(has_more, bool)
-            or (
-                next_after_doc_id is not None
-                and not isinstance(next_after_doc_id, str)
-            )
+            or (next_after_doc_id is not None and not isinstance(next_after_doc_id, str))
             or (has_more and not next_after_doc_id)
         ):
+            raise self._invalid_response()
+        return response
+
+    async def list_document_permissions(
+        self,
+        space_id: str,
+        doc_ids: list[str],
+        *,
+        acl_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not self.supports_plugin_107:
+            raise PolarRAGOperationNotSupported()
+        if not doc_ids or len(doc_ids) > 200 or len(set(doc_ids)) != len(doc_ids):
+            raise ValueError("doc_ids must contain between 1 and 200 unique values")
+        response = await self._request(
+            "POST",
+            (
+                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
+                "/managed_documents/acl/_list"
+            ),
+            payload={"doc_ids": doc_ids, "acl_context": acl_context},
+            document_read=True,
+        )
+        if not isinstance(response.get("documents"), list):
             raise self._invalid_response()
         return response
 
@@ -943,17 +1088,29 @@ class HttpPolarRAGClient(PolarRAGClient):
         top_k: int,
         acl_context: dict[str, Any],
     ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "query_text": query,
+            "size": top_k,
+            "acl_context": acl_context,
+        }
+        if self.supports_plugin_107:
+            payload["kb_ids"] = [kb_id]
+        else:
+            payload["kb_id"] = kb_id
         return await self._protected_document_call(
             space_id,
             doc_id,
             "chunks/_search",
-            {
-                "kb_id": kb_id,
-                "query_text": query,
-                "size": top_k,
-                "acl_context": acl_context,
-            },
+            payload,
         )
+
+    def _add_document_kb_scope(
+        self,
+        payload: dict[str, Any],
+        kb_id: str | None,
+    ) -> None:
+        if self.supports_plugin_107 and kb_id is not None:
+            payload["kb_ids"] = [kb_id]
 
     async def _protected_document_call(
         self,
@@ -964,10 +1121,7 @@ class HttpPolarRAGClient(PolarRAGClient):
     ) -> dict[str, Any]:
         return await self._request(
             "POST",
-            (
-                f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}"
-                f"/managed_documents/{quote(doc_id, safe='')}/{suffix}"
-            ),
+            (f"{_PLUGIN_ROOT}/spaces/{quote(space_id, safe='')}/managed_documents/{quote(doc_id, safe='')}/{suffix}"),
             payload=payload,
             document_read=True,
         )
@@ -982,24 +1136,18 @@ def client_from_instance(
         verify: bool | ssl.SSLContext = instance.tls_verify
         if instance.ca_bundle_ciphertext:
             context = ssl.create_default_context()
-            context.load_verify_locations(
-                cadata=decrypt(instance.ca_bundle_ciphertext)
-            )
+            context.load_verify_locations(cadata=decrypt(instance.ca_bundle_ciphertext))
             verify = context
         username = decrypt(instance.username_ciphertext)
         password = decrypt(instance.password_ciphertext)
     except Exception:
-        raise PolarRAGUpstreamError(
-            PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE
-        ) from None
+        raise PolarRAGUpstreamError(PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE) from None
     return HttpPolarRAGClient(
         base_url=f"{instance.scheme}://{instance.host}:{instance.port}",
         username=username,
         password=password,
         tls_verify=verify,
         transport=transport,
-        timeout=(
-            get_config().polarrag_tool_limits.upstream_request_timeout_ms
-            / 1000
-        ),
+        timeout=(get_config().polarrag_tool_limits.upstream_request_timeout_ms / 1000),
+        plugin_version=instance.plugin_version,
     )

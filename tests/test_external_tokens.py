@@ -4,7 +4,10 @@ import base64
 import json
 import os
 import time
+from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs
 
+import httpx
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -156,9 +159,11 @@ async def test_validates_rfc7662_introspection_response(
     assert identity.scopes == ("mcp",)
 
 
+@pytest.mark.parametrize("source_status", ["active", "stale"])
 async def test_introspection_userinfo_uses_existing_identity_mapping(
     session_factory,
     monkeypatch,
+    source_status,
 ):
     async with session_factory() as session:
         source = EnterpriseIdentitySource.create(
@@ -166,7 +171,8 @@ async def test_introspection_userinfo_uses_existing_identity_mapping(
             provider=IdentitySourceProvider.SHAREPOINT,
             tenant_id="tenant-external",
         )
-        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        source.status = EnterpriseIdentitySourceStatus(source_status)
+        source.last_synced_at = datetime.now(UTC) - timedelta(seconds=30)
         session.add(source)
         await session.commit()
         source_id = source.id
@@ -530,9 +536,11 @@ async def test_validates_feishu_user_token_against_verified_tenant(
     assert identity.provider_key == "feishu:tenant-001"
 
 
+@pytest.mark.parametrize("source_status", ["active", "stale"])
 async def test_validates_feishu_exchange_assertion_with_direct_identity_context(
     session_factory,
     monkeypatch,
+    source_status,
 ):
     async with session_factory() as session:
         source = EnterpriseIdentitySource.create(
@@ -540,7 +548,8 @@ async def test_validates_feishu_exchange_assertion_with_direct_identity_context(
             provider=IdentitySourceProvider.FEISHU,
             tenant_id="tenant-001",
         )
-        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        source.status = EnterpriseIdentitySourceStatus(source_status)
+        source.last_synced_at = datetime.now(UTC) - timedelta(seconds=30)
         source.config_ciphertext = encrypt(json.dumps({
             "app_id": "cli_test",
             "app_secret": "secret",
@@ -612,9 +621,11 @@ async def test_validates_feishu_exchange_assertion_with_direct_identity_context(
         )
 
 
+@pytest.mark.parametrize("source_status", ["active", "stale"])
 async def test_resolves_feishu_user_from_dynamic_identity_source(
     session_factory,
     monkeypatch,
+    source_status,
 ):
     async with session_factory() as session:
         source = EnterpriseIdentitySource.create(
@@ -622,7 +633,8 @@ async def test_resolves_feishu_user_from_dynamic_identity_source(
             provider=IdentitySourceProvider.FEISHU,
             tenant_id="tenant-dynamic",
         )
-        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        source.status = EnterpriseIdentitySourceStatus(source_status)
+        source.last_synced_at = datetime.now(UTC) - timedelta(seconds=30)
         source.config_ciphertext = encrypt(json.dumps({
             "app_id": "dynamic_test",
             "app_secret": "secret",
@@ -697,3 +709,100 @@ async def test_rejects_feishu_user_token_from_another_tenant(
         match="tenant is not trusted",
     ):
         await authenticator.validate("feishu-token")
+
+
+@pytest.mark.parametrize("auth_method", ["client_secret_basic", "client_secret_post"])
+async def test_http_introspection_uses_dedicated_credentials_without_browser_sso(
+    session_factory, monkeypatch, auth_method,
+):
+    config = AppConfig()
+    trust = config.auth.external_token_trust
+    trust.enabled = True
+    trust.provider = "oauth2_introspection"
+    trust.introspection_endpoint = "http://provider.example.com/introspect"
+    trust.client_id = "validation-client"
+    trust.client_secret = "validation-secret"
+    trust.introspection_auth_method = auth_method
+    def respond(request):
+        assert str(request.url) == trust.introspection_endpoint
+        assert request.method == "POST"
+        body = parse_qs(request.content.decode())
+        assert body["token"] == ["test-external-token"]
+        if auth_method == "client_secret_basic":
+            credentials = base64.b64encode(b"validation-client:validation-secret").decode()
+            assert request.headers["Authorization"] == f"Basic {credentials}"
+        else:
+            assert body["client_id"] == ["validation-client"]
+            assert body["client_secret"] == ["validation-secret"]
+        return httpx.Response(200, json={"active": True, "sub": "external-user"})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    identity = await ExternalTokenAuthenticator(session_factory, config).validate("test-external-token")
+    assert identity.subject == "external-user"
+    assert identity.provider_type == "oauth2_introspection"
+
+
+async def test_http_userinfo_uses_external_endpoint_without_browser_sso(session_factory, monkeypatch):
+    config = AppConfig()
+    trust = config.auth.external_token_trust
+    trust.enabled = True
+    trust.provider = "oauth2_userinfo"
+    trust.userinfo_endpoint = "http://provider.example.com/userinfo"
+
+    def respond(request):
+        assert str(request.url) == trust.userinfo_endpoint
+        assert request.method == "GET"
+        assert request.headers["Authorization"] == "Bearer test-external-token"
+        return httpx.Response(200, json={"sub": "external-user"})
+
+    client_type = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(respond), **kwargs),
+    )
+    identity = await ExternalTokenAuthenticator(session_factory, config).validate("test-external-token")
+    assert identity.subject == "external-user"
+    assert identity.provider_type == "oauth2_userinfo"
+
+
+@pytest.mark.parametrize("provider", ["feishu", "oauth2_introspection"])
+@pytest.mark.parametrize(("status", "age"), [
+    ("stale", None), ("stale", 7200), ("disabled", 0), ("pending_binding", 0),
+])
+async def test_unusable_identity_source_rejected_before_userinfo(session_factory, monkeypatch, provider, status, age):
+    async with session_factory() as session:
+        source = EnterpriseIdentitySource.create(
+            name="Unavailable source", provider=IdentitySourceProvider.FEISHU, tenant_id="tenant-invalid",
+        )
+        source.status = EnterpriseIdentitySourceStatus(status)
+        source.stale_after_seconds = 3600
+        source.last_synced_at = None if age is None else datetime.now(UTC) - timedelta(seconds=age)
+        source.config_ciphertext = encrypt(json.dumps({"app_id": "test-app", "app_secret": "test-secret"}))
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+    config = _config(provider)
+    trust = config.auth.external_token_trust
+    trust.identity_source_id = source_id
+    trust.introspection_endpoint = "https://provider.example.com/introspect"
+    trust.userinfo_endpoint = "https://provider.example.com/user_info"
+    trust.client_id = "test-client"
+    trust.client_secret = "test-secret"
+    authenticator = ExternalTokenAuthenticator(session_factory, config)
+    requests = []
+
+    async def request(_method, url, **_kwargs):
+        requests.append(url)
+        assert url.endswith("/introspect")
+        return {"active": True, "sub": "test-user", "exp": int(time.time()) + 300}
+
+    monkeypatch.setattr(authenticator, "_json_request", request)
+    with pytest.raises(ExternalTokenInvalid, match="Identity source is unavailable"):
+        context = ({"identity_source_id": source_id, "feishu_user_id": "test-user",
+                    "feishu_union_id": "test-union"} if provider == "feishu" else {})
+        await authenticator.validate("test-token", **context)
+    assert requests == ([] if provider == "feishu" else [trust.introspection_endpoint])

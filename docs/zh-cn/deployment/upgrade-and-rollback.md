@@ -2,8 +2,10 @@
 
 [English](../../en/deployment/upgrade-and-rollback.md)
 
-任何目标版本 Pod 接收流量前，都必须完成目标 Schema 验证。Compose 和 Helm
-在替换应用前执行迁移；托管滚动升级可以先启动一个保持摘流的目标版本 Pod，
+任何目标版本 Pod 接收流量前，都必须完成目标 Schema 验证。对于 `NONE` 或已验证的
+`EXPAND`，Compose 和 Helm 在替换应用前执行迁移。`CONTRACT` 通常需要全停机维护；
+下述托管 MySQL 8.0.13 的特定例外使用单独的进程存活验收边界。
+仅有 pre-upgrade hook 不会停止旧写入方。托管滚动升级可以先启动一个保持摘流的目标版本 Pod，
 执行确定性的 one-shot 迁移 Pod，验证 Schema 与健康状态后，再将该 Pod 放回流量。
 
 ## 升级前
@@ -30,6 +32,28 @@ closed。不要生成替代密钥或删除数据库来强行继续升级；必�
 契约的未知 revision 仍被拒绝。只有源版本已理解已发布的 bridge 契约，并且
 源到目标路径经过验证时，源版本才能在后续扩展后继续运行。
 
+旧进程保持存活不能证明支持旧镜像重启或回滚。新增字段可能不影响已有查询，
+但新枚举值仍会使旧读取方失败。应观察认证业务请求、进程身份和重启次数，
+不能只看 readiness。迁移锁只串行化迁移执行器，不会停止应用写入；
+`--maintenance` 不会摘流，也不会让不兼容的旧二进制能够重启。
+
+外部知识库授权的扩展迁移为 `b3c4d5e6f7a8`，前置 revision 为
+`2c3d4e5f6a7b`。旧数据库通过显式迁移执行扩展；已处于 `b3c4d5e6f7a8`
+的数据库保留原有结构和数据，不重复执行扩展 DDL。该路径要求此前部署已完整完成，
+不支持停留在中间 revision `a1b2c3d4e5f6` 的数据库。不要把未完成迁移的数据库
+stamp 到最终 revision；升级前须核实实际迁移状态。
+
+若数据库仍处于 `a1b2c3d4e5f6`，应暂停升级，保留已验证的备份及原根密钥。
+使用包含旧双分支迁移图和旧 merge revision 的匹配旧镜像，先迁移到
+`b3c4d5e6f7a8`，由迁移执行缺少的目录同步分支。核对物理结构，再使用候选镜像
+执行数据库检查，通过后按常规流程升级应用。若无法取得该旧镜像，应保留数据库，
+取得经过审核的恢复方案；不要用手工补表或 stamp 代替执行缺失迁移。
+
+对历史部署执行 `fb1c2d3e4f5a` 迁移时，仅在类型、可空性及默认值与迁移定义一致时，
+保留已有的 `knowledge_resources.catalog_sync_token` 和 `agents.oauth_redirect_uri` 列。
+catalog token 索引也须具有预期的列和唯一性。缺失的列或索引会创建；不兼容的定义会
+阻断迁移，等待排查，不会被覆盖。该兼容处理不修改 revision 链，也不跳过后续迁移。
+
 迁移命令对同一元数据库串行执行并保留执行记录。`DATABASE_MIGRATION_BUSY`
 表示其他执行者持有锁；`DATABASE_MIGRATION_REPAIR_REQUIRED` 表示中断操作
 留下了无法识别的物理状态，须保留证据并修复后再重试。新库在 `system_config`
@@ -50,8 +74,90 @@ one-shot Pod 日志能够显示当前阶段。记录包含内置与实际要求�
 镜像内置 manifest 是权威来源，不提供用户覆盖的 `--manifest` 参数。
 `pas database migrate --operation-id <stable-id>` 可以将外部操作关联到同一个
 数据库/manifest 检查点。执行器只接受 head、序号与内置 Alembic 历史一致的
-`NONE` 或增量 `EXPAND` manifest；`CONTRACT` 和 `BREAKING` 发布必须使用独立
-维护流程。
+`NONE` 或增量 `EXPAND` manifest；除下述已验证的托管例外外，`CONTRACT` 和
+`BREAKING` 发布必须使用独立维护流程。
+
+### 托管 MySQL 8.0.13 旧版 init 例外
+
+目标 manifest 为 `c7d8e9f0a1b2` 时，对源契约为 generation 1、revision 为
+`9c1d2e3f4a5b`、`cf4a5b6c7d8e` 或 `2c3d4e5f6a7b` 的托管部署提供受限例外。
+源库已发布的 manifest 身份与 sequence 必须匹配已验证版本，`@@version` 必须严格为
+`8.0.13`，受影响对象不得存在目标新增对象或预发布表重命名形态。已有的
+`PAS_MANAGED_INSTANCE_ID` 和正数 `PAS_MANAGED_INSTANCE_GENERATION` 用于识别托管调用。
+
+包含修复的二进制可在原有 init 命令下通过普通 `pas database migrate` 准入这条特定路径，
+无需追加 `--maintenance`。日志出现 `live-upgrade-admission`，例外标识为
+`managed-mysql-8.0.13-legacy-to-108`。普通应用副本启动仍只检查 schema；数据库互斥锁、
+物理验证、密钥检查和失败迁移检查点保留。非托管调用、其他引擎版本、未识别的源契约及
+变更后的目标 manifest 仍要求普通维护流程，不能仅凭版本名称放行。
+
+升级前须完成在线元数据备份及匹配密钥/配置的恢复验证，保留一个可服务的源副本，
+并在所有副本升级完以前冻结钉钉和外部知识库新功能写入。允许 DDL 短暂阻塞和请求短暂失败；
+全过程观察源 Pod UID、重启次数、liveness 及认证业务恢复。验证目标是在有界混部窗口内
+进程存活，不保证请求零失败。源镜像在目标 generation 上重启及仅回镜像回滚仍不支持；
+配套备份恢复仍可能需要停机，并丢失在线快照之后的写入。
+
+已部署的旧镜像不会随源代码提交而获得该行为。须构建新的不可变目标镜像，并在客户使用前
+验收实际双副本托管任务流。已阻塞实例的手工修复，与新目标镜像的自动 init，是两个操作。
+本修复适用于已到达 PAS init 命令的现有流程，不能覆盖 Provider 在创建 Pod 前的发布准入拒绝。
+
+### CONTRACT 全停机维护
+
+`--maintenance` 确认的是运维已落实的停机条件；它不会摘流、停止另一副本、暂停
+worker，也不能阻止控制器重启旧镜像。此流程不会为拒绝目标 classification 或
+generation 的控制器增加维护升级能力；该目标仍须禁用普通升级工作流。
+
+变更前记录源/目标镜像和 manifest digest、源 revision、迁移路径、数据库产品及
+版本、operation ID、备份标识、恢复点和回退截止时间，并检查受影响的物理对象。
+目标检查拒绝已知源 schema 属于发现证据，不能据此 stamp revision 或视为兼容。
+未知 revision 或物理漂移须先诊断。
+
+1. 冻结该实例的自动换镜像、重启和扩缩容。关闭应用及 MCP 流量，停止**全部**源
+   副本和元数据写入方，包括目录/事件/后台 worker 及外部任务。验证进程/Pod 已终止，
+   且其数据库会话和未完成事务已消失。失败及重试期间保持此隔离条件。
+2. 停机后备份元数据，将原 `PAS_ENCRYPTION_KEY`、部署配置、源镜像 digest 和连接
+   映射作为一个受保护的恢复集。恢复到独立空数据库，再使用源镜像执行
+   `pas database check`；仅校验 checksum 不能证明可恢复。MySQL single-transaction
+   备份要求事务表且无并发 DDL，否则使用数据库认可的备份方式。
+3. 使用固定目标镜像、匹配密钥和 writer 端点运行一个运维控制的执行器。在 Kubernetes
+   中可使用 `restartPolicy: Never` 的 CoreV1 one-shot Pod，直接执行以下命令，
+   无需 Batch Job 或应用 Pod exec：
+
+   ```bash
+   pas database inspect --format json
+   pas database migrate --maintenance --operation-id "$OPERATION_ID"
+   pas database check --format json
+   pas database migrate --maintenance --operation-id "$OPERATION_ID"
+   pas database check --format json
+   ```
+
+   保留日志、执行器身份和退出状态，保持相同的外部 operation ID，阻止并发执行器。
+   重放后已识别的物理 schema 必须保持不变。
+4. 流量关闭期间只启动目标副本。对**两个**副本分别验证 schema/配置检查、`/readyz`、
+   管理员登录、代表性认证读写，以及保留的加密凭据可解密；检查该部署所需的 worker
+   与外部集成健康。仅 readiness 成功不足以放行。
+5. 所有验收证据记录完成后再放流。持久化的期望镜像也须固定为目标；仅 patch Pod
+   镜像不能阻止旧镜像被重建。只恢复已验证支持该状态的自动化，普通托管滚动准入不变。
+
+| 失败边界 | 保持流量关闭时的恢复 |
+| --- | --- |
+| DDL 前失败，源物理状态未变 | 修复 writer 端点、权限或执行器竞争，检查后重放相同操作 |
+| MySQL DDL 部分提交，出现 `DATABASE_MIGRATION_REPAIR_REQUIRED` | 保留失败 schema/checkpoint/日志，将已验证的源恢复集恢复到独立空数据库，验证后重试或恢复源应用 |
+| 迁移成功，但密钥验证或冒烟失败 | 恢复匹配密钥/配置并重验；仍失败则停止目标写入方，执行配套恢复 |
+| 源镜像拒绝迁移后的 schema | 不强制启动或仅回滚镜像，采用前向修复或配套恢复 |
+
+MySQL DDL 可能隐式提交，命令失败不能证明 schema 未变。不要 stamp、downgrade、
+删除单个迁移对象或修改 checkpoint 来强行重试。保留失败数据库用于诊断，恢复到空库
+或使用已认可的全量恢复，确保不残留目标专有对象。使用新数据库时，须更新**全部**
+应用和执行器的连接映射。
+
+业务写入开放前，恢复可回到停机备份边界，不丢失已接纳的业务写入。开放后恢复会丢失
+备份之后的元数据变化，包括账户/权限变化，且不会撤销物理云资源操作。优先前向修复；
+此时恢复须明确接受恢复点、核对外部资源并复查恢复的凭据/会话。两个源副本通过源
+schema、解密和认证冒烟前，所有目标写入方必须保持停止。
+
+参考 [MySQL 隐式提交](https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html)
+及 [mysqldump 一致性要求](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html)。
 
 ### v0.0.12 Schema 边界
 
@@ -79,6 +185,38 @@ revision `9c1d2e3f4a5b`。应发布前向修复；或者停止写入，恢复匹
 
 [知识库启用](../knowledge/activation.md)属于独立的配置生效流程。应先完成支持该功能
 的镜像升级，再改变开关；旧镜像不执行新的知识准入规则。
+
+### v0.0.13 Schema 边界
+
+v0.0.13 将元数据 revision 从 `9c1d2e3f4a5b` 推进到
+`c7d8e9f0a1b2`，兼容性 generation 从 1 推进到 2。该版本分类为
+`CONTRACT`：钉钉迁移会替换 provider CHECK 约束。从公开 v0.0.12 部署升级时，
+应使用上文的完全停机 CONTRACT 维护流程。托管 MySQL 8.0.13 例外仅在上文列出的
+源契约、物理 schema 和调用身份检查全部通过时适用；它不代表本版本支持普通滚动
+升级，也不支持源镜像在目标 schema 上重启。
+
+某些早期部署已存在 `knowledge_resources.catalog_sync_token` 或
+`agents.oauth_redirect_uri`。迁移仅在类型、长度、可空性及无默认值的定义均匹配时
+复用这些列；已有的 catalog-token 索引也必须匹配普通非唯一索引。不兼容对象会在
+执行这些新增操作前阻止迁移。应保留 schema 证据并诊断差异，不要 stamp revision
+或删除字段来绕过检查。
+
+迁移前，停止所有源副本和元数据写入方，验证备份可恢复，并保留其匹配的加密密钥、
+配置和源镜像 digest。使用一个不可变的 v0.0.13 执行器，以相同的稳定操作 ID
+执行迁移和重放：
+
+```bash
+pas database inspect --format json
+pas database migrate --maintenance --operation-id "$OPERATION_ID"
+pas database check
+pas database migrate --maintenance --operation-id "$OPERATION_ID"
+pas database check
+```
+
+重新开放流量前，验证物理 schema、重放成功及认证后的应用冒烟。迁移后优先前向
+修复；不支持仅回滚镜像到 v0.0.12。回滚需要停止目标写入方，恢复配套的升级前
+数据库、密钥、配置和源镜像，并接受上文说明的恢复点边界。下文通用 Compose 和
+Helm 示例不能替代 `CONTRACT` 版本的维护流程。
 
 ## Compose
 
@@ -145,13 +283,16 @@ Alembic revision、已识别的物理 Schema、根密钥解密能力和存储配
 迁移或验证失败时，任务流应中断并保持当前 Pod 摘流。保留失败迁移 Pod、日志、
 Revision 和物理 Schema 证据，供人工介入；不要恢复该 Pod 流量，也不要继续
 升级剩余副本。旧副本可以继续服务的前提是托管滚动升级只允许 `NONE` 或已验证
-的 `EXPAND` 迁移；破坏性的 `CONTRACT` 或 `BREAKING` DDL 必须使用独立维护流程。
+的 `EXPAND` 迁移；除上述已验证的托管例外外，`CONTRACT` 或 `BREAKING` DDL
+必须使用独立维护流程。
 
 运维人员可以先检查失败证据，再显式触发重试：
 
 ```bash
-kubectl -n <namespace> logs <migration-pod> -c db-migrate
-kubectl -n <namespace> delete pod <migration-pod>
+: "${NAMESPACE:?set the migration namespace}"
+: "${MIGRATION_POD:?set the inspected migration Pod}"
+kubectl -n "$NAMESPACE" logs "$MIGRATION_POD" -c db-migrate
+kubectl -n "$NAMESPACE" delete pod "$MIGRATION_POD"
 ```
 
 只有在保留失败证据并修复根因后才能删除该 Pod。重放同一个任务流步骤会使用同一

@@ -1,70 +1,4035 @@
 <!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PolarRAG 平台 HTTP API</title>
-  <style>
-    :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f5f7fb; color: #1f2937; line-height: 1.65; }
-    main { max-width: 900px; margin: 0 auto; padding: 40px 24px 72px; }
-    article { background: #fff; border: 1px solid #e5e7eb; border-radius: 14px; padding: 32px 40px; box-shadow: 0 8px 24px rgba(15, 23, 42, .06); }
-    h1 { margin-top: 0; color: #102a56; }
-    h2 { margin-top: 32px; color: #173f7a; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; }
-    code { background: #eef2f7; border-radius: 4px; padding: 2px 5px; }
-    pre { overflow-x: auto; background: #111827; color: #e5e7eb; border-radius: 8px; padding: 16px; }
-    pre code { background: transparent; padding: 0; }
-    .notice { background: #fff7ed; border-left: 4px solid #f97316; padding: 12px 16px; }
-    .flow { background: #eff6ff; border-left: 4px solid #2563eb; padding: 12px 16px; }
-    li { margin: 6px 0; }
-  </style>
-</head>
-<body>
-<main>
-<article>
-  <h1>PolarRAG 平台 HTTP API</h1>
-  <p>完整字段、分页、错误码和全部端点请参阅同目录的 <a href="polarrag-platform-http-api.md">Markdown 文档</a> 或目标 PAS 的 <code>/openapi.json</code>。</p>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PAS · PolarRAG HTTP 接口参考</title>
+<style>
+:root{--ink:#153834;--muted:#637873;--line:#dbe5df;--accent:#087669;--paper:#fffefa}*{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:28px}body{margin:0;background:#f2f5f0;color:var(--ink);font:16px/1.85 "PingFang SC","Microsoft YaHei",sans-serif}aside{position:fixed;inset:0 auto 0 0;width:272px;padding:32px 24px;background:#123c36;color:#d9e8e1;overflow:auto}.brand{font:700 24px Georgia,serif;letter-spacing:2px;color:white}.edition{font-size:12px;color:#a3c2b5;margin:8px 0 28px;letter-spacing:1px}aside ul{list-style:none;padding:0}aside ul ul{padding-left:14px;font-size:12px}aside a{display:block;color:inherit;text-decoration:none;font-size:14px;line-height:1.6;padding:7px 0}aside a:hover{color:#fff;text-decoration:underline}main{margin-left:272px;padding:44px 5vw 80px;max-width:1440px}.toolbar{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px}.eyebrow{color:var(--accent);font:600 12px monospace;letter-spacing:2px}button{border:1px solid var(--line);border-radius:5px;padding:8px 14px;background:var(--paper);color:var(--ink);cursor:pointer}button:hover{border-color:var(--accent)}h1{font-size:36px;line-height:1.3;letter-spacing:-1px;margin:0 0 28px}h2{font-size:25px;margin:64px 0 20px;border-top:2px solid var(--accent);padding-top:22px}h3{font-size:20px;margin:32px 0 14px}p,li{max-width:88ch}a{color:var(--accent)}code{font:13px/1.6 "SFMono-Regular",Consolas,monospace;overflow-wrap:anywhere;background:#e8eeE6;padding:2px 5px;border-radius:3px}pre{position:relative;padding:25px 20px;background:#15342f;color:#edf5ef;overflow:auto;border-radius:7px;font-size:13px}pre code{background:none;color:inherit;padding:0;overflow-wrap:normal}pre .copy{position:absolute;right:8px;top:6px;font-size:11px;padding:2px 8px;background:#244b42;color:#e5f2e8;border-color:#48705f}.table-wrap{overflow:auto}table{border-collapse:collapse;width:100%;font-size:14px;background:var(--paper)}th{text-align:left;background:#e8eee6;font-weight:600}td,th{border-bottom:1px solid var(--line);padding:13px 14px;vertical-align:top}td code{font-size:12px}.note{padding:18px 22px;border-left:3px solid var(--accent);background:#e6eee4;margin:25px 0;font-size:14px}.endpoint{margin:10px 0;border:1px solid var(--line);border-radius:6px;background:var(--paper)}summary{cursor:pointer;padding:13px 16px}.method{display:inline-block;min-width:64px;color:var(--accent);font:700 12px monospace}details pre{margin:0;border-radius:0 0 5px 5px}input{width:100%;padding:13px;border:1px solid var(--line);border-radius:6px;background:var(--paper);font:inherit;margin:10px 0 20px}footer{border-top:1px solid var(--line);padding-top:24px;margin-top:56px;color:var(--muted);font-size:13px}@media(max-width:850px){aside{position:static;width:auto;padding:24px}aside nav{max-height:220px;overflow:auto}main{margin:0;padding:30px 20px}h1{font-size:29px}}@media print{aside,.toolbar,button,input{display:none!important}main{margin:0;padding:0;max-width:none}body{background:white;font-size:11pt}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f3f3;color:black}h2{break-after:avoid}a{color:inherit}details{break-inside:avoid}}
+</style></head><body><aside><div class="brand">PAS / API</div><div class="edition">POLARRAG · 接入参考</div><nav><div class="toc">
+<ul>
+<li><a href="#1">1. 范围与授权模型</a><ul>
+<li><a href="#_1">管理员目录同步</a></li>
+<li><a href="#_2">用户资源授权</a></li>
+</ul>
+</li>
+<li><a href="#2">2. 接入前准备</a></li>
+<li><a href="#3-http">3. 通用 HTTP 契约</a></li>
+<li><a href="#4">4. 知识库与文档</a><ul>
+<li><a href="#_3">强制重新切分</a></li>
+<li><a href="#_4">批量重新切分</a></li>
+</ul>
+</li>
+<li><a href="#5-chunk">5. 文档 Chunk</a></li>
+<li><a href="#6">6. 检索契约</a></li>
+<li><a href="#7-http-mcp-tool">7. 通过 HTTP 调用 MCP Tool</a></li>
+<li><a href="#8">8. 企业用户与知识资源绑定</a></li>
+<li><a href="#9">9. 错误与安全</a></li>
+<li><a href="#spacekb">Space/KB 成对选择兼容</a></li>
+<li><a href="#_5">企业用户选择与身份返回</a></li>
+</ul>
+</div>
+<a href="#contracts">10. 逐接口参数与响应结构</a><a href="#schemas">11. 数据模型</a></nav></aside>
+<main><div class="toolbar"><span class="eyebrow">HTTP INTERFACE REFERENCE</span><button onclick="window.print()">打印 / 导出 PDF</button></div>
+<div class="note">面向平台集成开发者。本文可离线阅读；示例使用占位符，不含真实凭据。请将基础地址替换为实际 PAS 地址，请使用对应 PAS 版本离线导出的 OpenAPI 契约；在线文档入口已禁用。</div>
+<h1 id="polarrag-http-api">PolarRAG 知识库平台 HTTP API</h1>
+<p>本文面向客户知识库平台，说明 PAS HTTP 资源 API：知识库与文档 API、检索、HTTP Tool
+网关，以及将企业用户绑定到知识资源的管理员 API。</p>
+<p>示例使用 <code>https://pas.example.com</code>。在对应 PAS 版本中执行
+<code>python -m server.openapi --surface application</code>，离线导出机器可读的请求和响应契约。
+在线 <code>/openapi.json</code> 已禁用。</p>
+<h2 id="1">1. 范围与授权模型</h2>
+<h3 id="_1">管理员目录同步</h3>
+<p><code>POST /api/v1/admin/spaces/{space_id}/sync</code> 同步已注册 Space 的目录。PAS 自动
+查找所属实例，无需 <code>instance_id</code>。本接口及同路径 <code>GET</code> 状态接口要求启用状态的
+PAS 管理员登录 access JWT（<code>Authorization: Bearer &lt;login-access-token&gt;</code>）
+或 <code>session_token</code> Cookie。普通用户返回 403，未认证或凭据无效返回 401。
+平台 OAuth、外部 Token 兑换、个人及 Agent Token 不能代替管理员登录凭据。
+知识功能必须启用。</p>
+<p>不传 body 或传 <code>{}</code> 执行原有全量同步；传 <code>{"kb_ids":["pkb-a","pkb-b"]}</code>
+在 PolarRAG 高于 1.0.7 的版本上执行定向同步。允许 1–100 个字符串 ID，每个最长 256 字符，去除首尾空白并去重。
+空数组、空白 ID、null 或类型错误返回 422。PAS 在每个上游
+<code>knowledge_bases/_list</code> 分页请求中下推 <code>kb_ids</code>，要求 PolarRAG 支持该过滤参数；
+不会退化为本地过滤全量目录，也不会以缺失完整元数据的单 KB 查询替代。
+已登记插件版本为 1.0.7 及以下（或版本缺失、无法识别）时，PAS 忽略通过参数校验的
+<code>kb_ids</code>，不向上游传该字段，直接执行全量同步。这包括缺失 KB 停用清理、Space 级
+失败处理和全量结果计数；这些版本不能依赖定向隔离。支持普通语义版本及 PolarRAG 包版本字符串。</p>
+<p>HTTP 202 和 <code>status: running</code> 只表示已接收。轮询同路径 <code>GET</code>，直到
+<code>completed</code> 或 <code>failed</code>。这里返回 Space 最新状态，并非各请求的历史记录。
+完成状态与目录更新在同一事务提交。未注册 Space 返回 404；Space 已停用或已有
+同步租约返回 409。全量和定向同步共用同一个租约。
+同一 Space ID 登记到多个实例时，两个新接口均返回 409 和 <code>AMBIGUOUS_SPACE</code>，
+即使其中一条登记已停用也不例外。PAS 不会选择任一实例或启动同步；请使用原有
+包含实例 ID 的接口操作目标登记。</p>
+<p>支持定向同步时，要求所有目标都出现在上游 ACTIVE 目录中。目标缺失、非 ACTIVE 或属于
+其他 Space 时，状态为 <code>failed</code>，错误为 <code>POLARRAG_CATALOG_TARGETS_MISSING</code>，
+目标更新均不提交。上游返回非目标或格式错误时，错误为 <code>POLARRAG_INVALID_RESPONSE</code>；
+其他上游异常同样失败。定向失败全部回滚，包括上游 HTTP 409；不修改非目标 KB、
+Agent 绑定或用户授权。结果计数仅针对目标 KB，不执行缺失 KB 停用清理，
+也不更新上次全量同步时间。同步登记成功不代表自动获得访问权。</p>
+<p>原有 <code>POST</code> 和 <code>GET /api/polarrag/instances/{instance_id}/spaces/{space_id}/sync</code>
+保持兼容，包括旧 POST 在已有同步运行时返回 202 的行为。</p>
+<h3 id="_2">用户资源授权</h3>
+<p>每个资源请求均要求 PAS 用户 Access Token，并具有如下有效授权上下文：</p>
+<ul>
+<li><code>aud</code> 为 <code>&lt;PAS base URL&gt;/api/v1</code>；</li>
+<li><code>scope</code> 包含 <code>polarrag</code>；</li>
+<li>Token 代表 PAS 用户和有效 Agent 上下文；</li>
+<li>PAS 在收到每个请求时重新确认该用户仍可访问该 Agent。</li>
+</ul>
+<p>外部应用可通过 <code>/token</code> 或 <code>/api/v1/external-auth/token</code> 的 RFC 8693 Token
+Exchange 获取此 Token。管理员在<strong>外部应用</strong>页面注册调用方服务，PAS 会集中展示
+<code>client_id</code>、只显示一次的 <code>client_secret</code>、Resource
+<code>&lt;PAS base URL&gt;/api/v1</code>、Scope <code>polarrag</code>、Agent 策略和可复制请求。交换只返回
+PAS Access Token，不返回 Refresh Token。除非单独启用直连兼容模式，PAS 不会把
+飞书 <code>user_access_token</code> 直接当作资源 API Bearer Token。</p>
+<p>Admin Token 不能替代用户 Token 访问知识内容。现有 Dashboard Session、PAS MCP OAuth、
+<code>pas_agent_</code> Token 和 <code>pas_user_agent_</code> Token 在各自接口中继续支持。</p>
+<p>个人 Token 使用 <code>/mcp/personal</code>，不作为本页 <code>/api/v1</code> 接口的凭据。个人连接仅可
+访问当前账号有效权限范围内的数据库实例（包括直接授权、本人名下的系统分配实例及部门/用户组
+继承权限），以及检索、读取本人拥有的 PERSONAL 知识库；PUBLIC
+及他人的 PERSONAL 知识库不在其范围内。PUBLIC 知识库需通过已授权的 Agent 访问。</p>
+<p>最终权限始终取以下条件的交集：有效用户、有效 Agent、当前 User-to-Agent 授权、
+Agent 资源范围、身份源绑定和 PolarRAG 文档 ACL。客户端提交的 principal 或 ACL
+上下文不能覆盖服务端状态。</p>
+<p>本版本不创建或删除上游知识库，不接收客户端定义的文档 ACL，也不生成 LLM 答案。</p>
+<h2 id="2">2. 接入前准备</h2>
+<p>管理员需要先完成：</p>
+<ol>
+<li>通过 HTTPS 发布 PAS；</li>
+<li>配置并同步一个 ACTIVE 的飞书或 SharePoint 身份源；</li>
+<li>注册 PolarRAG，并把身份源绑定到目标 Space；</li>
+<li>创建 Agent，为其授权 PolarRAG 资源以及用户或用户组；</li>
+<li>使用 Token Exchange 时，配置外部 Token 信任并注册外部应用；</li>
+<li>需要上传文档时，验证 Space 的 OSS 配置。</li>
+</ol>
+<h2 id="3-http">3. 通用 HTTP 契约</h2>
+<p>知识接口使用第 1 节所述的 PAS 用户 Access Token：</p>
+<pre><code class="language-http">Authorization: Bearer &lt;pas-user-access-token&gt;
+Accept: application/json
+</code></pre>
+<p>列表接口使用 opaque <code>cursor</code>。客户端原样传递 <code>next_cursor</code>；<code>null</code> 表示最后一页。
+<code>knowledge_resource_id</code> 来自知识库列表，是 PAS 对外 ID。文档列表还支持从 1 开始的
+<code>page</code>；<code>cursor</code> 与 <code>page</code> 二选一，不要同时传递。<code>doc_id</code> 来自上传、列表、详情或
+检索响应。</p>
+<p>当前支持的知识与 Tool 接口如下：</p>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>方法</th>
+<th>路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>枚举知识库</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/knowledge-bases</code></td>
+</tr>
+<tr>
+<td>获取知识库</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}</code></td>
+</tr>
+<tr>
+<td>获取 Space</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/spaces/{space_id}</code></td>
+</tr>
+<tr>
+<td>枚举 Space 下的知识库</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 获取知识库</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}</code></td>
+</tr>
+<tr>
+<td>枚举文档</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents</code></td>
+</tr>
+<tr>
+<td>上传文档</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents</code></td>
+</tr>
+<tr>
+<td>向同一 Space 的多个知识库上传文档（最多 20 个文件）</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/documents/batch</code></td>
+</tr>
+<tr>
+<td>获取或删除文档</td>
+<td><code>GET</code>、<code>DELETE</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}</code></td>
+</tr>
+<tr>
+<td>分页获取文档 Chunk</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/chunks</code></td>
+</tr>
+<tr>
+<td>获取 Chunk 上下文窗口</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/chunks/{chunk_index}/context</code></td>
+</tr>
+<tr>
+<td>获取原文件元数据</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/original</code></td>
+</tr>
+<tr>
+<td>请求文档重新切分</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/rechunk</code></td>
+</tr>
+<tr>
+<td>批量请求文档重新切分（最多 20 个文档）</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/rechunk</code></td>
+</tr>
+<tr>
+<td>跨指定知识库按文件名查找文档</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/documents/_find</code></td>
+</tr>
+<tr>
+<td>准备直传 OSS 的文档上传</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/document-uploads</code></td>
+</tr>
+<tr>
+<td>完成直传 OSS 的文档上传</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/document-uploads/{upload_session_id}/complete</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 枚举或上传文档</td>
+<td><code>GET</code>、<code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 获取或删除文档</td>
+<td><code>GET</code>、<code>DELETE</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 分页获取文档 Chunk</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/chunks</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 获取 Chunk 上下文窗口</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/chunks/{chunk_index}/context</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 获取原文件元数据</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/original</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 请求重新切分</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/rechunk</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 批量请求重新切分（最多 20 个文档）</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/rechunk</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 准备直传 OSS 上传</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/document-uploads</code></td>
+</tr>
+<tr>
+<td>检索单个知识库</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/search</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 检索单个知识库</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/search</code></td>
+</tr>
+<tr>
+<td>检索多个知识库</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/knowledge-bases/search</code></td>
+</tr>
+<tr>
+<td>检索同一 Space 下的多个知识库</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/search</code></td>
+</tr>
+<tr>
+<td>检索单个文档</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/search</code></td>
+</tr>
+<tr>
+<td>按 Space 和 KB ID 检索单个文档</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/search</code></td>
+</tr>
+<tr>
+<td>枚举 Tool</td>
+<td><code>GET</code></td>
+<td><code>/api/v1/tools</code></td>
+</tr>
+<tr>
+<td>调用 Tool</td>
+<td><code>POST</code></td>
+<td><code>/api/v1/tools/call</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="4">4. 知识库与文档</h2>
+<p>枚举当前用户可见知识库：</p>
+<pre><code class="language-http">GET /api/v1/knowledge-bases?limit=50&amp;cursor=&lt;optional-cursor&gt;
+Authorization: Bearer &lt;platform-user-token&gt;
+</code></pre>
+<p>每项包含 <code>knowledge_resource_id</code>、上游 <code>space_id</code>、本地 <code>knowledge_space_id</code>、展示名、
+上游 <code>kb_id</code>、<code>kb_type</code>、<code>usage</code> 和 <code>upload_ready</code>。当 PAS 配置的实例中恰好解析到一个
+同名 <code>space_id</code> 时，<code>space_id + kb_id</code> 可定位一个知识库；同一 <code>space_id</code> 下可有多个
+<code>kb_id</code>。知识库可见不代表其中所有文档都可见，PolarRAG 仍会执行文档 ACL。</p>
+<p>PAS 管理的资源使用 <code>management_mode=NATIVE</code>。管理员可通过
+<code>PUT /api/polarrag/knowledge-resources/{knowledge_resource_id}/management-mode</code>
+将外部同步任务维护的资源设为 <code>EXTERNAL_SYNC</code>。此类资源仍可检索，但 PAS 用户和 MCP
+发起的上传、删除及重新分块会返回 <code>EXTERNAL_SYNC_RESOURCE_READ_ONLY</code>，列表中的
+<code>upload_ready</code> 为 <code>false</code>。</p>
+<p>可按 Space 枚举或获取一个知识库：</p>
+<pre><code class="language-http">GET /api/v1/spaces/{space_id}
+GET /api/v1/spaces/{space_id}/knowledge-bases?limit=50&amp;cursor=&lt;optional-cursor&gt;
+GET /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}
+Authorization: Bearer &lt;platform-user-token&gt;
+</code></pre>
+<p>若 PAS 本地目录将一个 <code>space_id</code> 解析为多个 PolarRAG 实例记录，以上 Space 路由及
+<code>space_id + kb_id</code> 选择器返回 HTTP 409 和 <code>SPACE_ID_AMBIGUOUS</code>，不会任意选择其中一条。</p>
+<p>枚举或按名称查找可读文档：</p>
+<pre><code class="language-http">GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents?limit=20&amp;cursor=&lt;optional-cursor&gt;
+GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents?limit=20&amp;page=2
+GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents?filename=guide.pdf&amp;limit=20
+Authorization: Bearer &lt;platform-user-token&gt;
+</code></pre>
+<p>PolarRAG 1.0.7 及以上版本中，PAS 按 <code>updated_at</code> 倒序请求分页，并返回精确的
+<code>total</code>、<code>page</code> 和 <code>size</code>。存在后续页时仍返回 opaque <code>next_cursor</code>，已有 cursor
+客户端无需理解上游页码即可继续翻页。沿 cursor 翻页时必须保持相同 <code>limit</code>；PAS 会
+拒绝不同值，避免分页边界重复或跳过文档。旧版 PolarRAG 保持文档 ID cursor 协议，
+并省略 <code>total</code>、<code>page</code> 和 <code>size</code>。若翻页期间 PolarRAG 版本发生变化，PAS 会拒绝另一种
+分页协议生成的 cursor；客户端需要从第一页重新开始。</p>
+<p>当 PolarRAG 在文档列表或详情中返回 <code>source</code> 时，PAS 会原样透传该字段。该值由上游定义，
+应按不透明字符串处理；当前观察到 <code>NATIVE</code>、<code>OSS</code>，但客户端不能假定只会出现这两种值。</p>
+<p>PolarRAG 1.0.7 及以上版本中，文档列表、按文件名查找和文档详情响应还会包含 <code>acl</code>
+对象。PAS 每批最多查询 200 个文档 ID，并且只返回经校验、属于当前调用者的 ACL 字段：</p>
+<pre><code class="language-json">{
+  &quot;acl&quot;: {
+    &quot;identity_domain&quot;: &quot;tenant-a&quot;,
+    &quot;state&quot;: &quot;ACTIVE&quot;,
+    &quot;updating&quot;: false,
+    &quot;acl_version&quot;: 3,
+    &quot;acl_set_id&quot;: &quot;base64url-acl-set-id&quot;,
+    &quot;grants&quot;: [
+      {
+        &quot;principal&quot;: {&quot;provider&quot;: &quot;feishu&quot;, &quot;type&quot;: &quot;group&quot;, &quot;id&quot;: &quot;engineering&quot;},
+        &quot;actions&quot;: [&quot;READ&quot;]
+      }
+    ]
+  }
+}
+</code></pre>
+<p>具有 <code>MANAGE</code> 权限的调用者可能看到完整 grants；只读调用者只会看到自身生效的 grant，
+具体裁剪由 PolarRAG 强制执行。<code>acl: null</code> 表示新版插件没有为该可读文档返回活动 ACL。
+旧版插件省略 <code>acl</code>，PAS 也不会调用权限接口。</p>
+<p>可使用任意一种知识库标识，在一个请求中跨多个知识库按文件名查找：</p>
+<pre><code class="language-http">POST /api/v1/documents/_find
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
 
-  <div class="notice"><strong>认证边界：</strong>管理员先在“外部应用”页面注册调用方服务并领取一次性 Client Secret、Resource、Scope 和请求示例。外部应用可通过 PAS 的 <code>/token</code> 或 <code>/api/v1/external-auth/token</code> 执行标准 Token Exchange。PAS 只签发 Access Token，不签发 Refresh Token；除非单独启用直连兼容模式，否则不会直接接受飞书 <code>user_access_token</code>。</div>
+{
+  &quot;filename&quot;: &quot;guide.pdf&quot;,
+  &quot;limit&quot;: 20,
+  &quot;targets&quot;: [
+    {&quot;knowledge_resource_id&quot;: &quot;resource-001&quot;},
+    {&quot;space_id&quot;: &quot;space-001&quot;, &quot;kb_id&quot;: &quot;kb-policy&quot;}
+  ]
+}
+</code></pre>
+<p>按文件名查找的每个 <code>items</code> 条目除已有的 <code>knowledge_space_id</code> 和嵌套 <code>document</code> 外，
+还包含 <code>knowledge_resource_id</code>、<code>space_id</code>、<code>kb_id</code>。Space/KB 标识来自 PAS 资源目录，
+不依赖上游文档是否携带这些字段。部分失败项遵循第 6 节的标识规则。</p>
+<p>通过 <code>multipart/form-data</code> 上传一个文件：</p>
+<p>知识库由 URL 选择；multipart 请求体只需提供 <code>file</code> 字段。</p>
+<pre><code class="language-bash">curl --fail-with-body \
+  -H &quot;Authorization: Bearer ${PAS_ACCESS_TOKEN}&quot; \
+  -F &quot;file=@./guide.pdf&quot; \
+  &quot;${PAS_BASE_URL}/api/v1/knowledge-bases/${KNOWLEDGE_RESOURCE_ID}/documents&quot;
+</code></pre>
+<pre><code class="language-json">{&quot;doc_id&quot;:&quot;doc-001&quot;,&quot;filename&quot;:&quot;guide.pdf&quot;,&quot;status&quot;:&quot;DISPATCHED&quot;}
+</code></pre>
+<p>PAS 根据 Token 和服务端企业身份状态推导可信上传 actor，客户端不能提交 ACL
+principal。上传成功仅表示任务已受理，应轮询文档详情直到解析进入终态。</p>
+<p>如需在一个请求中向同一 Space 的不同知识库上传最多 20 个文件，请按相同顺序重复
+提交 <code>files</code> 和 <code>kb_ids</code> multipart 字段：</p>
+<pre><code class="language-bash">curl --fail-with-body \
+  -H &quot;Authorization: Bearer ${PAS_ACCESS_TOKEN}&quot; \
+  -F &quot;files=@./policy.pdf&quot; \
+  -F &quot;files=@./faq.md&quot; \
+  -F &quot;kb_ids=kb-policy&quot; \
+  -F &quot;kb_ids=kb-faq&quot; \
+  &quot;${PAS_BASE_URL}/api/v1/spaces/${SPACE_ID}/documents/batch&quot;
+</code></pre>
+<p>PAS 会在产生任何上传操作前校验全部文件和目标知识库。全部受理时返回 HTTP 201；
+可明确归属到单个文件的 OSS 或 PolarRAG 失败只影响对应文件，并返回 HTTP 207，
+<code>index</code> 表示原请求顺序：</p>
+<pre><code class="language-json">{
+  &quot;accepted&quot;: [{
+    &quot;index&quot;: 0,
+    &quot;knowledge_resource_id&quot;: &quot;resource-policy&quot;,
+    &quot;kb_id&quot;: &quot;kb-policy&quot;,
+    &quot;doc_id&quot;: &quot;doc-001&quot;,
+    &quot;filename&quot;: &quot;policy.pdf&quot;,
+    &quot;status&quot;: &quot;DISPATCHED&quot;
+  }],
+  &quot;failed&quot;: [{
+    &quot;index&quot;: 1,
+    &quot;knowledge_resource_id&quot;: &quot;resource-faq&quot;,
+    &quot;kb_id&quot;: &quot;kb-faq&quot;,
+    &quot;filename&quot;: &quot;faq.md&quot;,
+    &quot;status_code&quot;: 502,
+    &quot;code&quot;: &quot;POLARRAG_DOCUMENT_SUBMIT_FAILED&quot;,
+    &quot;message&quot;: &quot;PolarRAG did not accept the uploaded document.&quot;
+  }]
+}
+</code></pre>
+<p>两个 multipart 列表长度必须一致。PAS 会在首次写 OSS 前检查鉴权、Space 归属、
+知识范围、<code>EXTERNAL_SYNC</code> 写保护、OSS 就绪状态、文件名规则以及单文件 100 MiB 限制。
+PAS 把对象上传到 OSS 后，通过一次 PolarRAG <code>managed_documents/_bulk</code> 请求提交全部
+上传成功的对象。PAS 不发送 <code>doc_id</code>，由 PolarRAG 生成每个文档 ID。上传开始后不是
+事务操作；客户端只应重试 <code>failed</code> 中的条目。
+如果 PolarRAG 未返回明确的批量结果，PAS 返回 HTTP 502 和
+<code>POLARRAG_BATCH_SUBMIT_RESULT_UNKNOWN</code>，并保留已上传的 OSS 对象。此时 PolarRAG
+可能已经受理请求，客户端不得盲目重试。</p>
+<p>获取详情、原文件元数据或请求删除：</p>
+<pre><code class="language-http">GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}
+GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/chunks?offset=0&amp;limit=100
+GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/original
+DELETE /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}
+Authorization: Bearer &lt;platform-user-token&gt;
+</code></pre>
+<p>可获取某个 Chunk 周围受 ACL 保护的上下文窗口，或请求异步重新切分：</p>
+<pre><code class="language-http">GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/chunks/{chunk_index}/context?window_size=2
+POST /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/rechunk
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
 
-  <h2>一、授权前提</h2>
-  <ul>
-    <li>PAS Token 的 <code>aud</code> 为 <code>&lt;PAS base URL&gt;/api/v1</code>；</li>
-    <li><code>scope</code> 包含 <code>polarrag</code>；</li>
-    <li>Token 代表一个 PAS 用户和有效 Agent 上下文；PAS 在每次请求中复核用户仍有该 Agent 访问权。</li>
-  </ul>
+{&quot;chunk_strategy&quot;:&quot;hybrid&quot;,&quot;chunk_max_tokens&quot;:512}
+</code></pre>
+<p><code>chunk_index</code> 从 0 开始，<code>window_size</code> 范围为 0 到 100。重新切分在 PolarRAG 接受请求后
+返回 HTTP 202。使用不带 <code>chunk_max_tokens</code> 的 <code>inherit</code> 恢复 Space 策略；<code>hybrid</code> 和
+<code>hierarchical</code> 可带 1 到 100000 的正整数 <code>chunk_max_tokens</code>。两种操作均有表中所列的
+Space+KB 对等路由。</p>
+<p>检索响应保留 <code>doc_generation</code>。为保证上下文窗口与所选检索命中一致，
+将命中的 generation 传入可选查询参数 <code>expected_doc_generation</code>
+（0 到 2147483647 的整数）：</p>
+<pre><code class="language-http">GET /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/chunks/{chunk_index}/context?window_size=2&amp;expected_doc_generation=2
+</code></pre>
+<p>两种上下文路由还接受可选的 URL 编码 <code>query</code>，其值为原查询。
+遇到 HTTP 409 <code>citation_source_changed</code> 时，PAS 使用该查询在同一文档和 KB 内
+最多重新定位一次片段，再按新 Chunk 的 index 和 generation pin 读取上下文。
+没有新命中、缺少 generation 或再次冲突时，返回 HTTP 409，
+<code>detail.code=citation_source_changed</code>。已发布 generation 不可见、缺失或目标 Chunk
+缺失也会产生该冲突。应丢弃旧命中及已组装上下文，禁止通过移除 pin 重试。
+省略 <code>query</code> 时，调用方须使用原查询和原选择条件最多重跑一次原检索，再读取新命中
+的固定 generation 上下文。如果带 <code>query</code> 的自动恢复已失败，应停止，不能再启动
+重试循环。该恢复不重跑跨 KB 检索；ACL 错误保留原有语义。
+既有未传 pin 的请求仍然受支持，但不保证检索到上下文之间的一致性。</p>
+<p>Chunk 列表和上下文响应中的每个 Chunk 条目都会返回已授权目标文档的原始
+<code>filename</code>。PAS 从已通过 ACL 校验的文档记录中取得该字段，不接受客户端传入的文件名，
+也不会为每个 Chunk 单独查询。中文、空格和多后缀文件名保持原值。
+上游 Chunk 的 <code>source_uri</code> 若存在则原样透传：</p>
+<pre><code class="language-json">{
+  &quot;items&quot;: [{
+    &quot;doc_id&quot;: &quot;doc-001&quot;,
+    &quot;filename&quot;: &quot;退款 指南.backup.v2.pdf&quot;,
+    &quot;source_uri&quot;: &quot;oss://bucket/refund.pdf&quot;,
+    &quot;chunk_index&quot;: 3,
+    &quot;text&quot;: &quot;原始 Chunk&quot;
+  }],
+  &quot;offset&quot;: 0,
+  &quot;limit&quot;: 100,
+  &quot;total&quot;: 1,
+  &quot;next_offset&quot;: null
+}
+</code></pre>
+<h3 id="_3">强制重新切分</h3>
+<p>单文档和批量重新切分均可提交可选的 <code>force</code>（默认 <code>false</code>）。<code>force=true</code> 仅适用于
+PolarRAG 1.0.7 及以上版本；目标版本较低或未知时，单文档接口返回 HTTP 422，错误码为
+<code>POLARRAG_VERSION_UNSUPPORTED</code>。批量接口将此类失败记录在 <code>failed</code> 中，条目的
+<code>status_code</code> 为 422，整体返回 HTTP 207（包括全部文档失败时）。
+强制重新切分仍执行原有用户、Agent、KB 和文档授权检查。</p>
+<pre><code class="language-http">POST /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/rechunk
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
 
-  <h2>二、管理员准备</h2>
-  <p>管理员先创建 Agent、授予 PolarRAG 资源，并将目标用户或企业用户组绑定给 Agent。使用 Token Exchange 时，还需配置外部 Token 信任并注册外部应用。需要查询现有对象时可使用：</p>
-  <pre><code>GET /api/agents
-GET /api/identity-sources
-GET /api/identity-sources/&lt;identity_source_id&gt;/directory?entry_type=all&amp;limit=100
-GET /api/identity-sources/spaces</code></pre>
-  <p>将 PAS 用户绑定给 Agent：</p>
-  <pre><code>POST /api/agents/&lt;agent_id&gt;/user-assignments
+{&quot;chunk_strategy&quot;:&quot;hybrid&quot;,&quot;chunk_max_tokens&quot;:512,&quot;force&quot;:true}
+</code></pre>
+<p>按 Space 和 KB ID 定位时，改用
+<code>POST /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/rechunk</code>，
+请求体相同。</p>
+<h3 id="_4">批量重新切分</h3>
+<p>在同一知识库中批量重新切分时，<code>doc_ids</code> 必须包含 1 到 20 个不重复的文档 ID。PAS 按
+提交顺序，通过与单文档接口相同的授权链路逐个提交：</p>
+<pre><code class="language-http">POST /api/v1/knowledge-bases/{knowledge_resource_id}/documents/rechunk
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{&quot;doc_ids&quot;:[&quot;doc-a&quot;,&quot;doc-b&quot;],&quot;chunk_strategy&quot;:&quot;hybrid&quot;,&quot;chunk_max_tokens&quot;:512}
+</code></pre>
+<p>所有文档均被受理时返回 HTTP 202。若部分文档不能受理，PAS 仍继续处理其它 ID，并返回
+HTTP 207：</p>
+<pre><code class="language-json">{
+  &quot;accepted&quot;: [{&quot;doc_id&quot;:&quot;doc-a&quot;,&quot;status&quot;:&quot;accepted&quot;}],
+  &quot;failed&quot;: [{&quot;doc_id&quot;:&quot;doc-b&quot;,&quot;status_code&quot;:403,&quot;code&quot;:&quot;DOCUMENT_PERMISSION_DENIED&quot;,&quot;message&quot;:&quot;...&quot;}]
+}
+</code></pre>
+<p>若按 Space 和 KB ID 定位知识库，请调用
+<code>POST /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/rechunk</code>，请求体相同。</p>
+<p>相同的文档操作也可使用 Space 和 KB ID：</p>
+<pre><code class="language-http">GET /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents?limit=20&amp;cursor=&lt;optional-cursor&gt;
+POST /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents
+GET /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}
+GET /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/chunks?offset=0&amp;limit=100
+GET /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/original
+DELETE /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}
+Authorization: Bearer &lt;platform-user-token&gt;
+</code></pre>
+<p>原文件接口只返回受 ACL 保护的元数据，不返回文件字节、OSS AccessKey 或签名下载
+地址。删除要求 PolarRAG MANAGE 权限，受理后返回 HTTP 202。</p>
+<p>大文件可使用直传 OSS 的 multipart 上传，避免通过 PAS 代理文件字节：</p>
+<pre><code class="language-http">POST /api/v1/knowledge-bases/{knowledge_resource_id}/document-uploads
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{
+  &quot;filename&quot;: &quot;guide.pdf&quot;,
+  &quot;file_size_bytes&quot;: 1024,
+  &quot;file_md5&quot;: &quot;&lt;32 位大小写十六进制字符&gt;&quot;,
+  &quot;file_sha256&quot;: &quot;&lt;64 位大小写十六进制字符&gt;&quot;,
+  &quot;content_type&quot;: &quot;application/pdf&quot;
+}
+</code></pre>
+<p>响应包含 <code>upload_session_id</code> 和短期 part URL。客户端直接上传各 part 后，调用
+<code>POST /api/v1/document-uploads/{upload_session_id}/complete</code>。PAS 会校验服务端 multipart
+状态，只有所有 part 都存在时才提交对象给 PolarRAG。准备上传接口也有表中所列的
+Space+KB 版本。</p>
+<h2 id="5-chunk">5. 文档 Chunk</h2>
+<p>Chunk 列表按 <code>chunk_index</code> 升序使用 offset 分页。<code>offset</code> 从 0 开始，<code>limit</code>
+范围为 1 到 1000。响应包含 <code>items</code>、<code>offset</code>、<code>limit</code>、<code>total</code> 及 <code>next_offset</code>；
+只要 <code>next_offset</code> 不为 <code>null</code> 就继续请求。PolarRAG 返回精确命中数
+（<code>relation=eq</code>）时，PAS 将其作为 <code>total</code> 返回并据此计算 <code>next_offset</code>；否则
+<code>total</code> 为 <code>null</code>，PAS 仅在一页已满时额外探测下一条 Chunk。每个条目都是受 ACL
+保护的 Chunk source，且始终包含 <code>image_resources</code>（上游 Chunk 没有图片时为空数组）。</p>
+<h2 id="6">6. 检索契约</h2>
+<p>检索单个知识库：</p>
+<pre><code class="language-http">POST /api/v1/knowledge-bases/{knowledge_resource_id}/search
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{&quot;query&quot;:&quot;退款流程&quot;,&quot;search_mode&quot;:&quot;balanced&quot;,&quot;top_k&quot;:10,&quot;min_score&quot;:null,&quot;reranker&quot;:false}
+</code></pre>
+<p>也可通过 Space 和 KB ID 定位知识库，检索请求体相同：</p>
+<pre><code class="language-http">POST /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/search
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{&quot;query&quot;:&quot;退款流程&quot;,&quot;search_mode&quot;:&quot;balanced&quot;,&quot;top_k&quot;:10,&quot;min_score&quot;:null,&quot;reranker&quot;:false}
+</code></pre>
+<p>也可在一个请求中混用多个 PAS 资源 ID 和 <code>space_id + kb_id</code>：</p>
+<pre><code class="language-http">POST /api/v1/knowledge-bases/search
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{
+  &quot;query&quot;: &quot;退款流程&quot;,
+  &quot;targets&quot;: [
+    {&quot;knowledge_resource_id&quot;: &quot;resource-001&quot;},
+    {&quot;space_id&quot;: &quot;space-001&quot;, &quot;kb_id&quot;: &quot;kb-policy&quot;}
+  ],
+  &quot;top_k&quot;: 10
+}
+</code></pre>
+<p>省略顶层 <code>/api/v1/knowledge-bases/search</code> 的 <code>targets</code> 时，会穷举检索 Agent 与用户
+有效范围内的全部知识资源。显式目标可以跨 PolarRAG 实例和 Space；PAS 会分组调用、
+合并结果，并将不可访问目标保留为 <code>partial_failures</code>。单次有效范围最多 1000 个资源，
+不会静默截断。检索多个 KB 时，PAS 探测运行时 <code>_search_capabilities</code>，按
+<code>max_kb_ids</code> 分批发送 <code>kb_ids</code>，不会因登记的插件版本较旧而忽略已声明的能力。
+能力接口返回 400、404 或 501，或明确返回 <code>multi_kb_search: false</code> 时，仍逐个发送旧 <code>kb_id</code>。
+上游检索返回 HTTP 429 时按暂时不可用处理：保留成功 KB 的结果，受影响的 KB
+通过 <code>partial_failures</code> 报告 <code>POLARRAG_UNAVAILABLE</code>；全部 KB 均失败时返回 HTTP 503。</p>
+<p>所有知识库检索和单文档检索响应都会在每个 <code>items</code> 条目中返回 ACL 已授权上游命中的
+原始 <code>filename</code> 与上游 <code>source_uri</code>；上游缺失或为 null 时，检索响应中的
+<code>source_uri</code> 为 <code>null</code>。<code>POST /api/v1/knowledge-bases/search</code> 和
+<code>POST /api/v1/spaces/{space_id}/search</code> 的响应还会在保留
+<code>knowledge_resource_id</code> 的同时返回 <code>space_id</code>、<code>kb_id</code>。每组标识均对应实际资源，
+即使结果来自不同 Space 下同名的 KB ID，也不会混淆。
+<code>partial_failures</code> 中可访问资源也包含这两个字段；错误为
+<code>KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE</code> 时，两者均为 <code>null</code>，避免暴露资源标识。
+资源已不在 PAS 目录中时，两个字段也为 <code>null</code>。</p>
+<p>这些都是新增的 HTTP 响应字段，已有 ID、内容、状态字段、分页、排序、错误和请求选择器
+语义不变。客户端应忽略未知响应字段。原生 MCP Tool 结果及 <code>/api/v1/tools/call</code>
+会从既有已授权检索命中或文档详情中返回同一个文件名；检索工具也返回上游 <code>source_uri</code>。</p>
+<p>同一 Space 的多个知识库可以使用更简短的路径；传入的 <code>knowledge_resource_ids</code> 必须
+属于路径中的 <code>space_id</code>，否则返回 HTTP 422 和 <code>KNOWLEDGE_RESOURCE_OUTSIDE_SPACE</code>：</p>
+<pre><code class="language-http">POST /api/v1/spaces/{space_id}/search
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{
+  &quot;query&quot;: &quot;退款流程&quot;,
+  &quot;kb_ids&quot;: [&quot;kb-policy&quot;, &quot;kb-faq&quot;],
+  &quot;knowledge_resource_ids&quot;: [&quot;resource-001&quot;],
+  &quot;top_k&quot;: 10
+}
+</code></pre>
+<p>该 Space 路径同时省略 <code>kb_ids</code> 和 <code>knowledge_resource_ids</code> 时，检索此 Space 中全部
+有效资源；显式传入空数组属于非法参数。</p>
+<pre><code class="language-http">POST /api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/search
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{&quot;query&quot;:&quot;退款期限&quot;,&quot;top_k&quot;:10}
+</code></pre>
+<pre><code class="language-http">POST /api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/search
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{&quot;query&quot;:&quot;退款期限&quot;,&quot;top_k&quot;:10}
+</code></pre>
+<pre><code class="language-json">{
+  &quot;items&quot;: [{
+    &quot;knowledge_resource_id&quot;: &quot;resource-001&quot;,
+    &quot;doc_id&quot;: &quot;doc-001&quot;,
+    &quot;filename&quot;: &quot;退款 指南.backup.v2.pdf&quot;,
+    &quot;source_uri&quot;: &quot;oss://bucket/refund.pdf&quot;,
+    &quot;chunk_index&quot;: 3,
+    &quot;content&quot;: &quot;检索到的原始 Chunk&quot;,
+    &quot;score&quot;: 0.87,
+    &quot;image_resources&quot;: [{&quot;id&quot;:&quot;document-0/pictures/1&quot;,&quot;oss_uri&quot;:&quot;oss://bucket/picture-1.png&quot;}],
+    &quot;metadata&quot;: {&quot;page_numbers&quot;:[4],&quot;headings&quot;:[],&quot;captions&quot;:[]}
+  }],
+  &quot;top_k&quot;: 10,
+  &quot;partial_failures&quot;: []
+}
+</code></pre>
+<p><code>content</code> 是检索到的原始 Chunk，不是 LLM 答案。结果按返回的相关性分数排序。首期
+只暴露 <code>chunk_index</code>；上游响应没有独立的稳定 Chunk 标识，因此客户端不能依赖该
+字段。ACL 过滤和 <code>min_score</code> 可能使 <code>items</code> 少于 <code>top_k</code>。</p>
+<h2 id="7-http-mcp-tool">7. 通过 HTTP 调用 MCP Tool</h2>
+<p>无需 MCP Session 或 JSON-RPC 即可枚举 Tool 并调用：</p>
+<pre><code class="language-http">GET /api/v1/tools
+Authorization: Bearer &lt;platform-user-token&gt;
+</code></pre>
+<p>目录是唯一准确信息源，目前包含 <code>list_knowledge_resources</code>、<code>kb_search</code>、
+<code>kb_fetch_context</code>、<code>doc_list_chunks</code>、<code>doc_find_by_name</code>、<code>doc_status</code>、<code>doc_recall</code>、
+<code>doc_get_original</code>、<code>doc_delete</code>、<code>doc_rechunk</code>、<code>prepare_document_upload</code> 和
+<code>complete_document_upload</code>。</p>
+<pre><code class="language-http">POST /api/v1/tools/call
+Authorization: Bearer &lt;platform-user-token&gt;
+Content-Type: application/json
+
+{&quot;name&quot;:&quot;kb_search&quot;,&quot;arguments&quot;:{&quot;query&quot;:&quot;退款&quot;,&quot;knowledge_resource_ids&quot;:[&quot;resource-001&quot;],&quot;top_k&quot;:10}}
+</code></pre>
+<p>响应保留 MCP <code>CallToolResult</code> 的 <code>content</code> 和 <code>isError</code> 等字段。调用方必须同时检查
+HTTP 状态与 <code>isError</code>。HTTP 网关与 <code>/mcp</code> 复用同一 Tool 注册表、输入 Schema、
+鉴权、限流、审计与执行代码。</p>
+<h2 id="8">8. 企业用户与知识资源绑定</h2>
+<p>企业访问配置使用管理员 API。通过 <code>GET /api/identity-sources</code>、
+<code>GET /api/identity-sources/{identity_source_id}/directory</code> 和
+<code>GET /api/identity-sources/spaces</code> 获取真实 ID。</p>
+<p>推荐使用原子的 preview/apply 流程：</p>
+<pre><code class="language-http">POST /api/agents/{agent_id}/enterprise-access/preview
 Authorization: Bearer &lt;admin-token&gt;
 Content-Type: application/json
 
-{"user_id":"&lt;pas-user-id&gt;"}</code></pre>
-
-  <h2>三、使用 PAS Token 访问知识库</h2>
-  <div class="flow">Token Exchange 签发 PAS 用户 Token → 查询可见知识库 → 使用知识库、Space/KB 或文档路径检索和查看文档。</div>
-  <pre><code>GET /api/v1/knowledge-bases?limit=50
-Authorization: Bearer &lt;pas-user-access-token&gt;</code></pre>
-  <pre><code>POST /api/v1/knowledge-bases/&lt;knowledge_resource_id&gt;/search
-Authorization: Bearer &lt;pas-user-access-token&gt;
-Content-Type: application/json
-
-{"query":"退款流程","search_mode":"balanced","top_k":10,"reranker":false}</code></pre>
-  <pre><code>POST /api/v1/spaces/&lt;space_id&gt;/knowledge-bases/&lt;kb_id&gt;/search
-Authorization: Bearer &lt;pas-user-access-token&gt;
-Content-Type: application/json
-
-{"query":"退款流程","search_mode":"balanced","top_k":10,"reranker":false}</code></pre>
-  <pre><code>GET /api/v1/knowledge-bases/&lt;knowledge_resource_id&gt;/documents?limit=20
-GET /api/v1/spaces/&lt;space_id&gt;/knowledge-bases/&lt;kb_id&gt;/documents?limit=20</code></pre>
-  <p>知识库和文档结果始终受 PAS 用户授权、Agent 资源范围及 PolarRAG 文档 ACL 共同约束。</p>
-</article>
-</main>
-</body>
-</html>
+{&quot;identity_source_id&quot;:&quot;source-id&quot;,&quot;all_synced_users&quot;:false,&quot;directory_group_ids&quot;:[&quot;group-row-id&quot;],&quot;pas_user_ids&quot;:[&quot;user-id&quot;],&quot;knowledge_space_ids&quot;:[&quot;space-id&quot;]}
+</code></pre>
+<p>管理员确认后，将返回的 selection 和 <code>preview_hash</code> 发送到
+<code>POST /api/agents/{agent_id}/enterprise-access/apply</code>。预览过期时必须重新展示，不能
+自动重试。</p>
+<p>Agent 的 <code>polarrag-bindings</code>、<code>public-resources</code>、<code>user-assignments</code> 和
+<code>group-assignments</code> 仍可用于底层自动化。这些绑定只缩小 Agent 候选范围，不能替代
+PolarRAG 文档 ACL。</p>
+<p>管理员可通过 <code>GET /api/agents/{agent_id}/all-subject-assignments</code> 和同路径 <code>POST</code>
+管理 Agent 的全部成员。POST 接受 <code>{"operation":"BIND"}</code> 或 <code>{"operation":"UNBIND"}</code>。
+BIND 添加已绑定实例的启用 Space 下全部可用身份源，以及全部启用的自建用户，不受分页影响。
+整个身份源授权包含后续同步用户；新建自建用户或身份源后需再次 BIND。
+UNBIND 移除当前 Agent 的全部用户、部门、组和身份源成员关系，并使对应用户的 Agent Token 失效。
+依赖组成员绑定的 KB 授权随之删除；KB 用户策略、其他 Agent 和数据库实例授权保留。
+重复操作幂等。GET 和 POST 均返回 <code>status</code>（<code>BOUND</code>、<code>PARTIAL</code>、<code>UNBOUND</code>）、
+<code>eligible_source_count</code>、<code>eligible_user_count</code> 和 <code>assignment_count</code>。
+Agent 不存在返回 <code>404</code>，非管理员返回 <code>403</code>，未认证返回 <code>401</code>，参数非法返回 <code>422</code>，
+旧版批量绑定任务仍运行时返回 <code>409</code>。该接口管理 Agent 成员，不是 KB 级全部用户策略。</p>
+<p>Agent 到 KB 的可见关系通过 <code>GET /api/admin/agents/{agent_id}/knowledge-resource-options</code>
+查询，支持可选 <code>binding_status=bound|unbound</code>、<code>management_mode</code>、<code>search</code>、<code>offset</code>
+和 <code>limit</code>（1–100）。筛选发生在分页及响应 <code>total</code> 统计之前。
+<code>POST /api/admin/agents/{agent_id}/knowledge-visibility:bind</code> 和 <code>:unbind</code> 接收
+<code>{"knowledge_resource_ids":["&lt;resource-id&gt;"]}</code> 或
+<code>{"targets":[{"space_id":"&lt;space-id&gt;","kb_id":"&lt;kb-id&gt;"}]}</code>（1–100 项，
+两个选择字段必须且只能提交一个），原子、幂等地绑定或解绑
+自建 PUBLIC/PERSONAL KB。目标必须活跃、启用并位于已绑定实例及符合父级约束的 Space 下；
+无效批次返回 <code>422</code>。两个接口均返回 <code>instance_count</code>、各类型 <code>statuses</code>、
+<code>agent_id</code> 和本次接受的排序后 <code>knowledge_resource_ids</code>。
+保留用户策略及 Agent 成员关系，PERSONAL 仍仅 owner 可见。从全部范围部分解绑会保留
+动态全选并记录 KB 排除项，后续新增自建及同步 KB 仍在可见范围内。重新绑定会移除所选
+排除项，绑定全部或解绑全部会清空对应类型的排除项。迁移保留旧的显式允许列表。
+控制台分已绑定/未绑定页并支持多选。</p>
+<h2 id="9">9. 错误与安全</h2>
+<p>稳定网关错误在 <code>detail</code> 中返回 <code>code</code> 和 <code>message</code>，参数校验使用 FastAPI 标准错误
+数组。常见错误包括 <code>AUTH_REQUIRED</code>、<code>INVALID_GRANT</code>、<code>AGENT_ACCESS_DENIED</code>、
+<code>KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE</code>、<code>DOCUMENT_NOT_ACCESSIBLE</code>、
+<code>IDENTITY_CONTEXT_UNAVAILABLE</code>、<code>POLARRAG_OSS_NOT_CONFIGURED</code>、
+<code>POLARRAG_TOOL_LIMITED</code> 和 <code>POLARRAG_UNAVAILABLE</code>。</p>
+<p>不要重试 400、403、404 或 422。429 至少等待 <code>Retry-After</code>；临时 502/503 可使用有
+上限的退避。保留 <code>X-Request-ID</code> 供问题排查，但不要记录密码、Token、authorization
+code、PKCE verifier、身份提供方 Token、OSS 凭证或企业文档内容。</p>
+<p>生产环境使用 HTTPS，按用户会话隔离缓存，并以 PAS 在线授权为准，不要仅依赖本地
+解码 JWT 的内容。用户、Agent 或授权关系删除后，即使 Token 尚未到期，后续访问也会
+失效。</p>
+<h2 id="spacekb">Space/KB 成对选择兼容</h2>
+<p>内部资源 ID 方式继续支持。以下等价形式需要同时提供 <code>space_id</code> 和 <code>kb_id</code>，不能只提供孤立的 <code>kb_id</code>：</p>
+<table>
+<thead>
+<tr>
+<th>操作</th>
+<th>成对选择形式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>POST /api/admin/agents/{agent_id}/knowledge-visibility:bind</code> 和 <code>:unbind</code></td>
+<td>用 <code>{"targets":[{"space_id":"space-1","kb_id":"kb-1"}]}</code> 代替 <code>knowledge_resource_ids</code></td>
+</tr>
+<tr>
+<td><code>PUT /api/agents/{agent_id}/polarrag-bindings/{binding_id}/public-resources</code></td>
+<td>用 <code>{"targets":[{"space_id":"space-1","kb_id":"kb-1"}]}</code> 代替 <code>public_knowledge_resource_ids</code></td>
+</tr>
+<tr>
+<td><code>POST /api/admin/agents/{agent_id}/knowledge-binding-status</code>、<code>/knowledge-subject-options</code>、<code>/knowledge-all-users-status</code>、<code>/knowledge-all-users</code></td>
+<td>用 <code>{"targets":[{"space_id":"space-1","kb_id":"kb-1"}]}</code> 代替 <code>knowledge_resource_ids</code>；保留各接口的其他字段</td>
+</tr>
+<tr>
+<td><code>PUT /api/polarrag/knowledge-resources/{knowledge_resource_id}/management-mode</code></td>
+<td>改用 <code>PUT /api/polarrag/spaces/{space_id}/knowledge-bases/{kb_id}/management-mode</code>，请求体不变</td>
+</tr>
+<tr>
+<td><code>/api/me/polarrag/documents/_find</code>、<code>/_list</code>、<code>/{doc_id}</code>（DELETE）、<code>/{doc_id}/rechunk</code></td>
+<td>JSON 用 <code>space_id</code> 和 <code>kb_id</code> 代替 <code>knowledge_resource_id</code>，保留 <code>agent_id</code> 及其他操作字段</td>
+</tr>
+<tr>
+<td><code>POST /api/me/polarrag/documents</code></td>
+<td>不传 <code>knowledge_resource_id</code> 时使用 multipart 表单 <code>space_id</code> 和 <code>kb_id</code>，保留 <code>agent_id</code> 和 <code>file</code></td>
+</tr>
+<tr>
+<td><code>POST /api/me/polarrag/documents/batch</code></td>
+<td>multipart 表单用 <code>space_id</code> 和重复的 <code>kb_ids</code> 代替重复的 <code>knowledge_resource_ids</code>；每个 <code>kb_ids</code> 与对应的 <code>files</code> 同序匹配</td>
+</tr>
+</tbody>
+</table>
+<p>PUBLIC 范围 PUT 仍为整表替换：<code>targets: []</code> 清空，<code>targets: null</code> 恢复动态 PUBLIC 全选。<code>targets</code> 与 <code>public_knowledge_resource_ids</code> 必须且只能出现一个。校验和审计复用原替换操作，与增量 <code>knowledge-visibility:bind</code> 不同。</p>
+<p>上述四个管理员请求体须从 <code>targets</code> 和 <code>knowledge_resource_ids</code> 中恰好选择一个非空列表（1–100 项）。文档批量上传须选择 <code>knowledge_resource_ids</code>，或 <code>space_id</code> 加 <code>kb_ids</code>，不得混用；上传前逐文件校验用户的 Agent 与 KB 权限。</p>
+<p>文档 JSON 和 multipart 的两种选择方式均互斥：内部 ID 与任意成对字段混用时，在上传前返回 422。成对解析不改变 Agent/用户授权、资源管理规则或文档 ACL。目标不存在返回 404，在可选实例中存在歧义返回 409。管理模式别名复用内部 ID 路由的管理员校验、更新和必需审计。</p>
+<p>现有知识库批量绑定、外部身份源绑定快照、<code>/api/v1/documents/_find</code> 和 <code>/api/v1/knowledge-bases/search</code> 已接受包含 <code>space_id</code>、<code>kb_id</code> 的 <code>targets</code>。现有 <code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}</code> 文档别名不变。Space 检索在 Space 路径下接受 <code>kb_ids</code>；省略全部选择参数时使用调用者在 Agent 下的可见范围。</p>
+<h2 id="_5">企业用户选择与身份返回</h2>
+<p>接口仍要求管理员鉴权。企业身份对仅选择用户，不能作为认证凭据。原 PAS ID 和旧入口
+继续有效；分页、排序、名称及 encoded <code>external_id</code> 的原含义保持。</p>
+<p>知识绑定 <code>USER</code> 主体可传 <code>user_id</code>，或传完整企业身份对：</p>
+<pre><code class="language-json">{&quot;type&quot;:&quot;USER&quot;,&quot;identity_source_id&quot;:&quot;source-id&quot;,&quot;external_user_id&quot;:&quot;enterprise-subject&quot;}
+</code></pre>
+<p>Agent 用户分配使用相同选择，省略 <code>type</code>。半套身份或混用两套选择返回 422；未知源或当前
+映射返回 404，查询不创建、同步或分配用户。其他主体类型保持原字段组合。批次在原事务前
+按 PAS 账户去重，旧/新表示同一账户只产生一个绑定。外部 scope 路径的源仅表示 scope 来源，
+每个企业 USER 仍须明确自己的身份源。</p>
+<p>企业访问 preview/apply 在已有 <code>identity_source_id</code> 下新增 <code>external_user_ids</code>，最多 500 个，
+每个 ID 为 1–255 字符。<code>pas_user_ids</code> 默认仍为 <code>[]</code>，显式空数组与企业 ID 同传有效；两数组
+都非空返回 422。进入原服务前解析当前映射，原 preview hash 算法不变。换绑可能使预览失效，
+出现 stale 409 后须重新预览再 apply。返回 <code>selection</code> 保留 <code>pas_user_ids</code>，新增选定源下的
+<code>external_user_ids</code>。</p>
+<p>用户分配列表、用户选项、知识绑定 USER 主体和知识主体选项新增 <code>enterprise_identities</code>，
+每项仅含 <code>identity_source_id</code> 与 <code>external_user_id</code>。完整返回所有当前身份并确定性排序；无映射
+或用户已删除时返回 <code>[]</code>。显式映射归属优先于旧 canonical 回退；已经换绑给他人的身份不再
+返回给旧账户。scope 保留 <code>user_ids</code>，新增 <code>enterprise_users</code>，每项含 <code>user_id</code> 和
+<code>enterprise_identities</code>。Agent 创建/列表/详情/更新保留 <code>created_by</code>，新增
+<code>created_by_enterprise_identities</code>；该字段仅输出，不能覆盖当前认证创建者。</p>
+<p>身份映射增加四个兼容入口：</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GET</td>
+<td><code>/api/identity-sources/enterprise-users/identities</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/identity-sources/enterprise-users/identities</code></td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/api/identity-sources/enterprise-users/identities/{identity_id}</code></td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/api/identity-sources/enterprise-users/identities/{identity_id}</code></td>
+</tr>
+</tbody>
+</table>
+<p>query 必填 <code>identity_source_id</code> 和 <code>external_user_id</code>，仅定位目标 PAS 账户。GET 保留
+<code>offset</code>、<code>limit</code>、<code>search</code>。POST/PUT body 的同名字段表示要绑定或替换的身份，其源可以与
+query 目标源不同。query 值按标准编码，支持含 <code>/</code> 或 <code>:</code> 的 ID。原同步身份禁止编辑/解绑、
+冲突检查、默认账户恢复和审计语义保持。原 <code>/users/{user_id}/identities</code> 四操作继续有效。</p>
+<p>下列现有操作支持上述选择或新增身份返回：</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>POST</td>
+<td><code>/api/agents/{agent_id}/enterprise-access/preview</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/agents/{agent_id}/enterprise-access/apply</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/admin/agents/{agent_id}/knowledge-bindings</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/admin/agents/{agent_id}/knowledge-binding-status</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/admin/agents/{agent_id}/knowledge-subject-options</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/admin/agents/{agent_id}/knowledge-bindings:batch</code></td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/api/admin/identity-sources/{source_id}/agents/{agent_id}/knowledge-bindings/{external_scope_id}</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/agents/{agent_id}/user-assignments</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/agents/{agent_id}/user-assignments</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/agents/{agent_id}/user-options</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/agents</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/agents</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/agents/{agent_id}</code></td>
+</tr>
+<tr>
+<td>PATCH</td>
+<td><code>/api/agents/{agent_id}</code></td>
+</tr>
+<tr>
+<td>GET</td>
+<td><code>/api/identity-sources/users/{user_id}/identities</code></td>
+</tr>
+<tr>
+<td>POST</td>
+<td><code>/api/identity-sources/users/{user_id}/identities</code></td>
+</tr>
+<tr>
+<td>PUT</td>
+<td><code>/api/identity-sources/users/{user_id}/identities/{identity_id}</code></td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><code>/api/identity-sources/users/{user_id}/identities/{identity_id}</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="contracts">10. 逐接口参数与响应结构</h2><p>以下结构由当前接口定义生成，展开查看必填参数、默认值、取值范围、请求类型和响应模型。<code>$ref</code> 对应下一节数据模型；自由对象响应的业务字段见前文示例。鉴权及业务错误以第 1、9 节为准，响应列表不穷举所有业务错误。</p>
+<label for="filter">按路径或 HTTP 方法筛选</label><input id="filter" type="search" placeholder="例如 documents/rechunk 或 POST">
+<div id="endpoints"><details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/knowledge-bases</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;limit&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 200,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 50,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;cursor&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 512
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Cursor&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseListResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/SpaceResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}/knowledge-bases</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;limit&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 200,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 50,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;cursor&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 512
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Cursor&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseListResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;limit&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 200,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 20,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;cursor&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 512
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Cursor&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;filename&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 1024
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Filename&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;page&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 1,
+        &quot;title&quot;: &quot;Page&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/DocumentListResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;multipart/form-data&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/Body_upload_knowledge_base_document_api_v1_knowledge_bases__knowledge_resource_id__documents_post&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;201&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/documents/_find</code></summary><pre><code>{
+  &quot;requestBody&quot;: {
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/DocumentFindByNameRequest&quot;
+        }
+      }
+    },
+    &quot;required&quot;: true
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/document-uploads</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/DocumentUploadPrepareRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;201&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/document-uploads/{upload_session_id}/complete</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;upload_session_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Upload Session Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">DELETE</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;202&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/chunks</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;offset&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;minimum&quot;: 0,
+        &quot;default&quot;: 0,
+        &quot;title&quot;: &quot;Offset&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;limit&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 1000,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 100,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/DocumentChunkListResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/chunks/{chunk_index}/context</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;chunk_index&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;minimum&quot;: 0,
+        &quot;title&quot;: &quot;Chunk Index&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;window_size&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 100,
+        &quot;minimum&quot;: 0,
+        &quot;default&quot;: 2,
+        &quot;title&quot;: &quot;Window Size&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;expected_doc_generation&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;maximum&quot;: 2147483647,
+            &quot;minimum&quot;: 0
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Expected Doc Generation&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;query&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 10000
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Query&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/original</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/rechunk</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/DocumentBatchRechunkRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;202&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;207&quot;: {
+      &quot;description&quot;: &quot;Partial success&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/rechunk</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/DocumentRechunkRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;202&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;limit&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 200,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 20,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;cursor&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 512
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Cursor&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;filename&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 1024
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Filename&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;page&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 1,
+        &quot;title&quot;: &quot;Page&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/DocumentListResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;multipart/form-data&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/Body_upload_space_knowledge_base_document_api_v1_spaces__space_id__knowledge_bases__kb_id__documents_post&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;201&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/documents/batch</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;multipart/form-data&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/Body_upload_space_documents_batch_api_v1_spaces__space_id__documents_batch_post&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;201&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;207&quot;: {
+      &quot;description&quot;: &quot;Partial success&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/document-uploads</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/DocumentUploadPrepareRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;201&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">DELETE</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;202&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/chunks</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;offset&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;minimum&quot;: 0,
+        &quot;default&quot;: 0,
+        &quot;title&quot;: &quot;Offset&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;limit&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 1000,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 100,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/DocumentChunkListResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/chunks/{chunk_index}/context</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;chunk_index&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;minimum&quot;: 0,
+        &quot;title&quot;: &quot;Chunk Index&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;window_size&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 100,
+        &quot;minimum&quot;: 0,
+        &quot;default&quot;: 2,
+        &quot;title&quot;: &quot;Window Size&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;expected_doc_generation&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;maximum&quot;: 2147483647,
+            &quot;minimum&quot;: 0
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Expected Doc Generation&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;query&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;minLength&quot;: 1,
+            &quot;maxLength&quot;: 10000
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Query&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/original</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/rechunk</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/DocumentBatchRechunkRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;202&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;207&quot;: {
+      &quot;description&quot;: &quot;Partial success&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/rechunk</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/DocumentRechunkRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;202&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/knowledge-bases/search</code></summary><pre><code>{
+  &quot;requestBody&quot;: {
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseSearchRequest&quot;
+        }
+      }
+    },
+    &quot;required&quot;: true
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeSearchResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/search</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/SpaceSearchRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeSearchResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/search</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/SearchRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/SearchResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/search</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/SearchRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/SearchResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/knowledge-bases/{knowledge_resource_id}/documents/{doc_id}/search</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;knowledge_resource_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/SearchRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/SearchResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/spaces/{space_id}/knowledge-bases/{kb_id}/documents/{doc_id}/search</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;space_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;kb_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;doc_id&quot;,
+      &quot;in&quot;: &quot;path&quot;,
+      &quot;required&quot;: true,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Doc Id&quot;
+      }
+    }
+  ],
+  &quot;requestBody&quot;: {
+    &quot;required&quot;: true,
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/SearchRequest&quot;
+        }
+      }
+    }
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/SearchResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">GET</span><code>/api/v1/tools</code></summary><pre><code>{
+  &quot;parameters&quot;: [
+    {
+      &quot;name&quot;: &quot;offset&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;minimum&quot;: 0,
+        &quot;default&quot;: 0,
+        &quot;title&quot;: &quot;Offset&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;limit&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 100,
+        &quot;minimum&quot;: 1,
+        &quot;default&quot;: 20,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    },
+    {
+      &quot;name&quot;: &quot;search&quot;,
+      &quot;in&quot;: &quot;query&quot;,
+      &quot;required&quot;: false,
+      &quot;schema&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;maxLength&quot;: 255
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Search&quot;
+      }
+    }
+  ],
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/ToolListResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details>
+<details class="endpoint"><summary><span class="method">POST</span><code>/api/v1/tools/call</code></summary><pre><code>{
+  &quot;requestBody&quot;: {
+    &quot;content&quot;: {
+      &quot;application/json&quot;: {
+        &quot;schema&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/ToolCallRequest&quot;
+        }
+      }
+    },
+    &quot;required&quot;: true
+  },
+  &quot;responses&quot;: {
+    &quot;200&quot;: {
+      &quot;description&quot;: &quot;Successful Response&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/FlexibleObjectResponse&quot;
+          }
+        }
+      }
+    },
+    &quot;422&quot;: {
+      &quot;description&quot;: &quot;Validation Error&quot;,
+      &quot;content&quot;: {
+        &quot;application/json&quot;: {
+          &quot;schema&quot;: {
+            &quot;$ref&quot;: &quot;#/components/schemas/HTTPValidationError&quot;
+          }
+        }
+      }
+    }
+  }
+}</code></pre></details></div><p id="empty" hidden>没有匹配的接口。</p>
+<h2 id="schemas">11. 数据模型</h2><details><summary>展开 JSON Schema</summary><pre><code>{
+  &quot;Body_upload_knowledge_base_document_api_v1_knowledge_bases__knowledge_resource_id__documents_post&quot;: {
+    &quot;properties&quot;: {
+      &quot;file&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;contentMediaType&quot;: &quot;application/octet-stream&quot;,
+        &quot;title&quot;: &quot;File&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;file&quot;
+    ],
+    &quot;title&quot;: &quot;Body_upload_knowledge_base_document_api_v1_knowledge_bases__knowledge_resource_id__documents_post&quot;
+  },
+  &quot;Body_upload_space_documents_batch_api_v1_spaces__space_id__documents_batch_post&quot;: {
+    &quot;properties&quot;: {
+      &quot;kb_ids&quot;: {
+        &quot;items&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;maxItems&quot;: 20,
+        &quot;minItems&quot;: 1,
+        &quot;title&quot;: &quot;Kb Ids&quot;
+      },
+      &quot;files&quot;: {
+        &quot;items&quot;: {
+          &quot;type&quot;: &quot;string&quot;,
+          &quot;contentMediaType&quot;: &quot;application/octet-stream&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;maxItems&quot;: 20,
+        &quot;minItems&quot;: 1,
+        &quot;title&quot;: &quot;Files&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;kb_ids&quot;,
+      &quot;files&quot;
+    ],
+    &quot;title&quot;: &quot;Body_upload_space_documents_batch_api_v1_spaces__space_id__documents_batch_post&quot;
+  },
+  &quot;Body_upload_space_knowledge_base_document_api_v1_spaces__space_id__knowledge_bases__kb_id__documents_post&quot;: {
+    &quot;properties&quot;: {
+      &quot;file&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;contentMediaType&quot;: &quot;application/octet-stream&quot;,
+        &quot;title&quot;: &quot;File&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;file&quot;
+    ],
+    &quot;title&quot;: &quot;Body_upload_space_knowledge_base_document_api_v1_spaces__space_id__knowledge_bases__kb_id__documents_post&quot;
+  },
+  &quot;DocumentBatchRechunkRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;chunk_strategy&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;enum&quot;: [
+          &quot;inherit&quot;,
+          &quot;hybrid&quot;,
+          &quot;hierarchical&quot;
+        ],
+        &quot;title&quot;: &quot;Chunk Strategy&quot;,
+        &quot;default&quot;: &quot;inherit&quot;
+      },
+      &quot;chunk_max_tokens&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;maximum&quot;: 100000.0,
+            &quot;minimum&quot;: 1.0
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Chunk Max Tokens&quot;
+      },
+      &quot;force&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;title&quot;: &quot;Force&quot;,
+        &quot;default&quot;: false
+      },
+      &quot;doc_ids&quot;: {
+        &quot;items&quot;: {
+          &quot;type&quot;: &quot;string&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;maxItems&quot;: 20,
+        &quot;minItems&quot;: 1,
+        &quot;title&quot;: &quot;Doc Ids&quot;
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;doc_ids&quot;
+    ],
+    &quot;title&quot;: &quot;DocumentBatchRechunkRequest&quot;
+  },
+  &quot;DocumentChunkListResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;items&quot;: {
+        &quot;items&quot;: {
+          &quot;additionalProperties&quot;: true,
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Items&quot;
+      },
+      &quot;offset&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;title&quot;: &quot;Offset&quot;
+      },
+      &quot;limit&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;title&quot;: &quot;Limit&quot;
+      },
+      &quot;total&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Total&quot;
+      },
+      &quot;next_offset&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Next Offset&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;items&quot;,
+      &quot;offset&quot;,
+      &quot;limit&quot;,
+      &quot;total&quot;,
+      &quot;next_offset&quot;
+    ],
+    &quot;title&quot;: &quot;DocumentChunkListResponse&quot;
+  },
+  &quot;DocumentFindByNameRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;targets&quot;: {
+        &quot;items&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseSelector&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;maxItems&quot;: 50,
+        &quot;minItems&quot;: 1,
+        &quot;title&quot;: &quot;Targets&quot;
+      },
+      &quot;filename&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 1024,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Filename&quot;
+      },
+      &quot;limit&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 1000.0,
+        &quot;minimum&quot;: 1.0,
+        &quot;title&quot;: &quot;Limit&quot;,
+        &quot;default&quot;: 20
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;targets&quot;,
+      &quot;filename&quot;
+    ],
+    &quot;title&quot;: &quot;DocumentFindByNameRequest&quot;
+  },
+  &quot;DocumentListResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;items&quot;: {
+        &quot;items&quot;: {
+          &quot;additionalProperties&quot;: true,
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Items&quot;
+      },
+      &quot;next_cursor&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Next Cursor&quot;
+      },
+      &quot;total&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Total&quot;
+      },
+      &quot;page&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Page&quot;
+      },
+      &quot;size&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Size&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;items&quot;,
+      &quot;next_cursor&quot;
+    ],
+    &quot;title&quot;: &quot;DocumentListResponse&quot;
+  },
+  &quot;DocumentRechunkRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;chunk_strategy&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;enum&quot;: [
+          &quot;inherit&quot;,
+          &quot;hybrid&quot;,
+          &quot;hierarchical&quot;
+        ],
+        &quot;title&quot;: &quot;Chunk Strategy&quot;,
+        &quot;default&quot;: &quot;inherit&quot;
+      },
+      &quot;chunk_max_tokens&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;,
+            &quot;maximum&quot;: 100000.0,
+            &quot;minimum&quot;: 1.0
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Chunk Max Tokens&quot;
+      },
+      &quot;force&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;title&quot;: &quot;Force&quot;,
+        &quot;default&quot;: false
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;title&quot;: &quot;DocumentRechunkRequest&quot;
+  },
+  &quot;DocumentUploadPrepareRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;filename&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 512,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Filename&quot;
+      },
+      &quot;file_size_bytes&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 104857600.0,
+        &quot;minimum&quot;: 1.0,
+        &quot;title&quot;: &quot;File Size Bytes&quot;
+      },
+      &quot;file_md5&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;pattern&quot;: &quot;^[0-9a-fA-F]{32}$&quot;,
+        &quot;title&quot;: &quot;File Md5&quot;
+      },
+      &quot;file_sha256&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;pattern&quot;: &quot;^[0-9a-fA-F]{64}$&quot;,
+        &quot;title&quot;: &quot;File Sha256&quot;
+      },
+      &quot;content_type&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;maxLength&quot;: 255,
+            &quot;minLength&quot;: 1
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Content Type&quot;
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;filename&quot;,
+      &quot;file_size_bytes&quot;,
+      &quot;file_md5&quot;,
+      &quot;file_sha256&quot;
+    ],
+    &quot;title&quot;: &quot;DocumentUploadPrepareRequest&quot;
+  },
+  &quot;FlexibleObjectResponse&quot;: {
+    &quot;additionalProperties&quot;: true,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;title&quot;: &quot;FlexibleObjectResponse&quot;
+  },
+  &quot;HTTPValidationError&quot;: {
+    &quot;properties&quot;: {
+      &quot;detail&quot;: {
+        &quot;items&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/ValidationError&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Detail&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;title&quot;: &quot;HTTPValidationError&quot;
+  },
+  &quot;KnowledgeBaseListResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;items&quot;: {
+        &quot;items&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseResponse&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Items&quot;
+      },
+      &quot;next_cursor&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Next Cursor&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;items&quot;,
+      &quot;next_cursor&quot;
+    ],
+    &quot;title&quot;: &quot;KnowledgeBaseListResponse&quot;
+  },
+  &quot;KnowledgeBaseResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;knowledge_resource_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      },
+      &quot;knowledge_space_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Space Id&quot;
+      },
+      &quot;space_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      },
+      &quot;knowledge_space_name&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Space Name&quot;
+      },
+      &quot;name&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Name&quot;
+      },
+      &quot;kb_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Id&quot;
+      },
+      &quot;kb_type&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Kb Type&quot;
+      },
+      &quot;usage&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Usage&quot;
+      },
+      &quot;upload_ready&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;title&quot;: &quot;Upload Ready&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;knowledge_resource_id&quot;,
+      &quot;knowledge_space_id&quot;,
+      &quot;space_id&quot;,
+      &quot;knowledge_space_name&quot;,
+      &quot;name&quot;,
+      &quot;kb_id&quot;,
+      &quot;kb_type&quot;,
+      &quot;usage&quot;,
+      &quot;upload_ready&quot;
+    ],
+    &quot;title&quot;: &quot;KnowledgeBaseResponse&quot;
+  },
+  &quot;KnowledgeBaseSearchRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;query&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 10000,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Query&quot;
+      },
+      &quot;search_mode&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 32,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Search Mode&quot;,
+        &quot;default&quot;: &quot;balanced&quot;
+      },
+      &quot;top_k&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 1000.0,
+        &quot;minimum&quot;: 1.0,
+        &quot;title&quot;: &quot;Top K&quot;,
+        &quot;default&quot;: 10
+      },
+      &quot;min_score&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;number&quot;,
+            &quot;minimum&quot;: 0.0
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Min Score&quot;
+      },
+      &quot;reranker&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;title&quot;: &quot;Reranker&quot;,
+        &quot;default&quot;: false
+      },
+      &quot;targets&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;items&quot;: {
+              &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeBaseSelector&quot;
+            },
+            &quot;type&quot;: &quot;array&quot;,
+            &quot;maxItems&quot;: 1000,
+            &quot;minItems&quot;: 1
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Targets&quot;
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;query&quot;
+    ],
+    &quot;title&quot;: &quot;KnowledgeBaseSearchRequest&quot;
+  },
+  &quot;KnowledgeBaseSelector&quot;: {
+    &quot;properties&quot;: {
+      &quot;knowledge_resource_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;maxLength&quot;: 36,
+            &quot;minLength&quot;: 1
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      },
+      &quot;space_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;maxLength&quot;: 255,
+            &quot;minLength&quot;: 1
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Space Id&quot;
+      },
+      &quot;kb_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;,
+            &quot;maxLength&quot;: 255,
+            &quot;minLength&quot;: 1
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;title&quot;: &quot;KnowledgeBaseSelector&quot;
+  },
+  &quot;KnowledgeSearchHitResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;knowledge_resource_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      },
+      &quot;doc_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Doc Id&quot;
+      },
+      &quot;doc_generation&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Doc Generation&quot;
+      },
+      &quot;filename&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Filename&quot;
+      },
+      &quot;source_uri&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Source Uri&quot;
+      },
+      &quot;chunk_index&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Chunk Index&quot;
+      },
+      &quot;content&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Content&quot;
+      },
+      &quot;score&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;number&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Score&quot;
+      },
+      &quot;image_resources&quot;: {
+        &quot;items&quot;: {
+          &quot;additionalProperties&quot;: true,
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Image Resources&quot;
+      },
+      &quot;metadata&quot;: {
+        &quot;additionalProperties&quot;: true,
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;title&quot;: &quot;Metadata&quot;
+      },
+      &quot;space_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Space Id&quot;
+      },
+      &quot;kb_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Kb Id&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;knowledge_resource_id&quot;,
+      &quot;doc_id&quot;,
+      &quot;filename&quot;,
+      &quot;source_uri&quot;,
+      &quot;chunk_index&quot;,
+      &quot;content&quot;,
+      &quot;score&quot;,
+      &quot;image_resources&quot;,
+      &quot;metadata&quot;,
+      &quot;space_id&quot;,
+      &quot;kb_id&quot;
+    ],
+    &quot;title&quot;: &quot;KnowledgeSearchHitResponse&quot;
+  },
+  &quot;KnowledgeSearchResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;items&quot;: {
+        &quot;items&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/KnowledgeSearchHitResponse&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Items&quot;
+      },
+      &quot;top_k&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;title&quot;: &quot;Top K&quot;
+      },
+      &quot;partial_failures&quot;: {
+        &quot;items&quot;: {
+          &quot;additionalProperties&quot;: true,
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Partial Failures&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;items&quot;,
+      &quot;top_k&quot;,
+      &quot;partial_failures&quot;
+    ],
+    &quot;title&quot;: &quot;KnowledgeSearchResponse&quot;
+  },
+  &quot;SearchHitResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;knowledge_resource_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Knowledge Resource Id&quot;
+      },
+      &quot;doc_id&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Doc Id&quot;
+      },
+      &quot;doc_generation&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Doc Generation&quot;
+      },
+      &quot;filename&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Filename&quot;
+      },
+      &quot;source_uri&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Source Uri&quot;
+      },
+      &quot;chunk_index&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;integer&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Chunk Index&quot;
+      },
+      &quot;content&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;string&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Content&quot;
+      },
+      &quot;score&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;number&quot;
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Score&quot;
+      },
+      &quot;image_resources&quot;: {
+        &quot;items&quot;: {
+          &quot;additionalProperties&quot;: true,
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Image Resources&quot;
+      },
+      &quot;metadata&quot;: {
+        &quot;additionalProperties&quot;: true,
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;title&quot;: &quot;Metadata&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;knowledge_resource_id&quot;,
+      &quot;doc_id&quot;,
+      &quot;filename&quot;,
+      &quot;source_uri&quot;,
+      &quot;chunk_index&quot;,
+      &quot;content&quot;,
+      &quot;score&quot;,
+      &quot;image_resources&quot;,
+      &quot;metadata&quot;
+    ],
+    &quot;title&quot;: &quot;SearchHitResponse&quot;
+  },
+  &quot;SearchRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;query&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 10000,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Query&quot;
+      },
+      &quot;search_mode&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 32,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Search Mode&quot;,
+        &quot;default&quot;: &quot;balanced&quot;
+      },
+      &quot;top_k&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 1000.0,
+        &quot;minimum&quot;: 1.0,
+        &quot;title&quot;: &quot;Top K&quot;,
+        &quot;default&quot;: 10
+      },
+      &quot;min_score&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;number&quot;,
+            &quot;minimum&quot;: 0.0
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Min Score&quot;
+      },
+      &quot;reranker&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;title&quot;: &quot;Reranker&quot;,
+        &quot;default&quot;: false
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;query&quot;
+    ],
+    &quot;title&quot;: &quot;SearchRequest&quot;
+  },
+  &quot;SearchResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;items&quot;: {
+        &quot;items&quot;: {
+          &quot;$ref&quot;: &quot;#/components/schemas/SearchHitResponse&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Items&quot;
+      },
+      &quot;top_k&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;title&quot;: &quot;Top K&quot;
+      },
+      &quot;partial_failures&quot;: {
+        &quot;items&quot;: {
+          &quot;additionalProperties&quot;: true,
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Partial Failures&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;items&quot;,
+      &quot;top_k&quot;,
+      &quot;partial_failures&quot;
+    ],
+    &quot;title&quot;: &quot;SearchResponse&quot;
+  },
+  &quot;SpaceResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;knowledge_space_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Knowledge Space Id&quot;
+      },
+      &quot;space_id&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Space Id&quot;
+      },
+      &quot;name&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Name&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;knowledge_space_id&quot;,
+      &quot;space_id&quot;,
+      &quot;name&quot;
+    ],
+    &quot;title&quot;: &quot;SpaceResponse&quot;
+  },
+  &quot;SpaceSearchRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;query&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 10000,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Query&quot;
+      },
+      &quot;search_mode&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 32,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Search Mode&quot;,
+        &quot;default&quot;: &quot;balanced&quot;
+      },
+      &quot;top_k&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;maximum&quot;: 1000.0,
+        &quot;minimum&quot;: 1.0,
+        &quot;title&quot;: &quot;Top K&quot;,
+        &quot;default&quot;: 10
+      },
+      &quot;min_score&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;type&quot;: &quot;number&quot;,
+            &quot;minimum&quot;: 0.0
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Min Score&quot;
+      },
+      &quot;reranker&quot;: {
+        &quot;type&quot;: &quot;boolean&quot;,
+        &quot;title&quot;: &quot;Reranker&quot;,
+        &quot;default&quot;: false
+      },
+      &quot;kb_ids&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;items&quot;: {
+              &quot;type&quot;: &quot;string&quot;,
+              &quot;maxLength&quot;: 255,
+              &quot;minLength&quot;: 1
+            },
+            &quot;type&quot;: &quot;array&quot;,
+            &quot;maxItems&quot;: 1000,
+            &quot;minItems&quot;: 1
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Kb Ids&quot;
+      },
+      &quot;knowledge_resource_ids&quot;: {
+        &quot;anyOf&quot;: [
+          {
+            &quot;items&quot;: {
+              &quot;type&quot;: &quot;string&quot;,
+              &quot;maxLength&quot;: 36,
+              &quot;minLength&quot;: 1
+            },
+            &quot;type&quot;: &quot;array&quot;,
+            &quot;maxItems&quot;: 1000,
+            &quot;minItems&quot;: 1
+          },
+          {
+            &quot;type&quot;: &quot;null&quot;
+          }
+        ],
+        &quot;title&quot;: &quot;Knowledge Resource Ids&quot;
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;query&quot;
+    ],
+    &quot;title&quot;: &quot;SpaceSearchRequest&quot;
+  },
+  &quot;ToolCallRequest&quot;: {
+    &quot;properties&quot;: {
+      &quot;name&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;maxLength&quot;: 128,
+        &quot;minLength&quot;: 1,
+        &quot;title&quot;: &quot;Name&quot;
+      },
+      &quot;arguments&quot;: {
+        &quot;additionalProperties&quot;: true,
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;title&quot;: &quot;Arguments&quot;
+      }
+    },
+    &quot;additionalProperties&quot;: false,
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;name&quot;
+    ],
+    &quot;title&quot;: &quot;ToolCallRequest&quot;
+  },
+  &quot;ToolListResponse&quot;: {
+    &quot;properties&quot;: {
+      &quot;tools&quot;: {
+        &quot;items&quot;: {
+          &quot;additionalProperties&quot;: true,
+          &quot;type&quot;: &quot;object&quot;
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Tools&quot;
+      },
+      &quot;total&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;title&quot;: &quot;Total&quot;
+      },
+      &quot;offset&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;title&quot;: &quot;Offset&quot;
+      },
+      &quot;limit&quot;: {
+        &quot;type&quot;: &quot;integer&quot;,
+        &quot;title&quot;: &quot;Limit&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;tools&quot;,
+      &quot;total&quot;,
+      &quot;offset&quot;,
+      &quot;limit&quot;
+    ],
+    &quot;title&quot;: &quot;ToolListResponse&quot;
+  },
+  &quot;ValidationError&quot;: {
+    &quot;properties&quot;: {
+      &quot;loc&quot;: {
+        &quot;items&quot;: {
+          &quot;anyOf&quot;: [
+            {
+              &quot;type&quot;: &quot;string&quot;
+            },
+            {
+              &quot;type&quot;: &quot;integer&quot;
+            }
+          ]
+        },
+        &quot;type&quot;: &quot;array&quot;,
+        &quot;title&quot;: &quot;Location&quot;
+      },
+      &quot;msg&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Message&quot;
+      },
+      &quot;type&quot;: {
+        &quot;type&quot;: &quot;string&quot;,
+        &quot;title&quot;: &quot;Error Type&quot;
+      },
+      &quot;input&quot;: {
+        &quot;title&quot;: &quot;Input&quot;
+      },
+      &quot;ctx&quot;: {
+        &quot;type&quot;: &quot;object&quot;,
+        &quot;title&quot;: &quot;Context&quot;
+      }
+    },
+    &quot;type&quot;: &quot;object&quot;,
+    &quot;required&quot;: [
+      &quot;loc&quot;,
+      &quot;msg&quot;,
+      &quot;type&quot;
+    ],
+    &quot;title&quot;: &quot;ValidationError&quot;
+  }
+}</code></pre></details>
+<footer>PAS · PolarRAG HTTP 接口参考 · 中文 HTML 版<br>接口操作仍受用户、Agent、Space 范围及文档 ACL 共同约束。</footer></main>
+<script>
+document.querySelectorAll('table').forEach(t=>{const w=document.createElement('div');w.className='table-wrap';t.before(w);w.append(t)});
+document.querySelectorAll('pre').forEach(p=>{const b=document.createElement('button');b.className='copy';b.textContent='复制';b.onclick=async()=>{try{await navigator.clipboard.writeText(p.querySelector('code').textContent);b.textContent='已复制'}catch{const s=getSelection(),r=document.createRange();r.selectNodeContents(p.querySelector('code'));s.removeAllRanges();s.addRange(r);b.textContent='已选中，请复制'}setTimeout(()=>b.textContent='复制',1800)};p.append(b)});
+document.getElementById('filter').addEventListener('input',e=>{const q=e.target.value.toLowerCase();let count=0;document.querySelectorAll('.endpoint').forEach(d=>{d.hidden=!d.querySelector('summary').textContent.toLowerCase().includes(q);if(!d.hidden)count++});document.getElementById('empty').hidden=count!==0});
+</script></body></html>

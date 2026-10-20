@@ -745,3 +745,77 @@ async def test_agent_list_uses_backend_pagination_and_search(client, setup):
     assert searched.status_code == 200
     assert searched.json()["total"] == 1
     assert searched.json()["items"][0]["name"] == "bulk-agent-07"
+
+
+async def test_agent_crud_creator_identities_are_complete_and_paged(client, setup):
+    from server.enterprise_identity.service import identity_provider_key
+    from server.models import EnterpriseIdentitySource, IdentitySourceProvider, UserExternalIdentity
+
+    http, headers, _ = client
+    factory, admin, _member = setup
+    empty = await http.post("/api/agents", headers=headers, json={"name": "creator-empty"})
+    assert empty.status_code == 201
+    assert empty.json()["created_by"] == admin.id
+    assert empty.json()["created_by_enterprise_identities"] == []
+    async with factory() as session:
+        sources = [EnterpriseIdentitySource.create(name=f"Creator {i}", provider=IdentitySourceProvider.SHAREPOINT,
+                                                   tenant_id=f"creator-{i}") for i in range(2)]
+        session.add_all(sources)
+        await session.flush()
+        session.add_all([UserExternalIdentity(user_id=admin.id, identity_provider=identity_provider_key(source),
+                                              external_subject="creator-subject") for source in sources])
+        expected = sorted([{"identity_source_id": source.id, "external_user_id": "creator-subject"}
+                           for source in sources], key=lambda item: item["identity_source_id"])
+        await session.commit()
+    created = await http.post("/api/agents", headers=headers, json={"name": "creator-mapped"})
+    assert created.status_code == 201
+    agent_id = created.json()["id"]
+    got = await http.get(f"/api/agents/{agent_id}", headers=headers)
+    patched = await http.patch(f"/api/agents/{agent_id}", headers=headers, json={"description": "updated"})
+    for response in (created, got, patched):
+        assert response.json()["created_by"] == admin.id
+        assert response.json()["created_by_enterprise_identities"] == expected
+    pages = [await http.get("/api/agents", headers=headers, params={"offset": i, "limit": 1}) for i in range(2)]
+    assert all(page.json()["total"] == 2 for page in pages)
+    assert len({page.json()["items"][0]["id"] for page in pages}) == 2
+    assert all(page.json()["items"][0]["created_by_enterprise_identities"] == expected for page in pages)
+    async with factory() as session:
+        agent = await session.get(Agent, agent_id)
+        agent.created_by = "deleted-creator"
+        await session.commit()
+    history = await http.get(f"/api/agents/{agent_id}", headers=headers)
+    assert history.json()["created_by"] == "deleted-creator"
+    assert history.json()["created_by_enterprise_identities"] == []
+
+
+@pytest.mark.parametrize("policy", [{}, {"knowledge_scope_mode": "SCOPED"},
+    {"knowledge_scope_mode": "SCOPED", "external_knowledge_auto_bind_enabled": True}])
+async def test_create_agent_knowledge_policy_persists(client, setup, policy):
+    http, headers, _ = client
+    factory, _, _ = setup
+    response = await http.post("/api/agents", headers=headers, json={"name": "policy-agent", **policy})
+    assert response.status_code == 201, response.text
+    expected_mode = policy.get("knowledge_scope_mode", "LEGACY_ALL")
+    expected_auto = policy.get("external_knowledge_auto_bind_enabled", False)
+    assert response.json()["knowledge_scope_mode"] == expected_mode
+    assert response.json()["external_knowledge_auto_bind_enabled"] == expected_auto
+    async with factory() as session:
+        agent = await session.get(Agent, response.json()["id"])
+        assert agent.knowledge_scope_mode.value == expected_mode
+        assert agent.external_knowledge_auto_bind_enabled == expected_auto
+    readback = await http.get(f"/api/agents/{response.json()['id']}", headers=headers)
+    assert readback.status_code == 200
+    assert readback.json()["external_knowledge_auto_bind_enabled"] == expected_auto
+
+
+@pytest.mark.parametrize("policy", [
+    {"external_knowledge_auto_bind_enabled": True},
+    {"knowledge_scope_mode": "LEGACY_ALL", "external_knowledge_auto_bind_enabled": True},
+    {"knowledge_scope_mode": "UNKNOWN"}])
+async def test_create_agent_rejects_invalid_knowledge_policy(client, setup, policy):
+    http, headers, _ = client
+    factory, _, _ = setup
+    result = await http.post("/api/agents", headers=headers, json={"name": "invalid-policy", **policy})
+    assert result.status_code == 422
+    async with factory() as session:
+        assert (await session.execute(select(Agent).where(Agent.name == "invalid-policy"))).scalar_one_or_none() is None

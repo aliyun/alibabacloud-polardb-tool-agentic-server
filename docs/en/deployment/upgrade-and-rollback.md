@@ -3,7 +3,11 @@
 [简体中文](../../zh-cn/deployment/upgrade-and-rollback.md)
 
 The target schema must be validated before any target-version Pod serves
-traffic. Compose and Helm run migration before replacing the application.
+traffic. For `NONE` or verified `EXPAND` releases, Compose and Helm run migration
+before replacing the application. A `CONTRACT` release normally requires fully
+stopped maintenance; the narrow managed MySQL 8.0.13 exception below has a
+separate process-survival acceptance boundary. A pre-upgrade hook alone does
+not stop old writers.
 A managed rolling upgrade may start one target-version Pod while it remains
 drained, run the deterministic one-shot migration Pod, validate schema and
 health, and only then return that Pod to traffic.
@@ -39,6 +43,37 @@ revisions without a supported contract remain rejected. A source release can
 remain running after a later expansion only when it already understands the
 published bridge contract and its source-to-target path has been verified.
 
+A live old process is not evidence of restart or rollback compatibility. Added
+columns may leave existing queries working while new enum values break old
+readers. Observe authenticated business requests and process/restart identity,
+not only readiness. The migration lock serializes migration executors; it does
+not stop application writes. `--maintenance` does not implement traffic draining
+or make an incompatible old binary restartable.
+
+The external knowledge-scope expansion is revision `b3c4d5e6f7a8`, following
+`2c3d4e5f6a7b`. Older databases apply the expansion during explicit migration;
+databases already at `b3c4d5e6f7a8` keep their schema and data without replaying
+the expansion DDL. This path requires a completed prior rollout: an intermediate
+`a1b2c3d4e5f6` revision is not supported. Do not stamp an incomplete database
+to the final revision; verify its actual migration state before upgrading.
+
+For a database still at `a1b2c3d4e5f6`, stop the upgrade and retain a verified
+backup and its original root key. Use the matching previous image that bundles
+both migration branches and the old merge revision to migrate to
+`b3c4d5e6f7a8`; this applies the missing directory-sync branch. Verify the
+physical schema, then run the candidate image's database check before the normal
+application upgrade. If that previous image is unavailable, preserve the database
+and obtain a reviewed recovery procedure. Do not manually add tables or stamp
+the revision as a substitute for executing the missing migration.
+
+When applying revision `fb1c2d3e4f5a` to an older deployment, existing
+`knowledge_resources.catalog_sync_token` and `agents.oauth_redirect_uri` columns
+are preserved only if their types, nullability and defaults match the migration.
+The catalog-token index must also have the expected columns and uniqueness.
+Missing columns or the index are created; incompatible definitions stop migration
+for diagnosis rather than being overwritten. This does not change the revision
+chain or skip later migrations.
+
 Migration commands serialize access to one metadata database and retain
 execution records. `DATABASE_MIGRATION_BUSY` means another executor holds the
 lock. `DATABASE_MIGRATION_REPAIR_REQUIRED` means an interrupted operation left
@@ -66,8 +101,120 @@ The bundled manifest is authoritative; there is no user-supplied `--manifest`
 override. `pas database migrate --operation-id <stable-id>` associates an external
 operation with the same database/manifest checkpoint. The executor accepts only
 `NONE` or additive `EXPAND` manifests whose head and sequence match the bundled
-Alembic history. `CONTRACT` and `BREAKING` releases require a separate maintenance
-procedure.
+Alembic history. Outside the verified managed exception below, `CONTRACT` and
+`BREAKING` releases require a separate maintenance procedure.
+
+### Managed MySQL 8.0.13 legacy init exception
+
+The target manifest at `c7d8e9f0a1b2` has a narrowly verified exception for
+managed deployments whose source contract is generation 1 at `9c1d2e3f4a5b`,
+`cf4a5b6c7d8e`, or `2c3d4e5f6a7b`. The source's published manifest identity and
+sequence must match a verified release, `@@version` must be exactly `8.0.13`,
+and affected tables must have no target additions or prerelease rename shape.
+The existing `PAS_MANAGED_INSTANCE_ID` and positive
+`PAS_MANAGED_INSTANCE_GENERATION` identify the managed invocation.
+
+With a binary containing this fix, ordinary `pas database migrate` admits this
+specific path without adding `--maintenance` to an existing init command. It
+logs `live-upgrade-admission` with exception
+`managed-mysql-8.0.13-legacy-to-108`. Normal replicas still only check schema at
+startup. The database lock, physical validation, encryption-key checks and
+failed-migration checkpoints remain in effect. Unmanaged commands, other engine
+versions, unrecognized source contracts and changed target manifests retain the
+normal maintenance requirement; a version label alone is insufficient.
+
+Before the upgrade, verify an online metadata backup and its matched key/config
+restore, preserve a reachable source replica, and freeze new DingTalk and
+external-knowledge feature writes until every replica is upgraded. Accept short
+DDL blocking and possible transient request failures. Observe the source Pod's
+UID, restart count, liveness and authenticated business recovery throughout;
+the tested guarantee is process survival during the bounded mixed-version
+window, not zero failed requests. Source-image restart and image-only rollback
+on the target generation remain unsupported. A paired backup rollback can still
+require an outage and lose writes since the online backup snapshot.
+
+An older deployed image does not acquire this behavior when source code changes.
+Build a new immutable target image and validate the actual two-replica managed
+workflow before customer use. Manual repair of an already blocked instance and
+automatic init behavior in a new target image are separate operations.
+This fixes an existing workflow which has already reached the PAS init command;
+it does not override a Provider that rejects the release before creating a Pod.
+
+### Fully stopped CONTRACT maintenance
+
+`--maintenance` acknowledges an operator-enforced stop; it does not drain traffic,
+stop another replica, pause workers or prevent a controller from restarting an
+old image. This procedure does not add maintenance support to a controller that
+rejects the target classification or generation. Keep its ordinary upgrade
+workflow disabled for that target.
+
+Before mutation, record source/target image and manifest digests, source revision,
+migration path, database product/version, operation ID, backup identity, recovery
+point and rollback deadline. Inspect affected physical objects. A target check
+rejecting the known source schema is discovery evidence, not permission to stamp
+a revision or treat it as compatible. Diagnose unknown revisions or drift first.
+
+1. Freeze automatic image replacement, restart and scaling for the instance.
+   Close application and MCP traffic; stop **every** source replica and metadata
+   writer, including directory/event/background workers and external jobs.
+   Verify termination and absence of their database sessions and unfinished
+   transactions. Keep this fence through failure and retry.
+2. Take a metadata backup after the stop. Protect its original
+   `PAS_ENCRYPTION_KEY`, deployment configuration, source image digest and
+   connection mapping as one recovery set. Restore to a separate empty database
+   and run the source image's `pas database check`; a checksum alone does not
+   prove restoreability. MySQL single-transaction dumps require transactional
+   tables and no concurrent DDL; otherwise use a database-approved backup method.
+3. Use one operator-controlled executor from the immutable target image with
+   the matched key and writer endpoint. In Kubernetes, a CoreV1 one-shot Pod
+   with `restartPolicy: Never` can run these commands directly, without Batch
+   Jobs or application-Pod exec:
+
+   ```bash
+   pas database inspect --format json
+   pas database migrate --maintenance --operation-id "$OPERATION_ID"
+   pas database check --format json
+   pas database migrate --maintenance --operation-id "$OPERATION_ID"
+   pas database check --format json
+   ```
+
+   Preserve logs, executor identity and exit status. Retain the same external
+   operation ID and prevent concurrent executors. Replay must leave the
+   recognized physical schema intact.
+4. Start only target replicas while traffic remains closed. On **both** replicas,
+   verify schema/configuration checks, `/readyz`, administrator login,
+   representative authenticated reads/writes and preserved encrypted credential
+   decryption. Verify required workers and external integration health. Readiness
+   alone is insufficient.
+5. Open traffic only after all acceptance evidence is recorded. Pin the durable
+   desired image to the target; a Pod image patch alone cannot prevent old-image
+   recreation. Resume only automation verified to support this state. Normal
+   managed rolling admission remains unchanged.
+
+| Failure boundary | Recovery while traffic stays closed |
+| --- | --- |
+| Before DDL; source physical state unchanged | Correct writer endpoint, permissions or executor contention; inspect and replay the same operation |
+| Partially committed MySQL DDL; `DATABASE_MIGRATION_REPAIR_REQUIRED` | Preserve failed schema/checkpoint/log evidence; restore the verified source recovery set to a separate empty database, validate, then retry or restore the source application |
+| Migration succeeds but key validation or smoke fails | Restore matching key/configuration and rerun checks; if unresolved, stop target writers and perform paired restoration |
+| Source image refuses the migrated schema | Do not force startup or roll only the image back; use forward repair or paired restoration |
+
+MySQL DDL may implicitly commit: failure does not prove that schema stayed
+unchanged. Do not stamp, downgrade, delete individual migration objects or edit
+checkpoints to make a retry pass. Preserve the failed database for diagnosis.
+Restore into an empty database or use an approved full restore so target-only
+objects cannot survive. A new database requires updating **all** application
+and executor connection mappings.
+
+Before reopening business writes, restoration returns to the stopped backup
+boundary without losing admitted business writes. After reopening, it discards
+subsequent metadata changes, including account/permission changes, and does not
+undo physical cloud resource operations. Prefer forward repair. Restoration then
+requires an accepted recovery point, external-resource reconciliation and review
+of restored credentials/sessions. Keep target writers stopped until both source
+replicas pass source schema, decryption and authenticated smoke checks.
+
+See [MySQL implicit commits](https://dev.mysql.com/doc/refman/8.0/en/implicit-commit.html)
+and [mysqldump consistency requirements](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html).
 
 ### v0.0.12 schema boundary
 
@@ -101,6 +248,45 @@ replica even when the shared migration checkpoint has already succeeded.
 [Knowledge activation](../knowledge/activation.md) is a separate configuration
 rollout. Complete the feature-capable image rollout before changing this setting;
 older images do not enforce the new knowledge admission gate.
+
+### v0.0.13 schema boundary
+
+v0.0.13 advances the metadata revision from `9c1d2e3f4a5b` to
+`c7d8e9f0a1b2` and the compatibility generation from 1 to 2. Its classification
+is `CONTRACT`: the DingTalk migration replaces provider CHECK constraints.
+Use the fully stopped CONTRACT maintenance procedure above when upgrading
+public v0.0.12 deployments. The managed MySQL 8.0.13 exception applies only
+when every source-contract, physical-schema and invocation check described
+above passes; it does not make this release eligible for ordinary rolling
+upgrades or source-image restart on the target schema.
+
+Some early deployments already contain `knowledge_resources.catalog_sync_token`
+or `agents.oauth_redirect_uri`. Migration reuses them only when their types,
+lengths, nullability and absent defaults match the expected columns; an existing
+catalog-token index must also match the plain non-unique index. Incompatible
+objects block migration before these additions. Preserve the schema evidence
+and diagnose the drift; do not stamp a revision or remove fields to bypass it.
+
+Before migration, stop all source replicas and metadata writers and verify a
+restorable backup with its matched encryption key, configuration and source
+image digest. From one immutable v0.0.13 executor, use the same stable operation
+ID for migration and replay:
+
+```bash
+pas database inspect --format json
+pas database migrate --maintenance --operation-id "$OPERATION_ID"
+pas database check
+pas database migrate --maintenance --operation-id "$OPERATION_ID"
+pas database check
+```
+
+Validate the physical schema, successful replay and authenticated application
+smoke test before reopening traffic. Prefer a forward fix after migration;
+image-only rollback to v0.0.12 is unsupported. A rollback requires stopping
+target writers and restoring the paired pre-upgrade database, key,
+configuration and source image, with the recovery-point limits described above.
+The generic Compose and Helm examples below do not replace this maintenance
+procedure for a `CONTRACT` release.
 
 ## Compose
 
@@ -178,13 +364,16 @@ drained. Keep the failed migration Pod, logs, revision, and physical-schema
 evidence for manual intervention. Do not restore its traffic or advance
 remaining replicas. Old replicas may continue serving only because managed
 rolling upgrades permit `NONE` or verified `EXPAND` migrations; destructive
-`CONTRACT` or `BREAKING` DDL requires a separate maintenance procedure.
+Outside the verified managed exception above, `CONTRACT` or `BREAKING` DDL
+requires a separate maintenance procedure.
 
 An operator can inspect and then explicitly retry a failed migration:
 
 ```bash
-kubectl -n <namespace> logs <migration-pod> -c db-migrate
-kubectl -n <namespace> delete pod <migration-pod>
+: "${NAMESPACE:?set the migration namespace}"
+: "${MIGRATION_POD:?set the inspected migration Pod}"
+kubectl -n "$NAMESPACE" logs "$MIGRATION_POD" -c db-migrate
+kubectl -n "$NAMESPACE" delete pod "$MIGRATION_POD"
 ```
 
 Delete the Pod only after preserving the failure evidence and correcting the

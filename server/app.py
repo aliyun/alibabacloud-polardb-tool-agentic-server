@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from markdown import markdown
@@ -23,7 +23,7 @@ from server.db.engine import get_engine, get_session_factory
 from server.db.schema import check_database_compatibility
 from server.logging import normalize_request_id, setup_logging, trace_id_var
 from server.mcp.server import router as mcp_router
-from server.mcp.agent_openapi import router as agent_openapi_router
+from server.auth.dependencies import require_admin
 from server.mcp.db_instance_rest import router as agent_db_instance_router
 from server.auth.cleanup import sweep_expired_oauth_rows
 from server.mcp.transport import LazyMCPApplication, mcp_lifespan
@@ -33,7 +33,7 @@ from server.version import __version__
 logger = logging.getLogger(__name__)
 
 
-_IDENTITY_SOURCE_HELP_PROVIDERS = ("feishu", "sharepoint")
+_IDENTITY_SOURCE_HELP_PROVIDERS = ("feishu", "sharepoint", "dingtalk")
 
 
 def _identity_source_help_labels(language: str) -> dict[str, str]:
@@ -42,6 +42,7 @@ def _identity_source_help_labels(language: str) -> dict[str, str]:
             "title": "企业身份源接入",
             "description": "选择要配置的企业身份源。",
             "feishu": "飞书接入",
+            "dingtalk": "钉钉接入",
             "sharepoint": "SharePoint 接入",
             "api": "企业身份源管理员 API",
             "back": "返回接入指南",
@@ -50,6 +51,7 @@ def _identity_source_help_labels(language: str) -> dict[str, str]:
         "title": "Enterprise identity source integration",
         "description": "Choose the enterprise identity source to configure.",
         "feishu": "Feishu integration",
+        "dingtalk": "DingTalk integration",
         "sharepoint": "SharePoint integration",
         "api": "Enterprise identity source administrator API",
         "back": "Back to integration guides",
@@ -558,7 +560,14 @@ async def application_lifespan(app: FastAPI):
 
     # Background loops
     from server.core.audit_retention import audit_retention_loop
-    from server.enterprise_identity.sync import identity_source_sync_loop
+    from server.enterprise_identity.feishu_events import feishu_directory_event_loop
+    from server.enterprise_identity.dingtalk_events import dingtalk_directory_event_loop
+    from server.enterprise_identity.sync import (
+        identity_source_sync_loop,
+        request_feishu_full_sync_on_startup,
+    )
+
+    await request_feishu_full_sync_on_startup(session_factory)
 
     async def _oauth_cleanup_loop():
         while True:
@@ -568,6 +577,9 @@ async def application_lifespan(app: FastAPI):
             except Exception:
                 logger.exception("OAuth cleanup sweep failed")
 
+    from server.enterprise_identity.knowledge_refresh import refresh_loop
+
+    knowledge_refresh_task = asyncio.create_task(refresh_loop(session_factory))
     cleanup_task = asyncio.create_task(_oauth_cleanup_loop())
     knowledge_tasks = []
     if knowledge_runtime.loaded_enabled:
@@ -579,6 +591,9 @@ async def application_lifespan(app: FastAPI):
         ]
     identity_source_sync_task = asyncio.create_task(
         identity_source_sync_loop(session_factory)
+    )
+    feishu_directory_event_task = asyncio.create_task(
+        feishu_directory_event_loop(session_factory)
     )
     audit_retention_task = (
         asyncio.create_task(
@@ -597,8 +612,11 @@ async def application_lifespan(app: FastAPI):
         config_poll_task,
         cleanup_task,
         knowledge_heartbeat_task,
+        knowledge_refresh_task,
         *knowledge_tasks,
         identity_source_sync_task,
+        feishu_directory_event_task,
+        asyncio.create_task(dingtalk_directory_event_loop(session_factory)),
     ]
     if audit_retention_task is not None:
         lifecycle_tasks.append(audit_retention_task)
@@ -663,13 +681,26 @@ def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
     app = FastAPI(
         title="alibabacloud polardb tool agentic server",
         version=__version__,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
         lifespan=lifespan if runtime is None else None,
     )
+    from server.core.identity_source_space import IdentityDomainTenantConflict
+
+    @app.exception_handler(IdentityDomainTenantConflict)
+    async def identity_domain_conflict_handler(request, exc):
+        return JSONResponse(status_code=409, content={
+            "detail": "DingTalk enterprise conflicts with this identity domain",
+            "code": "DINGTALK_IDENTITY_DOMAIN_TENANT_CONFLICT",
+        })
+
     if runtime is not None:
         app.state.pas_runtime = runtime
     from server.middleware.runtime_policy import (
         RuntimeAccessPolicy,
         RuntimePolicyMiddleware,
+        is_documentation_path,
     )
 
     from server.features.middleware import KnowledgeAdmissionMiddleware
@@ -778,7 +809,7 @@ def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
     # Admin API router
     app.include_router(api_router)
 
-    @app.get("/help/enterprise-identity-sources", include_in_schema=False)
+    @app.get("/help/enterprise-identity-sources", include_in_schema=False, dependencies=[Depends(require_admin)])
     async def enterprise_identity_source_help(
         locale: str = "en",
         provider: str | None = None,
@@ -818,6 +849,8 @@ def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
                 f"{labels['feishu']}</a>"
                 f'<a class="guide-card" href="?locale={language}&provider=sharepoint">'
                 f"{labels['sharepoint']}</a>"
+                f'<a class="guide-card" href="?locale={language}&provider=dingtalk">'
+                f"{labels['dingtalk']}</a>"
                 "</div>"
             )
             title = labels["title"]
@@ -825,10 +858,12 @@ def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
             headings = {
                 "zh-cn": {
                     "feishu": "配置飞书身份源",
+                    "dingtalk": "配置钉钉身份源",
                     "sharepoint": "配置 SharePoint 身份源",
                 },
                 "en": {
                     "feishu": "Configure a Feishu identity source",
+                    "dingtalk": "Configure a DingTalk identity source",
                     "sharepoint": "Configure a SharePoint identity source",
                 },
             }
@@ -862,7 +897,7 @@ def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
             },
         )
 
-    @app.get("/help/enterprise-identity-sources-api", include_in_schema=False)
+    @app.get("/help/enterprise-identity-sources-api", include_in_schema=False, dependencies=[Depends(require_admin)])
     async def enterprise_identity_source_api_help(locale: str = "en"):
         language = "zh-cn" if locale.casefold().startswith("zh") else "en"
         document = (
@@ -915,7 +950,6 @@ def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
     # Agent lifecycle routes deliberately use a different principal under the
     # shared REST prefix and are absent from the application OpenAPI schema.
     app.include_router(agent_db_instance_router)
-    app.include_router(agent_openapi_router)
 
     # Serve frontend static files if build exists.
     _static_dir = _discover_static_dir()
@@ -942,6 +976,7 @@ def create_app(*, runtime: PasRuntime | None = None) -> FastAPI:
             response = await call_next(request)
             if (
                 response.status_code == 404
+                and not is_documentation_path(request.url.path)
                 and "text/html" in request.headers.get("accept", "")
                 and not request.url.path.startswith(("/api/", "/auth/", "/mcp", "/.well-known/"))
             ):

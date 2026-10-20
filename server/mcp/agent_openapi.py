@@ -2,15 +2,10 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from fastapi import APIRouter
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.openapi.docs import get_swagger_ui_html
 
 from server.mcp.db_instance_rest import build_agent_db_instance_router
 from server.version import __version__
-
-router = APIRouter(include_in_schema=False)
 
 
 @lru_cache(maxsize=1)
@@ -30,20 +25,3 @@ def agent_openapi_schema() -> dict:
         "credential_safety": "Never cache, log, or forward database passwords.",
     }
     return schema
-
-
-@router.get("/mcp/rest/openapi.json", include_in_schema=False)
-async def agent_openapi() -> JSONResponse:
-    return JSONResponse(agent_openapi_schema())
-
-
-@router.get(
-    "/mcp/rest/docs",
-    include_in_schema=False,
-    response_class=HTMLResponse,
-)
-async def agent_docs() -> HTMLResponse:
-    return get_swagger_ui_html(
-        openapi_url="/mcp/rest/openapi.json",
-        title="PAS Agent Database Lifecycle REST API",
-    )

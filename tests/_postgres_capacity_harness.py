@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.schema import CreateSchema, DropSchema
 
-from server.models import Base
+from tests._helpers import isolated_model_metadata
 
 _SCHEMA_PREFIX = "pas_capacity_test_"
 _SCHEMA_RE = re.compile(r"^pas_capacity_test_[0-9a-f]{32}$")
@@ -116,7 +116,7 @@ async def run_in_isolated_schema(
         async with engine.begin() as connection:
             await connection.execute(CreateSchema(schema_name))
             schema_created = True
-            await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(isolated_model_metadata().create_all)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         return await operation(factory, schema_name)
     finally:

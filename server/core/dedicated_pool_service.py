@@ -7,6 +7,8 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from server.aliyun.endpoints import OpenAPIEndpointError, validate_resource_region
+from server.config import get_config
 
 from server.core.dedicated_pool_repository import CapacitySnapshot, capacity_snapshot
 from server.core.dedicated_purchase_profile import (
@@ -117,7 +119,9 @@ def _typed_purchase_config(values: dict[str, Any]) -> dict[str, str]:
 _NETWORK_FIELDS = ("region_id", "zone_id", "vpc_id", "vswitch_id")
 
 
-def _normalize_network_values(values: dict[str, Any]) -> dict[str, Any]:
+def _normalize_network_values(
+    values: dict[str, Any], *, check_region: bool = True
+) -> dict[str, Any]:
     normalized = dict(values)
     for field in _NETWORK_FIELDS:
         if field not in normalized:
@@ -126,6 +130,15 @@ def _normalize_network_values(values: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(value, str) or not value.strip():
             raise DedicatedPoolServiceError(f"{field} cannot be blank")
         normalized[field] = value.strip()
+    if check_region and "region_id" in normalized:
+        config = get_config().aliyun
+        try:
+            validate_resource_region(
+                normalized["region_id"], access_region=config.region_id,
+                network=config.openapi_network,
+            )
+        except OpenAPIEndpointError as error:
+            raise DedicatedPoolServiceError(str(error)) from None
     return normalized
 
 
@@ -217,7 +230,10 @@ async def update_dedicated_pool(
     expected_config_revision: int | None = None,
     network_change_confirmed: bool = False,
 ) -> DedicatedPool:
-    pool = await session.get(DedicatedPool, pool_id)
+    pool = await session.scalar(
+        select(DedicatedPool).where(DedicatedPool.id == pool_id)
+        .with_for_update().execution_options(populate_existing=True)
+    )
     if pool is None:
         raise DedicatedPoolNotFound("Dedicated pool not found")
     if (
@@ -227,7 +243,7 @@ async def update_dedicated_pool(
         raise DedicatedPoolConfigurationConflict(
             "Dedicated pool configuration changed; reload before updating"
         )
-    changes = _normalize_network_values(changes)
+    changes = _normalize_network_values(changes, check_region=False)
     network_changed = any(
         field in changes
         and changes[field] != str(getattr(pool, field) or "").strip()
@@ -238,6 +254,21 @@ async def update_dedicated_pool(
             "Confirm connectivity and availability risks before changing "
             "pool network placement"
         )
+    if network_changed:
+        _normalize_network_values({"region_id": changes.get("region_id", pool.region_id)})
+        pending = await session.scalar(select(DedicatedPoolMember.id).where(
+            DedicatedPoolMember.pool_id == pool_id,
+            DedicatedPoolMember.preparation_step.in_([
+                DedicatedPreparationStep.PENDING,
+                DedicatedPreparationStep.PURCHASE_INTENT_STORED,
+            ]),
+            DedicatedPoolMember.status != DedicatedMemberStatus.DELETED,
+        ).limit(1))
+        if pending:
+            raise DedicatedPoolStateConflict(
+                "Pool placement cannot change while a purchase is pending; "
+                "pause replenishment and reconcile outstanding purchases first"
+            )
     merged = {
         "target_size": changes.get("target_size", pool.target_size),
         "max_total_members": changes.get(

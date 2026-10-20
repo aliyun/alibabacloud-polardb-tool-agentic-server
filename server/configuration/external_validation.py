@@ -10,6 +10,7 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 
 import httpx
+from Tea.exceptions import UnretryableException
 
 from server.aliyun.credential_provider import (
     AssumeRoleProvider,
@@ -50,6 +51,9 @@ class ExternalValidationCheck:
     identity_hint: str | None = None
     expires_at: int | None = None
     request_id: str | None = None
+    region_id: str | None = None
+    stage: str | None = None
+    error_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,12 +77,14 @@ class ExternalValidationResult:
 
 class ExternalValidationError(RuntimeError):
     def __init__(
-        self, code: str, message: str, *, request_id: str | None = None
+        self, code: str, message: str, *, request_id: str | None = None,
+        result: ExternalValidationResult | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.request_id = safe_request_id(request_id)
+        self.result = result
 
 
 class ExternalModuleValidator(Protocol):
@@ -101,10 +107,18 @@ class NoopExternalModuleValidator:
 
 def _exception_chain(error: BaseException) -> list[BaseException]:
     chain: list[BaseException] = []
-    current: BaseException | None = error
-    while current is not None and current not in chain:
+    pending = [error]
+    while pending and len(chain) < 64:
+        current = pending.pop()
+        if any(current is item for item in chain):
+            continue
         chain.append(current)
-        current = current.__cause__ or current.__context__
+        nested = [current.__cause__ or current.__context__]
+        # Tea and its Darabonba subclass keep exhausted transport retries
+        # outside Python's standard exception chain. Inspect types, not text.
+        if isinstance(current, UnretryableException):
+            nested.append(current.inner_exception)
+        pending.extend(item for item in nested if isinstance(item, BaseException))
     return chain
 
 
@@ -247,8 +261,8 @@ def map_openapi_error(
             error,
         )
     return _error(
-        "OPENAPI_CONNECT_FAILURE",
-        "The backend could not complete the OpenAPI connectivity check.",
+        "OPENAPI_CHECK_FAILED",
+        "The backend could not complete the OpenAPI check.",
         error,
     )
 
@@ -339,7 +353,9 @@ class AlibabaCloudExternalValidator:
             return "loopback"
         return "public"
 
-    async def _require_safe_external_token_url(self, value: str) -> str:
+    async def _require_safe_external_token_url(
+        self, value: str, *, allow_public_http: bool = False,
+    ) -> str:
         parsed = urlsplit(value)
         loopback_http = (
             self.allow_insecure_loopback_urls
@@ -416,11 +432,11 @@ class AlibabaCloudExternalValidator:
                 "External token endpoints cannot mix public, private, and "
                 "loopback address classes.",
             )
-        if parsed.scheme == "http" and networks == {"public"}:
+        if parsed.scheme == "http" and networks == {"public"} and not allow_public_http:
             raise ExternalValidationError(
                 "OIDC_ENDPOINT_UNSAFE",
                 "HTTP external token endpoints must resolve only to trusted "
-                "private network addresses. Use HTTPS for public endpoints.",
+                "private network addresses when browser SSO is enabled.",
             )
         return value
 
@@ -565,7 +581,8 @@ class AlibabaCloudExternalValidator:
                 and isinstance(introspection_endpoint, str)
             ):
                 await self._require_safe_external_token_url(
-                    introspection_endpoint
+                    introspection_endpoint,
+                    allow_public_http=not browser_login_enabled,
                 )
             external_userinfo_endpoint = trust_config.get(
                 "userinfo_endpoint"
@@ -575,7 +592,8 @@ class AlibabaCloudExternalValidator:
                 and isinstance(external_userinfo_endpoint, str)
             ):
                 await self._require_safe_external_token_url(
-                    external_userinfo_endpoint
+                    external_userinfo_endpoint,
+                    allow_public_http=not browser_login_enabled,
                 )
             jwks_uri = endpoint("jwks_uri")
             jwks_required = browser_login_enabled and (
@@ -677,8 +695,10 @@ class AlibabaCloudExternalValidator:
         direct_identity_hint: str | None = None
         provider: CredentialProvider
         stage: OpenAPIValidationStage = "polardb"
+        endpoint = ""
         try:
             polardb_endpoint = resolve_openapi_endpoint("polardb", region, network)
+            endpoint = polardb_endpoint
             if mode == "direct_ak":
                 direct_credentials = config["direct_ak"]
                 assert isinstance(direct_credentials, Mapping)
@@ -688,9 +708,11 @@ class AlibabaCloudExternalValidator:
                 provider = self.build_direct_provider(config)
             elif mode == "assume_role":
                 stage = "assume_role"
+                endpoint = ""
                 sts_endpoint = resolve_openapi_endpoint(
                     "sts", region, network
                 )
+                endpoint = sts_endpoint
                 provider = self.build_assume_provider(config)
                 await provider.get_credentials()
                 stage = "polardb"
@@ -710,6 +732,7 @@ class AlibabaCloudExternalValidator:
                 )
             else:
                 stage = "ecs_metadata"
+                endpoint = "http://100.100.100.200"
                 role_name = await resolve_ecs_role_name_v2()
                 checks.append(
                     ExternalValidationCheck(
@@ -725,6 +748,7 @@ class AlibabaCloudExternalValidator:
                 stage = "polardb"
 
             polardb_client = AliyunPolarDBClient(provider)
+            endpoint = polardb_endpoint
             await polardb_client.discover_clusters(region)
             checks.append(
                 ExternalValidationCheck(
@@ -745,4 +769,12 @@ class AlibabaCloudExternalValidator:
         except ExternalValidationError:
             raise
         except Exception as error:
-            raise map_openapi_error(error, stage) from None
+            mapped = map_openapi_error(error, stage)
+            checks.append(ExternalValidationCheck(
+                service="sts" if stage == "assume_role" else stage,
+                region_id=region, network=network, endpoint=endpoint,
+                stage=stage, status="FAILED", error_code=mapped.code,
+                request_id=mapped.request_id,
+            ))
+            mapped.result = ExternalValidationResult(status="FAILED", checks=tuple(checks))
+            raise mapped from None
