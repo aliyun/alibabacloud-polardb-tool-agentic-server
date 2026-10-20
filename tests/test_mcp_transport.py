@@ -1617,8 +1617,8 @@ class TestLegacyRESTEndpoints:
         resp = await client.get("/mcp/rest/list_instances", headers=rest_auth_headers)
         assert resp.status_code == 404
 
-    async def test_rest_tools_endpoint(self, client):
-        resp = await client.get("/mcp/rest/tools")
+    async def test_rest_tools_endpoint(self, client, rest_auth_headers):
+        resp = await client.get("/mcp/rest/tools", headers=rest_auth_headers)
         assert resp.status_code == 200
         tools = resp.json()["tools"]
         assert len(tools) == 7

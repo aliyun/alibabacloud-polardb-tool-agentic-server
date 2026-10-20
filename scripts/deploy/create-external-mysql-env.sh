@@ -2,7 +2,7 @@
 
 set -eu
 
-DEFAULT_PAS_IMAGE=ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.12
+DEFAULT_PAS_IMAGE=ghcr.io/aliyun/alibabacloud-polardb-tool-agentic-server:0.0.13
 
 output=.env
 selected_image=$DEFAULT_PAS_IMAGE

@@ -68,12 +68,8 @@ async def test_client_from_instance_decrypts_credentials_and_uses_fixed_route(
         },
     )
 
-    assert captured["url"] == (
-        "https://rag.example.test:9443/_plugins/_polar_rag/spaces/space-a/search"
-    )
-    expected_auth = base64.b64encode(
-        b"shared-user:shared-password"
-    ).decode()
+    assert captured["url"] == ("https://rag.example.test:9443/_plugins/_polar_rag/spaces/space-a/search")
+    expected_auth = base64.b64encode(b"shared-user:shared-password").decode()
     assert captured["authorization"] == f"Basic {expected_auth}"
     assert captured["body"] == {
         "query_text": "acl",
@@ -132,6 +128,91 @@ async def test_multi_kb_search_reads_the_runtime_limit_and_sends_kb_ids(
         "reranker": False,
         "acl_context": {"identity_domain": "tenant-a", "principals": []},
     }
+
+
+async def test_search_capabilities_can_disable_multi_kb_search(
+    encryption_key,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/_search_capabilities")
+        return httpx.Response(
+            200,
+            json={"schema_version": 1, "multi_kb_search": False},
+        )
+
+    client = client_from_instance(
+        _instance(encryption_key),
+        transport=httpx.MockTransport(handler),
+    )
+
+    capabilities = await client.get_search_capabilities()
+
+    assert capabilities.multi_kb_search is False
+    assert capabilities.max_kb_ids is None
+
+
+@pytest.mark.parametrize("capability_status", [200, 404])
+async def test_plugin_107_legacy_fallback_uses_single_kb_wire_protocol(
+    capability_status: int,
+) -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        requests.append((request.url.path, body))
+        if request.url.path.endswith("/_search_capabilities"):
+            if capability_status == 404:
+                return httpx.Response(404, json={"error": "not_found"})
+            return httpx.Response(
+                200,
+                json={"schema_version": 1, "multi_kb_search": False},
+            )
+        return httpx.Response(200, json={"hits": {"hits": []}})
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+        plugin_version="1.0.7",
+    )
+    try:
+        capabilities = await client.get_search_capabilities()
+        assert capabilities.multi_kb_search is False
+    except PolarRAGUpstreamError as exc:
+        assert capability_status == 404
+        assert exc.status_code == 404
+
+    common = {
+        "acl_context": {"identity_domain": "tenant-a", "principals": []},
+    }
+    await client.search(
+        "space-a",
+        "kb-a",
+        query="acl",
+        search_mode="balanced",
+        top_k=10,
+        min_score=None,
+        reranker=False,
+        legacy_protocol=True,
+        **common,
+    )
+    await client.find_by_name(
+        "space-a",
+        kb_id="kb-a",
+        filename="guide.pdf",
+        limit=20,
+        legacy_protocol=True,
+        **common,
+    )
+
+    search_payload = requests[-2][1]
+    find_payload = requests[-1][1]
+    assert search_payload["kb_id"] == "kb-a"
+    assert "kb_ids" not in search_payload
+    assert find_payload["kb_id"] == "kb-a"
+    assert "kb_ids" not in find_payload
 
 
 def test_client_from_instance_sanitizes_credential_decryption_failure(
@@ -303,9 +384,7 @@ async def test_client_lists_space_without_identity_domain() -> None:
 
     spaces = await client.list_spaces()
 
-    assert [(space.space_id, space.identity_domain) for space in spaces] == [
-        ("legacy-space", None)
-    ]
+    assert [(space.space_id, space.identity_domain) for space in spaces] == [("legacy-space", None)]
 
 
 async def test_client_lists_unclaimed_kbs_and_claims_with_canonical_owner() -> None:
@@ -359,9 +438,7 @@ async def test_client_lists_unclaimed_kbs_and_claims_with_canonical_owner() -> N
         owner="alice",
     )
 
-    assert [(record.kb_id, record.status, record.owner) for record in unclaimed] == [
-        ("kb-a", "UNCLAIMED", None)
-    ]
+    assert [(record.kb_id, record.status, record.owner) for record in unclaimed] == [("kb-a", "UNCLAIMED", None)]
     assert result is None
     assert "sensitive-owner-token" not in repr(result)
     assert requests == [
@@ -456,15 +533,40 @@ async def test_capability_check_uses_polarrag_version_marker_route() -> None:
         "/",
         "/_plugins/_polar_rag/_version",
         "/_plugins/_polar_rag/spaces/_list",
-        (
-            "/_plugins/_polar_rag/spaces/__pas_capability_probe__"
-            "/knowledge_bases/_list"
-        ),
+        ("/_plugins/_polar_rag/spaces/__pas_capability_probe__/knowledge_bases/_list"),
     ]
     assert payloads == [
         {"size": 1, "statuses": ["ACTIVE"]},
         {"size": 1, "statuses": ["ACTIVE"]},
     ]
+
+
+async def test_capability_check_treats_method_not_allowed_catalog_as_unsupported() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(200, json={"version": {"number": "3"}})
+        if request.url.path == "/_plugins/_polar_rag/_version":
+            return httpx.Response(200, json={"version": "1.0.6"})
+        if request.url.path == "/_plugins/_polar_rag/spaces/_list":
+            return httpx.Response(
+                405,
+                json={"error": "Method Not Allowed"},
+            )
+        return httpx.Response(404, json={"error": "not found"})
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+    )
+
+    capabilities = await client.check_capabilities()
+
+    assert capabilities.version == "1.0.6"
+    assert capabilities.space_catalog is False
+    assert capabilities.knowledge_base_catalog is False
 
 
 async def test_catalog_rejects_stalled_cursor_and_malformed_owner() -> None:
@@ -537,10 +639,11 @@ async def test_catalog_rejects_stalled_cursor_and_malformed_owner() -> None:
     assert owner_error.value.code == PolarRAGErrorCode.INVALID_RESPONSE
 
 
-async def test_upstream_errors_are_classified_without_response_body() -> None:
+@pytest.mark.parametrize("status_code", [429, 503])
+async def test_upstream_errors_are_classified_without_response_body(status_code: int) -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            503,
+            status_code,
             text="secret upstream diagnostics and password=do-not-leak",
         )
 
@@ -599,16 +702,8 @@ async def test_search_maps_missing_reranker_to_sanitized_error() -> None:
             json={
                 "error": {
                     "type": "illegal_argument_exception",
-                    "reason": (
-                        "reranker is not configured for space: space-a"
-                    ),
-                    "root_cause": [
-                        {
-                            "reason": (
-                                "password=do-not-leak; request_id=private"
-                            )
-                        }
-                    ],
+                    "reason": ("reranker is not configured for space: space-a"),
+                    "root_cause": [{"reason": ("password=do-not-leak; request_id=private")}],
                 },
                 "status": 400,
             },
@@ -708,9 +803,7 @@ async def test_list_documents_uses_acl_filtered_keyset_page() -> None:
     )
     acl_context = {
         "identity_domain": "tenant-a",
-        "principals": [
-            {"provider": "feishu", "type": "user", "id": "ou-user"}
-        ],
+        "principals": [{"provider": "feishu", "type": "user", "id": "ou-user"}],
     }
 
     page = await client.list_documents(
@@ -724,14 +817,286 @@ async def test_list_documents_uses_acl_filtered_keyset_page() -> None:
     assert page["next_after_doc_id"] == "doc-b"
     assert requests == [
         (
-            "/_plugins/_polar_rag/spaces/space-a/knowledge_bases/"
-            "kb-a/documents/_list",
+            "/_plugins/_polar_rag/spaces/space-a/knowledge_bases/kb-a/documents/_list",
             {
                 "size": 20,
                 "after_doc_id": "doc-a",
                 "acl_context": acl_context,
             },
         )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("version", "supported"),
+    [
+        ("t-polardb-rag-1.0.7-20260914161410.al8.x86_64", True),
+        ("t-polardb-rag-1.1.0-20260914161410.al8.x86_64", True),
+        ("1.0.7", True),
+        ("t-polardb-rag-1.0.6-20260914161410.al8.x86_64", False),
+        ("3.3.2-SNAPSHOT", False),
+        (None, False),
+    ],
+)
+def test_plugin_107_capability_detection_is_conservative(
+    version: str | None,
+    supported: bool,
+) -> None:
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        plugin_version=version,
+    )
+
+    assert client.supports_plugin_107 is supported
+
+
+async def test_plugin_107_uses_multi_kb_search_and_managed_document_page() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append((request.url.path, body))
+        if request.url.path.endswith("/managed_documents/_list"):
+            return httpx.Response(
+                200,
+                json={
+                    "total": 21,
+                    "page": 2,
+                    "size": 20,
+                    "documents": [
+                        {
+                            "doc_id": "doc-a",
+                            "kb_id": "kb-a",
+                            "updated_at": "2026-09-14T10:00:00Z",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(200, json={"hits": {"hits": []}})
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+        plugin_version="t-polardb-rag-1.0.7-20260914161410.al8.x86_64",
+    )
+    acl_context = {
+        "identity_domain": "tenant-a",
+        "principals": [],
+    }
+
+    await client.search(
+        "space-a",
+        ["kb-a", "kb-b"],
+        query="acl",
+        search_mode="balanced",
+        top_k=10,
+        min_score=None,
+        reranker=False,
+        acl_context=acl_context,
+    )
+    page = await client.list_documents(
+        "space-a",
+        kb_id="kb-a",
+        page=2,
+        size=20,
+        after_doc_id=None,
+        acl_context=acl_context,
+    )
+
+    assert page == {
+        "total": 21,
+        "page": 2,
+        "size": 20,
+        "documents": [
+            {
+                "doc_id": "doc-a",
+                "kb_id": "kb-a",
+                "updated_at": "2026-09-14T10:00:00Z",
+            }
+        ],
+        "has_more": False,
+        "next_after_doc_id": None,
+    }
+    assert requests == [
+        (
+            "/_plugins/_polar_rag/spaces/space-a/search",
+            {
+                "query_text": "acl",
+                "kb_ids": ["kb-a", "kb-b"],
+                "search_mode": "balanced",
+                "size": 10,
+                "reranker": False,
+                "acl_context": acl_context,
+            },
+        ),
+        (
+            "/_plugins/_polar_rag/spaces/space-a/knowledge_bases/kb-a/managed_documents/_list",
+            {
+                "page": 2,
+                "size": 20,
+                "sort_by": "updated_at",
+                "acl_context": acl_context,
+            },
+        ),
+    ]
+
+
+async def test_plugin_107_reads_document_permissions_in_one_batch() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append((request.url.path, body))
+        return httpx.Response(
+            200,
+            json={
+                "documents": [
+                    {
+                        "doc_id": "doc-a",
+                        "identity_domain": "tenant-a",
+                        "state": "ACTIVE",
+                        "updating": False,
+                        "acl_version": 3,
+                        "acl_set_id": "acl-set-a",
+                        "grants": [
+                            {
+                                "principal": {
+                                    "provider": "feishu",
+                                    "type": "user",
+                                    "id": "ou-user",
+                                },
+                                "actions": ["READ", "MANAGE"],
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+        plugin_version="1.0.7",
+    )
+    acl_context = {
+        "identity_domain": "tenant-a",
+        "principals": [
+            {"provider": "polarrag", "type": "user", "id": "pas-user"}
+        ],
+        "actor": {"provider": "polarrag", "type": "user", "id": "pas-user"},
+    }
+
+    result = await client.list_document_permissions(
+        "space-a",
+        ["doc-a", "doc-b"],
+        acl_context=acl_context,
+    )
+
+    assert result["documents"][0]["acl_version"] == 3
+    assert requests == [
+        (
+            "/_plugins/_polar_rag/spaces/space-a/managed_documents/acl/_list",
+            {"doc_ids": ["doc-a", "doc-b"], "acl_context": acl_context},
+        )
+    ]
+
+
+@pytest.mark.parametrize("invalid_page", [True, 1.0])
+async def test_plugin_107_rejects_non_integer_document_page(
+    invalid_page: object,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "total": 1,
+                "page": invalid_page,
+                "size": 20,
+                "documents": [],
+            },
+        )
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+        plugin_version="1.0.7",
+    )
+
+    with pytest.raises(PolarRAGUpstreamError) as exc_info:
+        await client.list_documents(
+            "space-a",
+            kb_id="kb-a",
+            page=1,
+            size=20,
+            after_doc_id=None,
+            acl_context={"identity_domain": "tenant-a", "principals": []},
+        )
+
+    assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
+
+
+async def test_plugin_107_scopes_protected_document_reads_to_kb() -> None:
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append((request.url.path, body))
+        return httpx.Response(200, json={"hits": {"total": {"value": 0, "relation": "eq"}, "hits": []}})
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+        plugin_version="1.0.7",
+    )
+    acl_context = {"identity_domain": "tenant-a", "principals": []}
+
+    await client.document_info("space-a", "doc-a", kb_id="kb-a", acl_context=acl_context)
+    await client.fetch_context(
+        "space-a",
+        "doc-a",
+        kb_id="kb-a",
+        chunk_index=3,
+        window_size=2,
+        acl_context=acl_context,
+    )
+    await client.list_document_chunks(
+        "space-a",
+        "doc-a",
+        kb_id="kb-a",
+        offset=0,
+        limit=20,
+        acl_context=acl_context,
+    )
+
+    assert [payload for _, payload in requests] == [
+        {"kb_ids": ["kb-a"], "acl_context": acl_context},
+        {
+            "kb_ids": ["kb-a"],
+            "chunk_index": 3,
+            "window_size": 2,
+            "acl_context": acl_context,
+        },
+        {
+            "kb_ids": ["kb-a"],
+            "from": 0,
+            "size": 20,
+            "acl_context": acl_context,
+        },
     ]
 
 
@@ -765,9 +1130,7 @@ async def test_search_maps_missing_kb_to_sanitized_resource_error() -> None:
             },
         )
 
-    assert captured.value.code == (
-        PolarRAGErrorCode.KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE
-    )
+    assert captured.value.code == (PolarRAGErrorCode.KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE)
     assert "do-not-leak" not in str(captured.value)
 
 
@@ -811,9 +1174,7 @@ async def test_document_mutations_use_protected_space_routes() -> None:
     )
     acl_context = {
         "identity_domain": "tenant-a",
-        "principals": [
-            {"provider": "feishu", "type": "user", "id": "ou-user"}
-        ],
+        "principals": [{"provider": "feishu", "type": "user", "id": "ou-user"}],
     }
 
     deleted = await client.delete_document(
@@ -826,6 +1187,7 @@ async def test_document_mutations_use_protected_space_routes() -> None:
         "doc-a",
         chunk_strategy="hybrid",
         chunk_max_tokens=512,
+        force=True,
         acl_context=acl_context,
     )
 
@@ -848,6 +1210,7 @@ async def test_document_mutations_use_protected_space_routes() -> None:
             {
                 "chunk_strategy": "hybrid",
                 "chunk_max_tokens": 512,
+                "force": True,
                 "acl_context": acl_context,
             },
         ),
@@ -884,9 +1247,7 @@ async def test_submit_document_uses_user_derived_managed_route() -> None:
     )
     acl_context = {
         "identity_domain": "tenant-a",
-        "principals": [
-            {"provider": "feishu", "type": "user", "id": "ou-user"}
-        ],
+        "principals": [{"provider": "feishu", "type": "user", "id": "ou-user"}],
         "actor": {"provider": "feishu", "type": "user", "id": "ou-user"},
     }
 
@@ -919,11 +1280,110 @@ async def test_submit_document_uses_user_derived_managed_route() -> None:
             "file_type": "md",
             "file_md5": "0cc175b9c0f1b6a831c399e269772661",
             "file_size_bytes": 1,
-            "metadata": {
-                "sha256": "ca978112ca1bbdcafac231b39a23dc4d"
-            },
+            "metadata": {"sha256": "ca978112ca1bbdcafac231b39a23dc4d"},
             "acl_context": acl_context,
             "acl": {"mode": "POLARRAG_DERIVED"},
+        },
+    }
+
+
+async def test_submit_documents_uses_managed_bulk_route_once() -> None:
+    captured: dict[str, object] = {"calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["calls"] = int(captured["calls"]) + 1
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "total": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "documents": [
+                    {
+                        "success": True,
+                        "idempotent": False,
+                        "document": {
+                            "doc_id": "doc-a",
+                            "space_id": "space-a",
+                            "kb_id": "kb-a",
+                            "filename": "a.md",
+                            "status": "DISPATCHED",
+                        },
+                    },
+                    {
+                        "success": False,
+                        "doc_id": "doc-b",
+                        "error": "private upstream failure",
+                    },
+                ],
+            },
+        )
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test:9443",
+        username="user",
+        password="password",
+        tls_verify=True,
+        transport=httpx.MockTransport(handler),
+        plugin_version="1.0.6",
+    )
+    acl_context = {
+        "identity_domain": "tenant-a",
+        "principals": [{"provider": "feishu", "type": "user", "id": "ou-user"}],
+        "actor": {"provider": "feishu", "type": "user", "id": "ou-user"},
+    }
+    documents = [
+        {
+            "kb_id": "kb-a",
+            "oss_path": "oss://bucket/a.md",
+            "filename": "a.md",
+            "file_type": "md",
+            "file_md5": "0cc175b9c0f1b6a831c399e269772661",
+            "file_size_bytes": 1,
+            "metadata": {"sha256": "sha-a"},
+        },
+        {
+            "kb_id": "kb-b",
+            "oss_path": "oss://bucket/b.md",
+            "filename": "b.md",
+            "file_type": "md",
+            "file_md5": "92eb5ffee6ae2fec3ad71c777531578f",
+            "file_size_bytes": 1,
+            "metadata": {"sha256": "sha-b"},
+        },
+    ]
+
+    result = await client.submit_documents(
+        "space-a",
+        documents,
+        acl_context=acl_context,
+    )
+
+    assert result == [
+        {
+            "success": True,
+            "document": {
+                "doc_id": "doc-a",
+                "space_id": "space-a",
+                "kb_id": "kb-a",
+                "filename": "a.md",
+                "status": "DISPATCHED",
+            },
+        },
+        {"success": False, "doc_id": "doc-b"},
+    ]
+    assert captured == {
+        "calls": 1,
+        "method": "POST",
+        "path": "/_plugins/_polar_rag/spaces/space-a/managed_documents/_bulk",
+        "body": {
+            "documents": [
+                {**documents[0], "acl_context": acl_context, "acl": {"mode": "POLARRAG_DERIVED"}},
+                {**documents[1], "acl_context": acl_context, "acl": {"mode": "POLARRAG_DERIVED"}},
+            ]
         },
     }
 
@@ -953,9 +1413,7 @@ async def test_submit_document_distinguishes_acl_denial_from_service_auth(
         username="user",
         password="password",
         tls_verify=True,
-        transport=httpx.MockTransport(
-            lambda _request: httpx.Response(403, json=response_body)
-        ),
+        transport=httpx.MockTransport(lambda _request: httpx.Response(403, json=response_body)),
     )
 
     with pytest.raises(PolarRAGUpstreamError) as captured:
@@ -988,3 +1446,56 @@ async def test_submit_document_distinguishes_acl_denial_from_service_auth(
     assert captured.value.code.value == expected_code
     assert captured.value.retryable is False
     assert "do-not-leak" not in str(captured.value)
+
+
+@pytest.mark.parametrize("generation", [None, 0, 2])
+async def test_context_sends_optional_generation_pin(generation):
+    captured = {}
+
+    def handler(request):
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json={"hits": {"hits": []}})
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test", username="user", password="password",
+        tls_verify=True, transport=httpx.MockTransport(handler), plugin_version="1.0.7",
+    )
+    await client.fetch_context(
+        "space-a", "doc-a", kb_id="kb-a", chunk_index=3, window_size=2,
+        expected_doc_generation=generation, acl_context={"identity_domain": "tenant-a", "principals": []},
+    )
+    assert captured["kb_ids"] == ["kb-a"]
+    assert captured["chunk_index"] == 3
+    if generation is None:
+        assert "expected_doc_generation" not in captured
+    else:
+        assert captured["expected_doc_generation"] == generation
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        (409, {"error_type": "citation_source_changed", "error": "password=private"}, PolarRAGErrorCode.CITATION_SOURCE_CHANGED),
+        (409, {"error_type": "other"}, PolarRAGErrorCode.INVALID_RESPONSE),
+        (409, "invalid json", PolarRAGErrorCode.INVALID_RESPONSE),
+        (403, {"error_type": "citation_source_changed"}, PolarRAGErrorCode.DOCUMENT_NOT_ACCESSIBLE),
+        (404, {}, PolarRAGErrorCode.DOCUMENT_NOT_ACCESSIBLE),
+    ],
+)
+async def test_context_preserves_generation_conflict_without_masking_acl(status, body, expected):
+    def handler(_request):
+        return httpx.Response(status, json=body) if isinstance(body, dict) else httpx.Response(status, text=body)
+
+    client = HttpPolarRAGClient(
+        base_url="https://rag.example.test", username="user", password="password",
+        tls_verify=True, transport=httpx.MockTransport(handler), plugin_version="1.0.7",
+    )
+    with pytest.raises(PolarRAGUpstreamError) as captured:
+        await client.fetch_context(
+            "space-a", "doc-a", kb_id="kb-a", chunk_index=3, window_size=2,
+            expected_doc_generation=2, acl_context={},
+        )
+    assert captured.value.code == expected
+    assert captured.value.status_code == status
+    assert captured.value.retryable is False
+    assert "private" not in str(captured.value)

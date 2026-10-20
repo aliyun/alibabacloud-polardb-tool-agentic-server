@@ -108,19 +108,21 @@ def _password_command(
     )
 
 
+@pytest.mark.parametrize("password", ["abcdefgh", "abcdefghi", "abcdefghijk", NEW_PASSWORD])
 async def test_initial_password_is_atomic_replayable_and_secret_safe(
     reset_required_context,
     caplog,
+    password,
 ) -> None:
     factory, repository, service, actor = reset_required_context
     caplog.set_level(logging.INFO, logger="server.configuration.audit")
-    command = _password_command()
+    command = _password_command(password=password)
 
     before = None
     async with factory() as session:
         user = await session.scalar(select(User).where(User.external_id == "admin"))
         assert user is not None
-        before = await authenticate_builtin(session, "admin", NEW_PASSWORD)
+        before = await authenticate_builtin(session, "admin", password)
         session.add(
             UserRefreshToken(
                 user_id=user.id,
@@ -137,14 +139,14 @@ async def test_initial_password_is_atomic_replayable_and_secret_safe(
     assert replay == result
     assert result.system_state == "READY"
     assert result.credential_state == PasswordState.ACTIVE
-    assert NEW_PASSWORD not in result.model_dump_json()
-    assert NEW_PASSWORD not in caplog.text
+    assert password not in result.model_dump_json()
+    assert password not in caplog.text
     async with factory() as session:
         user = await session.scalar(select(User).where(User.external_id == "admin"))
         assert user is not None
         assert user.password_state == PasswordState.ACTIVE
         assert user.credential_epoch == 2
-        assert await authenticate_builtin(session, "admin", NEW_PASSWORD) is not None
+        assert await authenticate_builtin(session, "admin", password) is not None
         refresh_token = await session.scalar(
             select(UserRefreshToken).where(
                 UserRefreshToken.token_hash == "initial-password-token"
@@ -153,8 +155,8 @@ async def test_initial_password_is_atomic_replayable_and_secret_safe(
         assert refresh_token is not None
         assert refresh_token.revoked_at is not None
         receipts = (await session.scalars(select(ConfigOperationReceipt))).all()
-        assert all(NEW_PASSWORD not in receipt.response_json for receipt in receipts)
-        assert all(NEW_PASSWORD not in receipt.request_digest for receipt in receipts)
+        assert all(password not in receipt.response_json for receipt in receipts)
+        assert all(password not in receipt.request_digest for receipt in receipts)
 
 
 async def test_management_api_sets_password_and_reports_live_state(
@@ -251,7 +253,7 @@ async def test_weak_initial_password_is_rejected_without_secret_leak(
     caplog,
 ) -> None:
     factory, _, service, actor = reset_required_context
-    weak_password = "too-short"
+    weak_password = "short12"
     caplog.set_level(logging.INFO, logger="server.configuration.audit")
 
     with pytest.raises(ConfigError) as captured:

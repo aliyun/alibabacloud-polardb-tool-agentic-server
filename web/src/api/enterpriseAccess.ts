@@ -1,11 +1,13 @@
 import api from './client'
+import type { PageParams } from './pagination'
 
 export interface EnterpriseIdentitySourceCandidate {
   id: string
   name: string
-  provider: 'feishu' | 'sharepoint'
+  provider: 'feishu' | 'sharepoint' | 'dingtalk'
   status: string
   last_synced_at: string | null
+  snapshot_usable?: boolean
 }
 
 export interface EnterpriseDirectoryUserCandidate {
@@ -36,6 +38,7 @@ export interface EnterpriseSpaceCandidate {
   polarrag_instance_id: string
   name: string
   identity_domain: string
+  is_bound?: boolean
 }
 
 export interface EnterpriseAccessSelection {
@@ -45,6 +48,7 @@ export interface EnterpriseAccessSelection {
   pas_user_ids: string[]
   polarrag_instance_ids: string[]
   knowledge_space_ids: string[]
+  bind_all_knowledge_resources?: boolean | null
 }
 
 export interface EnterpriseAccessImpact {
@@ -87,8 +91,30 @@ export const listEnterpriseIdentitySourceDirectory = (
   )
 
 export const listEnterpriseIdentitySourceSpaces = () =>
-  api.get<{ items: EnterpriseSpaceCandidate[] }>(
-    '/api/identity-sources/spaces',
+  api.get<{
+    items: EnterpriseSpaceCandidate[]
+    total: number
+    offset: number
+    limit: number
+  }>('/api/identity-sources/spaces')
+
+export const listEnterpriseIdentitySourceSpacesPage = (
+  params: PageParams & { identity_source_id?: string; agent_id?: string } = {},
+) =>
+  api.get<{
+    items: EnterpriseSpaceCandidate[]
+    total: number
+    offset: number
+    limit: number
+    all_users_bound?: boolean
+  }>('/api/identity-sources/spaces', { params })
+
+export const unbindEnterpriseIdentitySourceSpace = (
+  sourceId: string,
+  knowledgeSpaceId: string,
+) =>
+  api.delete(
+    `/api/identity-sources/${encoded(sourceId)}/spaces/${encoded(knowledgeSpaceId)}`,
   )
 
 export const previewAgentEnterpriseAccess = (

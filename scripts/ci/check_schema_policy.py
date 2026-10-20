@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
 import sys
 from pathlib import Path
@@ -194,7 +195,22 @@ def main(argv: list[str]) -> int:
     failed = False
     for raw_path in argv[1:]:
         path = Path(raw_path)
-        for line, reason in check(path):
+        violations = check(path)
+        # Only the exact declared maintenance head can replace released CHECKs.
+        # New FKs/views/uniqueness and every other destructive operation still fail.
+        root = Path(__file__).resolve().parents[2]
+        if path.resolve().parent == root / "server/db/migrations/versions":
+            manifest = json.loads((root / "server/db/schema_manifest.json").read_text())
+            tree = ast.parse(path.read_text())
+            assignments = {target.id: node.value.value for node in tree.body
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                for target in node.targets if isinstance(target, ast.Name)}
+            if (manifest["release_classification"] == "CONTRACT"
+                    and assignments.get("revision") == manifest["head"]
+                    and assignments.get("down_revision") == manifest["baseline_head"]):
+                violations = [(line, reason) for line, reason in violations
+                              if reason not in {"dropped constraint", "new check constraint"}]
+        for line, reason in violations:
             failed = True
             print(
                 f"schema policy violation: {path}:{line}: {reason} is not allowed "

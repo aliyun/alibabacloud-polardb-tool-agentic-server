@@ -33,6 +33,8 @@ pytestmark = [
 
 
 def _pinned_mysql_image() -> str:
+    if image := os.environ.get("PAS_TEST_MYSQL_IMAGE"):
+        return image
     match = re.search(
         r"(?m)^\s+image: \$\{MYSQL_IMAGE:-(mysql:[^}]+)\}$",
         (ROOT / "compose.yaml").read_text(encoding="utf-8"),

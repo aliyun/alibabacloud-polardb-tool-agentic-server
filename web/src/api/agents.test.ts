@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import api from './client'
 import {
+  getAgentExternalKnowledgeAutoBind,
+  updateAgentExternalKnowledgeAutoBind,
   listAgentKnowledgeBindings,
   listAgentKnowledgeResourceOptions,
   revealAgentToken,
@@ -9,11 +11,18 @@ import {
 } from './agents'
 
 vi.mock('./client', () => ({
-  default: { get: vi.fn(), post: vi.fn() },
+  default: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
 }))
 
 describe('Agent API', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('reads and updates the auto-binding switch with an encoded Agent id', async () => {
+    await getAgentExternalKnowledgeAutoBind('agent/1')
+    await updateAgentExternalKnowledgeAutoBind('agent/1', true)
+    expect(api.get).toHaveBeenCalledWith('/api/admin/agents/agent%2F1/external-knowledge-auto-bind')
+    expect(api.put).toHaveBeenCalledWith('/api/admin/agents/agent%2F1/external-knowledge-auto-bind', { enabled: true })
+  })
 
   it('reveals an Agent Token with the authenticated admin session', async () => {
     vi.mocked(api.post).mockResolvedValue({ data: { token: null } } as never)

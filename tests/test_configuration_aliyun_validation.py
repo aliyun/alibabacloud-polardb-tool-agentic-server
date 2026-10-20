@@ -160,6 +160,65 @@ async def test_direct_dry_run_never_calls_sts(monkeypatch) -> None:
     sts.assert_not_awaited()
 
 
+async def test_failed_probe_retains_safe_resolved_context(monkeypatch):
+    validator = AlibabaCloudExternalValidator()
+    monkeypatch.setattr(
+        "server.configuration.external_validation.AliyunPolarDBClient",
+        lambda _: AsyncMock(discover_clusters=AsyncMock(
+            side_effect=TimeoutError("secret must never escape")
+        )),
+    )
+    with pytest.raises(ExternalValidationError) as caught:
+        await validator.validate("aliyun_access", ALIYUN_CONFIG)
+    diagnostic = caught.value.result.as_dict()
+    assert diagnostic["checks"][-1] == {
+        "service": "polardb", "region_id": "cn-beijing",
+        "network": "vpc", "endpoint": "polardb-vpc.cn-beijing.aliyuncs.com",
+        "stage": "polardb", "status": "FAILED",
+        "error_code": "OPENAPI_CONNECT_FAILURE",
+    }
+    assert "secret" not in json.dumps(diagnostic)
+
+
+def test_unknown_failure_does_not_claim_network_failure():
+    assert map_openapi_error(ValueError("internal detail"), "polardb").code == (
+        "OPENAPI_CHECK_FAILED"
+    )
+
+
+@pytest.mark.parametrize(
+    ("cause", "expected"),
+    [
+        (ConnectionRefusedError("private detail"), "OPENAPI_CONNECT_FAILURE"),
+        (socket.gaierror("private detail"), "OPENAPI_DNS_FAILURE"),
+        (ssl.SSLError("private detail"), "OPENAPI_TLS_FAILURE"),
+        (ValueError("private detail"), "OPENAPI_CHECK_FAILED"),
+    ],
+)
+def test_sdk_retry_wrapper_preserves_transport_error_classification(cause, expected):
+    from Tea.exceptions import RetryError, UnretryableException
+    from Tea.request import TeaRequest
+    from server.aliyun.polardb_client import OpenAPIError
+
+    retry = RetryError("private detail")
+    retry.__context__ = cause
+    sdk_error = UnretryableException(TeaRequest(), retry)
+    wrapped = OpenAPIError("UnretryableException", "private detail")
+    wrapped.__cause__ = sdk_error
+    mapped = map_openapi_error(wrapped, "polardb")
+    assert mapped.code == expected
+    assert "private detail" not in mapped.message
+
+
+def test_sdk_retry_wrapper_cycle_does_not_loop():
+    from Tea.exceptions import UnretryableException
+    from Tea.request import TeaRequest
+
+    error = UnretryableException(TeaRequest(), ValueError("inner"))
+    error.inner_exception = error
+    assert map_openapi_error(error, "polardb").code == "OPENAPI_CHECK_FAILED"
+
+
 @pytest.mark.parametrize(
     ("sdk_code", "expected"),
     [
@@ -282,7 +341,7 @@ async def test_direct_dry_run_failure_does_not_copy_identity_from_sdk_body(
     with pytest.raises(ExternalValidationError) as error:
         await validator.validate("aliyun_access", ALIYUN_CONFIG)
 
-    payload = json.dumps(error.value.__dict__, default=str)
+    payload = json.dumps(error.value.result.as_dict())
     assert error.value.request_id == "polardb-request:failure"
     assert "identity" not in payload
     assert "TEST1234567890ABCD" not in payload
@@ -405,6 +464,30 @@ async def test_aliyun_plan_runs_external_validation_without_writes(
         ],
     }
     assert await context.repository.global_version() == before
+
+
+async def test_failed_plan_includes_normalized_defaults_and_safe_checks(context):
+    diagnostic = ExternalValidationResult(status="FAILED", checks=(
+        ExternalValidationCheck(
+            service="polardb", network="public", endpoint="polardb.aliyuncs.com",
+            status="FAILED", region_id="cn-hangzhou", stage="polardb",
+            error_code="OPENAPI_CONNECT_FAILURE",
+        ),
+    ))
+    validator = AsyncMock()
+    validator.validate.side_effect = ExternalValidationError(
+        "OPENAPI_CONNECT_FAILURE", "Connection failed", result=diagnostic,
+    )
+    service = ConfigService(context.repository, context.crypto, external_validator=validator)
+    result = await service.execute(ConfigCommand(
+        action=ConfigAction.PLAN, module="aliyun_access",
+        config={"credential_mode": "direct_ak", "direct_ak": ALIYUN_CONFIG["direct_ak"]},
+    ), ADMIN)
+    assert not result.plan["valid"]
+    assert result.plan["config"]["region_id"] == "cn-hangzhou"
+    assert result.plan["config"]["openapi_network"] == "public"
+    assert result.plan["external_validation"] == diagnostic.as_dict()
+    assert "test-secret" not in json.dumps(result.plan)
 
 
 async def test_aliyun_plan_serializes_masked_direct_identity_only(

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.models import (
@@ -111,8 +113,8 @@ async def _add_active_resource(session, space: PolarRAGSpace) -> None:
 
 
 @pytest.fixture
-async def seeded():
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+async def seeded(tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'catalog.db'}", connect_args={"timeout": 0.1})
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -495,8 +497,12 @@ async def test_sync_space_catalog_resolves_native_owner_for_bound_source_user(
     assert resource.sync_status == KnowledgeResourceSyncStatus.ACTIVE
 
 
+@pytest.mark.parametrize(("source_status", "age_days", "resolved"), [
+    ("active", 365, True), ("stale", 0, True), ("stale", 365, False), ("disabled", 0, False),
+])
 async def test_sync_space_catalog_resolves_stale_source_owner(
     seeded,
+    source_status, age_days, resolved,
 ) -> None:
     session, space, _owner = seeded
     source = EnterpriseIdentitySource.create(
@@ -504,8 +510,8 @@ async def test_sync_space_catalog_resolves_stale_source_owner(
         provider=IdentitySourceProvider.FEISHU,
         tenant_id="tenant-stale",
     )
-    source.status = EnterpriseIdentitySourceStatus.ACTIVE
-    source.last_synced_at = datetime.now(UTC).replace(year=2020)
+    source.status = EnterpriseIdentitySourceStatus(source_status)
+    source.last_synced_at = datetime.now(UTC) - timedelta(days=age_days)
     session.add(source)
     await session.flush()
     await upsert_external_user(
@@ -534,8 +540,8 @@ async def test_sync_space_catalog_resolves_stale_source_owner(
     result = await sync_space_catalog(session, space, FakeCatalogClient([record]))
     resource = (await session.execute(select(KnowledgeResource))).scalar_one()
 
-    assert result["owner_unresolved"] == 0
-    assert resource.owner_pas_user_id is not None
+    assert result["owner_unresolved"] == (0 if resolved else 1)
+    assert (resource.owner_pas_user_id is not None) == resolved
 
 
 async def test_sync_space_catalog_rejects_internal_user_id_as_polarrag_owner(
@@ -650,3 +656,84 @@ async def test_periodic_sync_keeps_catalog_enabled_on_transient_failure(
         assert stored_space.enabled is True
         assert resource.enabled is True
         assert resource.sync_status == KnowledgeResourceSyncStatus.ACTIVE
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel", "disable", "reclaim"])
+@pytest.mark.parametrize("targeted", [False, True])
+async def test_catalog_fetch_releases_writer_and_fences_publish(seeded, outcome, targeted):
+    from server.api.polarrag import disable_space
+    from server.configuration.repository import ConfigRepository
+    from server.features.knowledge import KnowledgeRuntime, KnowledgeState
+    from server.polarrag.catalog import claim_space_catalog_sync, run_claimed_space_catalog_sync
+
+    session, space, owner = seeded
+    await _add_active_resource(session, space)
+    factory = async_sessionmaker(session.bind, expire_on_commit=False)
+    space_id, instance_id = space.knowledge_space_id, space.polarrag_instance_id
+    assert await claim_space_catalog_sync(session, space_id, "worker")
+    entered, release = asyncio.Event(), asyncio.Event()
+    writes = []
+
+    @event.listens_for(session.bind.sync_engine, "before_cursor_execute")
+    def record_write(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith("UPDATE") and asyncio.current_task().get_name() == "catalog-publish":
+            writes.append(statement)
+
+    class Client:
+        async def list_knowledge_bases_page(self, upstream_space_id, *, cursor, **kwargs):
+            if cursor is None:
+                return [PolarRAGKnowledgeBaseRecord(
+                    space_id="space-a", kb_id="public-kb", name="Changed", kb_type="PUBLIC",
+                    identity_domain="tenant-a", owner=None,
+                )], "second"
+            entered.set()
+            await release.wait()
+            if outcome == "failure":
+                raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE)
+            return [], None
+
+    task = asyncio.create_task(run_claimed_space_catalog_sync(
+        factory, space_id, "worker", client_factory=lambda _: Client(),
+        kb_ids=["public-kb"] if targeted else None,
+    ), name="catalog-publish")
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        runtime = KnowledgeRuntime(KnowledgeState(ConfigRepository(factory)), managed=True, replica_id="probe")
+        await runtime.heartbeat()
+        async with factory() as other:
+            # An unrelated committed write must remain possible during every HTTP wait.
+            await other.execute(update(User).where(User.id == owner.id).values(display_name="Committed"))
+            await other.commit()
+            if outcome == "disable":
+                await disable_space(instance_id, "space-a", admin=owner, session=other)
+            elif outcome == "reclaim":
+                await other.execute(update(PolarRAGSpace).where(
+                    PolarRAGSpace.knowledge_space_id == space_id,
+                ).values(catalog_sync_worker_id="replacement"))
+                await other.commit()
+        if outcome == "cancel":
+            task.cancel()
+        release.set()
+        if outcome == "failure":
+            with pytest.raises(PolarRAGUpstreamError):
+                await task
+        elif outcome == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            result = await task
+            assert (result is not None) == (outcome == "success")
+        async with factory() as check:
+            resource = await check.scalar(select(KnowledgeResource))
+            assert resource.name == ("Changed" if outcome == "success" else "Public")
+            assert resource.enabled == (outcome != "disable")
+            assert (await check.get(User, owner.id)).display_name == "Committed"
+        await runtime.heartbeat()
+        if outcome == "success":
+            assert writes[0].startswith("UPDATE polarrag_spaces")
+            assert any(sql.startswith("UPDATE knowledge_resources") for sql in writes)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

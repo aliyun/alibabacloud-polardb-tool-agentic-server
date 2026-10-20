@@ -16,7 +16,7 @@ from server.configuration.module_migrations import ModuleMigrationError
 from server.configuration.repository import ConfigRepository
 from server.configuration.runtime import project_app_config
 from server.core.config_crypto import ConfigCrypto
-from server.db.engine import enable_sqlite_foreign_keys
+from server.db.engine import enable_sqlite_foreign_keys, sqlite_connect_args
 from server.db import schema_contract
 from server.db.legacy_f6_schema_repair import (
     LegacyF6SchemaState,
@@ -63,7 +63,7 @@ async def check_database_schema(
     known_revisions = {
         revision.revision for revision in script.walk_revisions()
     }
-    engine = create_async_engine(url, poolclass=NullPool)
+    engine = create_async_engine(url, poolclass=NullPool, connect_args=sqlite_connect_args(url))
     enable_sqlite_foreign_keys(engine)
     try:
         async with engine.connect() as connection:
@@ -170,7 +170,7 @@ async def check_database_compatibility(
         encryption_key = settings.encryption_key
 
     revision = await check_database_schema(database_url)
-    engine = create_async_engine(database_url, poolclass=NullPool)
+    engine = create_async_engine(database_url, poolclass=NullPool, connect_args=sqlite_connect_args(database_url))
     enable_sqlite_foreign_keys(engine)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     try:
@@ -216,7 +216,7 @@ async def inspect_database(database_url: str | None = None) -> dict:
         "current_heads": [],
         "pending_revisions": [],
     }
-    engine = create_async_engine(url, poolclass=NullPool)
+    engine = create_async_engine(url, poolclass=NullPool, connect_args=sqlite_connect_args(url))
     try:
         async with engine.connect() as connection:
             heads = await connection.run_sync(lambda sync: MigrationContext.configure(sync).get_current_heads())
@@ -244,7 +244,8 @@ def migrate_database(
     *,
     operation_id: str | None = None,
     reporter: Callable[[str], None] | None = None,
+    maintenance: bool = False,
 ) -> None:
     from server.db.migration_runner import migrate
     url = database_url or load_bootstrap_settings().database_url
-    migrate(url, operation_id, reporter)
+    migrate(url, operation_id, reporter, maintenance=maintenance)

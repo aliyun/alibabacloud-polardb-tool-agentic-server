@@ -69,6 +69,39 @@ describe('Agents page', () => {
 
   })
 
+  it('creates SCOPED with automatic binding selected', async () => {
+    const user = userEvent.setup()
+    vi.mocked(createAgent).mockResolvedValue({ data: agent } as never)
+    render(<MemoryRouter><Agents /></MemoryRouter>)
+    await user.click(await screen.findByRole('button', { name: /create agent/i }))
+    expect(screen.queryByRole('checkbox', { name: /automatically bind/i })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('radio', { name: 'SCOPED' }))
+    await user.click(screen.getByRole('checkbox', { name: /automatically bind/i }))
+    await user.type(screen.getByLabelText(/^name$/i), 'scoped-agent')
+    await user.click(screen.getByRole('button', { name: /save agent/i }))
+    await waitFor(() => expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({
+      knowledge_scope_mode: 'SCOPED', external_knowledge_auto_bind_enabled: true,
+    })))
+  })
+
+  it('clears automatic binding when returning to LEGACY_ALL', async () => {
+    const user = userEvent.setup()
+    vi.mocked(createAgent).mockResolvedValue({ data: agent } as never)
+    render(<MemoryRouter><Agents /></MemoryRouter>)
+    await user.click(await screen.findByRole('button', { name: /create agent/i }))
+    await user.click(screen.getByRole('radio', { name: 'SCOPED' }))
+    await user.click(screen.getByRole('checkbox', { name: /automatically bind/i }))
+    await user.click(screen.getByRole('radio', { name: 'LEGACY_ALL' }))
+    await user.click(screen.getByRole('radio', { name: 'SCOPED' }))
+    expect(screen.getByRole('checkbox', { name: /automatically bind/i })).not.toBeChecked()
+    await user.click(screen.getByRole('radio', { name: 'LEGACY_ALL' }))
+    await user.type(screen.getByLabelText(/^name$/i), 'legacy-agent')
+    await user.click(screen.getByRole('button', { name: /save agent/i }))
+    await waitFor(() => expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({
+      knowledge_scope_mode: 'LEGACY_ALL', external_knowledge_auto_bind_enabled: false,
+    })))
+  })
+
   it('changes status only after confirmation and asks clients to reconnect', async () => {
     const user = userEvent.setup()
     render(

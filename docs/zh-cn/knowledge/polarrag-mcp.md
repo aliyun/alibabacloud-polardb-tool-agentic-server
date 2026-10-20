@@ -9,9 +9,12 @@ PAS 可以管理多个 PolarRAG 实例，并向经过认证的人类用户开放
 飞书目录身份源及其 Space 绑定的管理员配置，请参见
 [企业身份源](../administration/enterprise-identity-sources.md)。
 
+在 Qwen Work 中进行中英文分路检索并依据证据回答，请参见
+[Polar 知识库问答 Skill](../../../skills/polar-knowledge/README.md)。
+
 ## 安全边界
 
-个人 `/mcp/personal` 连接直接使用员工身份，无需 Agent 边界；可见性与每次上游文档 ACL 检查仍为必需。个人连接提供读取，下文委托上传与管理流程保留原 Agent 连接。参见[账号与资源](../administration/accounts-and-resources.md)。
+个人 `/mcp/personal` 连接直接使用员工身份，无需选择 Agent，但仅允许检索、读取本人拥有的 PERSONAL 知识库，不允许访问 PUBLIC 或他人的 PERSONAL 知识库。可见性与每次上游文档 ACL 检查仍为必需。PUBLIC 知识库及下文委托上传与管理流程使用已授权的 Agent 连接。参见[账号与资源](../administration/accounts-and-resources.md)。
 
 只有 subject 为 `user:<pas_user_id>` 的 MCP access token 才能看到并调用
 PolarRAG Tool。通过旧 `/mcp` 浏览器 OAuth 登录时，PAS 会解析用户 Workspace 的默认 Agent，
@@ -59,7 +62,7 @@ PolarRAG 管理能力统一放在现有 PAS 页面：
 - 进入 **Users**，点击某个用户行的 **Enterprise Identity**，即可绑定已同步的飞书
   或 SharePoint 身份，并新增、停用或删除手工维护的 Feishu、SharePoint 或原生
   PolarRAG user/group 主体。PAS Department 与外部企业组仍相互独立。
-- 已认证用户可进入 **My Instances** 查看自己可访问的数据库实例和知识空间。
+- 已认证用户可进入独立的**知识库**页面（`/my-resources`），按已分配的 Agent 查看可访问的知识资源。
   非管理员用户选择已分配的 Agent 后，会在分页的 **知识库** 抽屉中查看该 Agent
   的知识库；每项显示知识库名称及其 opaque PAS 知识资源 ID。仅注册 PolarRAG
   实例不会授予用户权限；管理员还必须启用并同步 Space，且用户必须在该
@@ -75,15 +78,30 @@ PolarRAG 管理能力统一放在现有 PAS 页面：
   `POLARRAG_AUTH_FAILED`，两者都不会包含上游响应体。用户还可通过
   **Manage documents** 按文件名查找文档并请求删除或 rechunk；
   PAS 继续传递同一份可信身份上下文，PolarRAG 分别执行 `MANAGE` 和 `EXECUTE`
-  鉴权。管理员不能上传或管理文档。如果 **Upload** 按钮不可用，悬浮提示会要求用户
+  鉴权。管理员不能上传或管理文档。窄屏可横向滚动文档表格查看权限；权限标签在列内换行，
+  操作列保持固定。如果 **Upload** 按钮不可用，悬浮提示会要求用户
   联系管理员配置并验证该 Space 的 OSS AccessKey 凭据。PolarRAG 接收上传后，PAS
-  留在 **My Instances** 显示接收结果。用户手动打开 **Manage documents** 时，页面按
+  留在**知识库**页面显示接收结果。用户手动打开 **Manage documents** 时，页面按
   READ ACL 加载一页 20 个文档及其当前状态；**Previous**、**Next** 和 **Refresh**
   都由用户显式触发，PAS 不在后台轮询。
-  当 PolarRAG 返回相应字段时，表格同时显示文档大小、分块数和上传时间。
+  PolarRAG 1.0.7 及以上版本使用页码分页、显示精确总数，并保持插件按
+  `updated_at` 倒序返回的顺序；当 PolarRAG 返回相应字段时，表格同时显示文档
+  大小、分块数、更新时间和当前用户的生效权限操作；悬浮权限区域可查看经校验的
+  principal grants。更早版本继续使用 opaque 文档游标，不提供总数，并将权限显示为
+  当前版本不可用。
+  只有已登记的 PolarRAG 插件版本为 1.0.7 及以上时，重新分块弹窗才提供
+  **强制重新分块**；低版本或未知版本的 `force=true` 请求会被 PAS 拒绝，普通重新分块仍可使用。
 - 管理员在 Agent 详情页使用**配置企业访问**完成常规的身份源、主体与 Space 配置；
-  既有实例、PUBLIC 范围、用户与组控件仍用于高级操作。被分配用户
-  在 **My Instances > MCP connections** 管理自己的 `pas_user_agent_` Token。
+  既有实例、PUBLIC 范围、用户与组控件仍用于高级操作。
+  已映射到 PAS 用户的企业用户与本地用户统一在后端分页的**用户**页签选择；
+  **身份源名称**列展示关联的企业身份源，本地用户显示 `PAS`。一个用户关联多个
+  身份源时仍只占一行，展示全部来源名称；“未加入 / 已加入 Agent”筛选继续生效。
+  绑定企业身份源后，其符合授权条件的映射用户和目录组归入**已加入 Agent**，
+  并注明继承来源。如需单独管理这些子项，请先从 Agent 解绑身份源；原有直接绑定
+  仍保留。该分类采用后端分页，不会额外授予访问权限。
+  未映射的目录用户不展示，身份源快照是否有效仍由访问授权检查决定。
+  解绑最后一个身份源–Space 关系时，保留 Agent 的空 PolarRAG 实例绑定。
+  用户在**连接 MCP**管理自己的 `pas_user_agent_` Token。
   管理员只能查看状态和强制吊销，不能读取明文。builtin 和 SSO 用户都使用当前
   已认证 Session 读取自己的已有 Token，PAS 不会再次要求输入密码。执行 `issue`
   和 `regenerate` 时，响应只会通过 `Cache-Control: no-store` 返回一次新明文。
@@ -226,6 +244,28 @@ PUBLIC/PERSONAL KB 上传策略，返回权威文档 ID 并生成最终文档 AC
 `knowledge_resource_id`；PAS 会验证文档确实属于所选资源，且不接受调用方传入身份或 ACL 字段。成功的变更会写入现有
 PolarRAG 审计分类。
 
+## PolarRAG 1.0.7 兼容性
+
+PAS 注册或更新实例时要求 PolarRAG 不低于 1.0.6；更早或无法识别的插件版本返回
+`POLARRAG_VERSION_UNSUPPORTED` 并拒绝注册。PAS 读取
+`GET /_plugins/_polar_rag/_version`，仅当返回明确的 PolarRAG 语义版本
+不低于 1.0.7 时启用新版文档契约，包括
+`t-polardb-rag-1.0.7-20260914161410.al8.x86_64` 这类软件包版本。1.0.6 保留旧版
+文档读取和单 KB 检索契约；两个受支持版本的 PAS 批量文档提交都使用
+`managed_documents/_bulk`。
+
+对于 1.0.7 及以上版本，PAS 会把从可信资源映射中取得的 `kb_ids` 传给受保护的
+文档读取、上下文、分块列表、文件名查找、文档内搜索和知识搜索接口；调用方仍只能
+提供 opaque PAS 资源 ID。同一实例、同一 Space 内多个已授权知识库的搜索或文件名
+查找会按运行时 `max_kb_ids` 上限拆分为多次上游 `kb_ids` 请求；PAS 再通过已授权的
+KB 到资源映射关联每条结果，并拒绝集合之外的结果。PolarRAG 1.0.6 仍逐 KB 请求，
+并保持原有部分失败行为。
+
+文档列表改用插件 managed-document 页码接口并设置 `sort_by=updated_at`，响应包含
+`total`、`page` 和 `size`。对应的平台列表路由接受 `page`，同时保留旧插件所需的
+`cursor`。分块列表只在插件返回 `hits.total.relation=eq` 时信任精确总数；旧响应仍
+通过兼容探测判断是否存在下一页。
+
 Space 启用请求只接受 `space_id`。Space 名称和不可修改的 `identity_domain`
 必须来自可信上游枚举响应，管理员不能手工输入或覆盖。
 Spaces 抽屉会显示 Space 是否启用、最后同步时间和分页的已同步知识库目录，包括 owner
@@ -273,7 +313,7 @@ PAS Department 继续承载本地组成员关系。本地组与外部企业组�
 - `kb_search(query, knowledge_resource_ids?, search_mode?, top_k?,
   min_score?, reranker?)`；
 - `kb_fetch_context(knowledge_resource_id, doc_id, chunk_index,
-  window_size?)`；
+  window_size?, expected_doc_generation?, query?)`；
 - `doc_list_chunks(knowledge_resource_id, doc_id, offset?, limit?)`；
 - `doc_find_by_name(knowledge_resource_ids, filename, limit?)`；
 - `doc_status(knowledge_resource_id, doc_id)`；
@@ -281,10 +321,28 @@ PAS Department 继续承载本地组成员关系。本地组与外部企业组�
 - `doc_get_original(knowledge_resource_id, doc_id)`；
 - `doc_delete(knowledge_resource_id, doc_id)`；
 - `doc_rechunk(knowledge_resource_id, doc_id, chunk_strategy?,
-  chunk_max_tokens?)`。
+  chunk_max_tokens?, force?)`。
 
 `kb_search`、`kb_fetch_context`、`doc_list_chunks` 与 `doc_recall` 返回的
 Chunk source 都包含 `image_resources`；当前 Chunk 没有归属的提取图片时为空数组。
+
+检索命中保留 `doc_generation`，它表示索引 generation，而非业务文档版本。
+调用 `kb_fetch_context` 扩展该命中时，将它原样传入 `expected_doc_generation`；
+generation 0 有效。可选 pin 接受 0 到 2147483647 的整数。
+既有不传 pin 的调用仍然受支持，但无法保证与此前检索命中的一致性。
+
+固定 generation 的读取在已发布 generation 变化、不可见或缺失，以及目标 Chunk
+不存在时返回 `citation_source_changed`。丢弃旧命中及已组装上下文。
+如果提供可选的原始 `query`，PAS 在同一文档和 KB 内重新执行一次 `doc_recall`，
+随后使用新命中的 `chunk_index` 和 `doc_generation` 读取上下文。
+该恢复只在同文档内重新定位片段，不等同于重跑跨 KB 检索。
+没有新命中、缺少 generation 或再次冲突时，以 `citation_source_changed` 结束。
+禁止通过移除 pin 或复用旧 Chunk 恢复。
+
+未传 `query` 时，MCP 调用方收到冲突后应使用原查询与原选择条件，最多重跑一次
+原来的 `kb_search` 或 `doc_recall`，再使用新命中及其 generation pin 获取上下文。
+如果 PAS 已使用 `query` 尝试恢复，则遇到返回的冲突应停止，不能再启动重试循环。
+ACL 错误保留原有错误码，不触发 generation 恢复。
 
 用户专用 Agent Token 的目录还包含：
 
@@ -296,7 +354,7 @@ Chunk source 都包含 `image_resources`；当前 Chunk 没有归属的提取图
 全部资源；显式列表和有效范围受 `max_exhaustive_knowledge_resources` 限制（默认
 1000），PAS 不会静默截断。PAS 按 PolarRAG 实例和 Space 分组检索，再按 score
 合并、去重，并返回脱敏 `partial_failures`。
-PolarRAG 1.0.6 及以下使用旧单值 `kb_id` 请求；1.0.7 及以上先读取
+PolarRAG 1.0.6 使用旧单值 `kb_id` 请求；1.0.7 及以上先读取
 `GET /_plugins/_polar_rag/_search_capabilities`，再按返回的 `max_kb_ids` 分批发送
 `kb_ids`。
 
@@ -339,6 +397,8 @@ PAS 不会暴露上游响应体、Space 标识、request id、账号、Endpoint 
 `doc_delete` 是破坏性操作，只会在 PolarRAG 通过 `MANAGE` 鉴权后执行。
 `doc_rechunk` 要求 PolarRAG `EXECUTE` 权限；`chunk_strategy` 可选 `hybrid`、
 `hierarchical` 或 `inherit`。`inherit` 恢复当前 Space 默认策略，可能返回 `noop`。
+`force` 默认为 `false`；仅 PolarRAG 1.0.7 及以上可设为 `true`，否则返回
+`POLARRAG_VERSION_UNSUPPORTED`。
 两个 Tool 都会先验证文档属于所选知识资源，并且只使用服务端推导的 ACL 上下文。
 标记为 `EXTERNAL_SYNC` 的知识资源在 PAS 中只读；准备/完成上传、直接上传、删除和
 重新切分都会在 OSS 或 PolarRAG 产生副作用前返回
@@ -393,3 +453,24 @@ principals、user actor 和 `POLARRAG_DERIVED` ACL 标记。配置的共享 Open
 
 不兼容的实例会被标记为 `capability_missing`；Space 枚举或启用返回
 `OPERATION_NOT_SUPPORTED`。PAS 不接受手工提供目录事实作为降级方案。
+
+## 飞书知识库范围发现
+
+ETL Link 可以导入带代际保护的快照，把一个飞书 Wiki Space 与一个 PolarRAG
+知识库资源关联。PAS 将来源主体与文档 ACL 分开保存，并投影到现有
+`EXTERNAL_SYNC` Agent 知识范围。只有 Agent 已绑定目标 PolarRAG 实例、使用
+`SCOPED` 知识范围且显式开启外部知识自动绑定时才会投影；该过程不会把飞书用户
+自动添加为 Agent 成员。
+
+不同快照代际按 ETL 行的 `updated_at` 排序。PAS 在应用更新时锁定既有快照，拒绝
+更旧或无法排序的不同代际，并允许同一代际幂等重放；因此直接导入接口在变更
+`generation` 时必须提供 `source_updated_at`，且不会对 opaque generation 做字典序
+比较。PAS 只在该身份源已绑定的知识空间内解析 `space_id + kb_id`；如果绑定范围内
+仍命中多个资源，则按歧义目标 fail closed。
+
+管理员可通过
+`GET /api/admin/identity-sources/{source_id}/agents/{agent_id}/users/{external_user_id}/knowledge-resources?access_origin=EXTERNAL_SYNC`
+查看某个飞书用户投影后的资源；登录用户可通过
+`GET /api/me/agents/{agent_id}/knowledge-resources?access_origin=FEISHU`
+查看自己的资源。两个接口均为只读并使用 cursor 分页。检索仍继续应用现有文档级
+ACL 上下文；来源知识库范围发现不会替代或放宽该权限校验。

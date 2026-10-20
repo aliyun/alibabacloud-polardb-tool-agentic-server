@@ -12,8 +12,8 @@ Every endpoint is under `/api` and requires an administrator Session Cookie with
 | --- | --- | --- | --- |
 | Create source | `POST /api/identity-sources` | `name`, `provider`, optional `stale_after_seconds`; Feishu uses `app_id`, `app_secret`; SharePoint uses `tenant_id`, `cloud`, `client_id`, `client_secret` | Creates a pending-verification or pending-binding source. `provider` is `feishu` or `sharepoint`. |
 | Start Feishu tenant verification | `POST /api/identity-sources/{source_id}/feishu-verification` | Path parameter `source_id` | Returns a one-time `authorization_url` for the administrator to open in a browser. Available only to pending Feishu sources. |
-| List sources | `GET /api/identity-sources` | `offset` (default `0`), `limit` (default `20`, maximum `100`), optional `search` | Returns `{items, total, offset, limit}`. Search matches the source name before pagination. Each item includes source state, bound Spaces, latest sync time, sanitized `last_error`, and a separate structured `sync_warning` when a Feishu membership refresh was partial. |
-| Sync now | `POST /api/identity-sources/{source_id}/sync` | Path parameter `source_id` | Starts or joins the serialized refresh for a ready Feishu or SharePoint source. Returns `202` with `last_error=SYNC_IN_PROGRESS` when the request budget expires or a run is already active; the background run continues. |
+| List sources | `GET /api/identity-sources` | `offset` (default `0`), `limit` (default `20`, maximum `100`), optional `search` | Returns `{items, total, offset, limit}`. Search matches the source name before pagination. Each item includes source state, bound Spaces, latest sync time, sanitized `last_error`, Feishu `event_subscription`, and a separate structured `sync_warning` when a Feishu membership refresh was partial. |
+| Sync now | `POST /api/identity-sources/{source_id}/sync` | Path parameter `source_id` | Starts or joins the serialized full refresh for a ready source. Feishu returns `202` immediately with `full_sync_in_progress`; already received incremental events finish before full reconciliation begins. SharePoint retains its synchronous response, or `202` with `last_error=SYNC_IN_PROGRESS` if the request budget expires. |
 | Update source | `PUT /api/identity-sources/{source_id}` | Path parameter `source_id`; `name` and complete current-provider credentials. Feishu uses `app_id`, `app_secret`; SharePoint uses `cloud`, `client_id`, `client_secret` | Updates credentials and clears the latest sync state. Feishu must verify the tenant again; SharePoint retains its tenant ID and syncs again after binding. |
 | Delete source | `DELETE /api/identity-sources/{source_id}` | Path parameter `source_id` | Deletes the source, directory snapshot, Space bindings, and source-derived grants. Existing PAS users remain. |
 | Inspect synchronized directory | `GET /api/identity-sources/{source_id}/directory` | Path parameter `source_id`; `entry_type=users|groups|all`, `offset`, `limit` (default `20`, maximum `100`), optional `search` | Pages synchronized users, groups, or both for operations checks and user-identity selection. Search matches stable external IDs and display fields before pagination. |
@@ -26,6 +26,25 @@ With `entry_type=all`, the same `offset` and `limit` are applied independently
 to both arrays and `total` is `null`; use a type-specific request for a complete
 page sequence and exact total. The console uses these backend pages and never
 loads the complete tenant directory into one response.
+
+Source responses include `snapshot_usable`: `true` for an active source or a
+stale source whose last successful snapshot remains within `stale_after_seconds`.
+A stale source without a successful snapshot is unavailable. This field does not
+replace external Token validation or knowledge-base and document ACL checks.
+
+For Feishu, `event_subscription` contains `status` and `fallback_after_seconds`
+(configurable; default `86400`). Status is `connecting`,
+`connected_unconfirmed`, `active`, or `error`. SharePoint returns
+`event_subscription: null`. This object never contains a connection URL,
+credential, Verification Token, Encrypt Key, or raw event body.
+The source-level `full_sync_in_progress` and `group_sync_in_progress` flags
+distinguish full and group-only work. `last_group_synced_at` and sanitized
+`last_group_error` report the group reconciliation state. Feishu does not run
+fixed daily full reconciliation: after the initial full sync, a fallback is
+due only when incremental events have remained unavailable for the configured
+threshold and the last full sync is at least that old. A connected source without events is healthy. In `error`, PAS attempts the connection up to three times before the threshold-gated full fallback; the full run proceeds even if connection fails and `error` remains. After repairing Feishu, call `POST /api/identity-sources/{source_id}/sync` to try connecting before an immediate full reconciliation. Group-only reconciliation
+runs on its own configurable interval (default one hour). A successful event
+clears the unavailability window. Operators can always request a full sync.
 
 ## Space bindings
 
@@ -72,8 +91,10 @@ remove those global bindings, Agent-instance bindings, or shared PUBLIC scope.
 | Operation | Method and path | Effect |
 | --- | --- | --- |
 | List bindings | `GET /api/admin/agents/{agent_id}/knowledge-bindings` | Returns one paginated row per bound subject, including origin, subject identity, resolved Space/KB identifiers, and the Agent scope mode. Supports `search`, `origin`, and `subject_type`. |
-| List resource options | `GET /api/admin/agents/{agent_id}/knowledge-resource-options` | Returns a searchable page of active knowledge resources inside the Agent-wide PolarRAG ceiling. |
+| List resource options | `GET /api/admin/agents/{agent_id}/knowledge-resource-options` | Returns a searchable page of active KB candidates in bound instances and eligible Spaces. Optional `binding_status=bound\|unbound` filters Agent visibility before pagination and counting. |
 | Batch manual bindings | `POST /api/admin/agents/{agent_id}/knowledge-bindings:batch` | Applies up to 100 ordered `BIND` or `UNBIND` operations atomically; `activate_scoped_mode=true` switches the Agent to `SCOPED`. |
+| Read external auto-binding | `GET /api/admin/agents/{agent_id}/external-knowledge-auto-bind` | Admin only. Returns `agent_id`, `enabled`, and `knowledge_scope_mode`; does not modify permissions. |
+| Set external auto-binding | `PUT /api/admin/agents/{agent_id}/external-knowledge-auto-bind` | Admin only. Body: `{"enabled": true}` or `false`. Enabling reprojects available snapshots for this Agent; disabling removes synchronized scopes/user bindings while preserving manual bindings. Does not change access mode. |
 | Change mode | `PUT /api/admin/agents/{agent_id}/knowledge-scope-mode` | Sets `mode` to `LEGACY_ALL` or `SCOPED`. |
 | Replace external bindings | `PUT /api/admin/identity-sources/{source_id}/agents/{agent_id}/knowledge-bindings/{external_scope_id}` | Idempotently replaces one source-owned full binding snapshot. |
 | Delete external bindings | `DELETE /api/admin/identity-sources/{source_id}/agents/{agent_id}/knowledge-bindings/{external_scope_id}` | Deletes one source-owned binding snapshot. |
@@ -101,6 +122,31 @@ closed instead of silently omitting KBs.
 
 ## PAS user and enterprise-identity mappings
 
+Agent `GET /api/agents/{agent_id}/user-options` accepts `binding_status=bound|unbound`
+(default `unbound`) and paginates by PAS user. It classifies direct bindings and
+access inherited from a bound enterprise identity source before counting and
+pagination. `GET /api/agents/{agent_id}/user-assignments` remains the direct
+assignment and Token-management API.
+Each user includes an `identity_source_names` array. An empty array means no
+associated enterprise source and is displayed as `PAS`. A user linked to multiple
+sources still occupies one record, preserving `total`, `offset`, and `limit`.
+Assignment operations continue to use the PAS user ID.
+
+`GET /api/agents/{agent_id}/group-options` accepts the same `binding_status`
+filter. A directory group covered by a bound identity source appears under
+`bound`, not `unbound`. Both option APIs return `assignment_id` for a direct
+binding and `inherited_source_names` for source-wide inheritance (empty default
+fields may be omitted from group options). A direct binding and inherited access
+produce one row. Inheritance requires a usable source snapshot; a mapped user
+must have an active directory entry or an unexpired local principal snapshot.
+Unrelated PAS users and local groups do not inherit a source binding.
+
+The console marks inherited rows as joined and explains their source. They cannot
+be individually unbound while source-wide access remains. Unbind the parent
+identity source in the Agent first; existing direct bindings are preserved and
+can then be removed separately. This does not change global source–Space bindings
+or the runtime authorization rules.
+
 | Operation | Method and path | Request parameters | Effect |
 | --- | --- | --- | --- |
 | List user mappings | `GET /api/identity-sources/users/{user_id}/identities` | Path parameter `user_id`; `offset` (default `0`), `limit` (default `20`, maximum `100`), optional `search` | Returns `{items, total, offset, limit}` for enterprise identities associated with the PAS user, including user, department, group, and native PolarRAG principals. Search matches the stable external subject before pagination. |
@@ -121,9 +167,135 @@ The user does not need to exist in the directory snapshot.
 
 | Operation | Method and path | Request parameters | Effect |
 | --- | --- | --- | --- |
-| Configure membership snapshot | `PUT /api/identity-sources/{source_id}/acl-membership-snapshot` | Path parameter `source_id`; body `host`, optional `port`, optional `database`, `username`, `password` | Stores an ACL membership snapshot connection for a verified Feishu source. The source returns to pending binding and must sync again. |
+| Configure membership snapshot | `PUT /api/identity-sources/{source_id}/acl-membership-snapshot` | Path parameter `source_id`; body `host`, optional `port`, optional `database`, optional `dialect` (`mysql` or `postgresql`), `username`, optional `password` when editing | Stores a read-only ETL metadata connection for a verified Feishu source. The periodic identity-source job pulls both ACL principal memberships and external KB scope snapshots. Saving preserves the source lifecycle and invalidates only its independent connection verification result. |
 
 This endpoint is only for Feishu deployments that have an ETL ACL membership snapshot. Ordinary Feishu and SharePoint directory synchronization does not need it. The password is write-only and must come from protected automation.
 The local batch API and this legacy database-backed snapshot are mutually
 exclusive. Either endpoint returns `409` with
 `ACL_MEMBERSHIP_BACKEND_CONFLICT` when the other backend is already configured.
+
+MySQL defaults to port `3306`; PostgreSQL defaults to `5432`. The source response
+includes `acl_membership_snapshot_configured` and non-secret connection metadata
+in `acl_membership_snapshot` (dialect, host, port, database, username), never the
+password. A new connection requires a password; omitting it on update preserves
+the existing encrypted password. See the [Knowledge permission data source guide](../administration/enterprise-identity-sources.md#configure-the-knowledge-permission-data-source).
+
+## Enterprise user selectors and identity responses
+
+Administrator authentication remains required. An enterprise identity pair is a
+user selector, not an authentication credential. Existing PAS IDs and all old
+endpoints remain supported; pagination, ordering, names and encoded `external_id`
+keep their original meaning.
+
+For `USER` knowledge subjects, provide either `user_id` or the complete pair:
+
+```json
+{"type":"USER","identity_source_id":"source-id","external_user_id":"enterprise-subject"}
+```
+
+Agent user assignment uses the same selector without `type`. Half a pair or both
+selectors returns 422. Unknown sources or current mappings return 404 without
+creating, synchronizing or allocating a user. Other subject types retain their
+original field combinations. In a batch, old and enterprise selectors for the
+same account are deduplicated before the existing binding transaction. The source
+in an external scope path describes that scope; each enterprise USER must still
+specify its own identity source.
+
+Enterprise-access preview/apply accepts `external_user_ids` under the existing
+`identity_source_id`, up to 500 IDs of 1–255 characters each. `pas_user_ids` still
+defaults to `[]`; explicitly passing this empty array with enterprise IDs is
+supported. Both arrays nonempty returns 422. PAS resolves the current mapping
+before the existing service calculates its unchanged preview hash. A mapping
+change can invalidate the preview: refresh preview after a stale 409 before apply.
+Response `selection` retains `pas_user_ids` and adds `external_user_ids` for the
+selected source.
+
+User-assignment items, user options, knowledge binding USER subjects and knowledge
+subject options add `enterprise_identities`. Each element has only
+`identity_source_id` and `external_user_id`. All current identities are returned
+in deterministic order, with `[]` for unmapped or deleted users. Explicit mapping
+ownership takes precedence over legacy canonical identity fallback; an identity
+reassigned to another account is not returned to the old account. Scope responses
+retain `user_ids` and add `enterprise_users`, each containing `user_id` and
+`enterprise_identities`. Agent create/list/get/patch retain `created_by` and add
+`created_by_enterprise_identities`; this is output information, not an input that
+can override the authenticated creator.
+
+The four identity-mapping compatibility endpoints are:
+
+| Method | Path |
+| --- | --- |
+| GET | `/api/identity-sources/enterprise-users/identities` |
+| POST | `/api/identity-sources/enterprise-users/identities` |
+| PUT | `/api/identity-sources/enterprise-users/identities/{identity_id}` |
+| DELETE | `/api/identity-sources/enterprise-users/identities/{identity_id}` |
+
+All require query `identity_source_id` and `external_user_id` to select the target
+PAS account. GET retains `offset`, `limit` and `search`. POST/PUT body fields
+`identity_source_id` and `external_user_id` describe the identity being bound or
+replaced, which can belong to a different source from the target query. Encode
+query values normally, including subjects containing `/` or `:`. Existing synced
+identity edit/unbind restrictions, conflict checks, default-account restoration
+and audit semantics remain in force. The four old `/users/{user_id}/identities`
+operations continue to work.
+
+The following existing operations support the selectors or additive identity
+responses described above:
+
+| Method | Path |
+| --- | --- |
+| POST | `/api/agents/{agent_id}/enterprise-access/preview` |
+| POST | `/api/agents/{agent_id}/enterprise-access/apply` |
+| GET | `/api/admin/agents/{agent_id}/knowledge-bindings` |
+| POST | `/api/admin/agents/{agent_id}/knowledge-binding-status` |
+| POST | `/api/admin/agents/{agent_id}/knowledge-subject-options` |
+| POST | `/api/admin/agents/{agent_id}/knowledge-bindings:batch` |
+| PUT | `/api/admin/identity-sources/{source_id}/agents/{agent_id}/knowledge-bindings/{external_scope_id}` |
+| GET | `/api/agents/{agent_id}/user-assignments` |
+| POST | `/api/agents/{agent_id}/user-assignments` |
+| GET | `/api/agents/{agent_id}/user-options` |
+| POST | `/api/agents` |
+| GET | `/api/agents` |
+| GET | `/api/agents/{agent_id}` |
+| PATCH | `/api/agents/{agent_id}` |
+| GET | `/api/identity-sources/users/{user_id}/identities` |
+| POST | `/api/identity-sources/users/{user_id}/identities` |
+| PUT | `/api/identity-sources/users/{user_id}/identities/{identity_id}` |
+| DELETE | `/api/identity-sources/users/{user_id}/identities/{identity_id}` |
+
+
+## Independent ETL permission operations
+
+| Operation | Endpoint | Behavior |
+|---|---|---|
+| Status | `GET /api/identity-sources/{source_id}/etl-permissions` | Admin only; connection verification, last permission import result/time/counts, sanitized errors. |
+| Verify connection | `POST /api/identity-sources/{source_id}/etl-permissions/verify` | Admin only, no body; `202` accepted. Checks read access without importing. |
+| Fetch ETL permissions | `POST /api/identity-sources/{source_id}/etl-permissions/sync` | Admin only, no body; `202` accepted. Imports KB permission snapshots and reprojects enabled Agents without directory synchronization. |
+| Recompute Agent | `POST /api/admin/agents/{agent_id}/external-knowledge-bindings/reconcile` | Admin only, no body; `200` with snapshot/binding counts. Requires SCOPED and enabled auto-binding (`409` otherwise). Replays PAS snapshots; no ETL read. |
+
+ETL results are separate from identity source lifecycle and directory errors.
+Poll the status endpoint after `202`: acceptance does not mean completion.
+`RUNNING`, `SUCCEEDED`, `PARTIAL`, and `FAILED` describe the latest operation;
+`connection` and `sync` retain separate verification/import results.
+Concurrent ETL triggers or connection edits during a live operation return `409`.
+An operation is limited to 120 seconds; a crashed worker lease expires after 300
+seconds and can then be retried. Raw database errors and credentials are not returned.
+
+## DingTalk
+
+`POST /api/identity-sources` supports `provider="dingtalk"` with `tenant_id` (corpId),
+`client_id` (AppKey), `client_secret` (AppSecret). Initial status is
+`pending_tenant_verification`; `stale_after_seconds` is capped at 900.
+`POST /api/identity-sources/{source_id}/dingtalk-verification` requires an administrator
+and returns `authorization_url` with a browser-bound state cookie. The callback is
+`GET /auth/dingtalk/callback`; login starts at `GET /auth/dingtalk/login?source_id=...`.
+Both entry points require a configured absolute HTTP(S)
+`runtime_policy.external_base_url`. A missing or invalid URL returns `409` before
+creating authorization state or a cookie: verification returns an actionable
+JSON error, and sign-in returns a bilingual configuration page. No callback
+origin is inferred from request headers. Retry after activating a valid URL.
+States are single-use, expire after ten minutes and are invalidated by app rotation.
+Source responses add `permission_observed_at`, `permission_error` and
+`supported_principal_types=["user","department","domain"]`.
+The ETL permission database configuration and scope import APIs also support DingTalk.
+`access_origin=DINGTALK` selects DingTalk in knowledge-resource discovery.

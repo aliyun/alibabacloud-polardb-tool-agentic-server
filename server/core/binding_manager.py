@@ -164,6 +164,7 @@ async def _create_instance_credential(
 
     # Create account via OpenAPI
     client = await get_polardb_client_async(session)
+    client = client.for_region(instance.region)
     await client.create_account(instance.cluster_id, account_name, password)
 
     # Store encrypted password

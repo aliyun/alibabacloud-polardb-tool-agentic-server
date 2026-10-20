@@ -24,7 +24,7 @@ from server.models.base import Base, TimestampMixin, generate_uuid
 
 
 EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS = frozenset(
-    {"feishu", "sharepoint"}
+    {"feishu", "sharepoint", "dingtalk"}
 )
 ACL_CONTEXT_PRINCIPAL_PROVIDERS = (
     EXTERNAL_ENTERPRISE_PRINCIPAL_PROVIDERS | {"polarrag"}
@@ -261,7 +261,7 @@ class EnterprisePrincipalAssignment(TimestampMixin, Base):
             name="uq_enterprise_user_principal_key",
         ),
         CheckConstraint(
-            "provider IN ('feishu', 'sharepoint', 'polarrag')",
+            "provider IN ('feishu', 'sharepoint', 'dingtalk', 'polarrag')",
             name="ck_enterprise_principal_provider",
         ),
         CheckConstraint(

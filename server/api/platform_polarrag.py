@@ -8,6 +8,7 @@ from fastapi import (
     APIRouter,
     Depends,
     File,
+    Form,
     HTTPException,
     Path,
     Query,
@@ -39,10 +40,12 @@ from server.api.polarrag_documents import (
     ListDocumentsRequest,
     _member_access,
     _upstream_error,
+    attach_document_permissions,
     delete_document,
     find_documents,
     list_documents,
     upload_document,
+    upload_documents_batch,
 )
 from server.config import get_config
 from server.db.engine import get_session
@@ -58,6 +61,7 @@ from server.models import (
 from server.polarrag.access import list_visible_knowledge_resources_cursor_page
 from server.polarrag.client import client_from_instance
 from server.polarrag.contracts import PolarRAGUpstreamError
+from server.polarrag.resource_selector import knowledge_resource_pairs
 
 router = APIRouter(prefix="/v1", tags=["platform-polarrag"])
 
@@ -122,6 +126,7 @@ class DocumentRechunkRequest(BaseModel):
 
     chunk_strategy: Literal["inherit", "hybrid", "hierarchical"] = "inherit"
     chunk_max_tokens: int | None = Field(default=None, ge=1, le=100_000)
+    force: bool = False
 
     @model_validator(mode="after")
     def validate_inherited_strategy(self) -> "DocumentRechunkRequest":
@@ -194,6 +199,9 @@ class SpaceResponse(BaseModel):
 class DocumentListResponse(BaseModel):
     items: list[dict[str, Any]]
     next_cursor: str | None
+    total: int | None = None
+    page: int | None = None
+    size: int | None = None
 
 
 class DocumentChunkListResponse(BaseModel):
@@ -204,9 +212,50 @@ class DocumentChunkListResponse(BaseModel):
     next_offset: int | None
 
 
+_DOCUMENT_PAGE_CURSOR_V1_PREFIX = "pas-document-page-v1:"
+_DOCUMENT_PAGE_CURSOR_V2_PREFIX = "pas-document-page-v2:"
+
+
+def _decode_document_page_cursor(
+    cursor: str | None,
+) -> tuple[int, int | None] | None:
+    if cursor is None:
+        return None
+    if cursor.startswith(_DOCUMENT_PAGE_CURSOR_V2_PREFIX):
+        value = cursor.removeprefix(_DOCUMENT_PAGE_CURSOR_V2_PREFIX)
+        parts = value.split(":")
+        if (
+            len(parts) == 2
+            and all(part.isascii() and part.isdigit() for part in parts)
+            and int(parts[0]) >= 1
+            and int(parts[1]) >= 1
+        ):
+            return int(parts[0]), int(parts[1])
+    elif cursor.startswith(_DOCUMENT_PAGE_CURSOR_V1_PREFIX):
+        pass
+    else:
+        return None
+    raise HTTPException(
+        status_code=400,
+        detail={"code": "INVALID_CURSOR", "message": "Cursor is invalid."},
+    )
+
+
+def _encode_document_page_cursor(page: int, size: int) -> str:
+    if page < 1 or size < 1:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_CURSOR", "message": "Cursor is invalid."},
+        )
+    return f"{_DOCUMENT_PAGE_CURSOR_V2_PREFIX}{page}:{size}"
+
+
 class SearchHitResponse(BaseModel):
     knowledge_resource_id: str | None
     doc_id: str | None
+    doc_generation: int | None = None
+    filename: str | None
+    source_uri: str | None
     chunk_index: int | None
     content: str | None
     score: float | None
@@ -216,6 +265,17 @@ class SearchHitResponse(BaseModel):
 
 class SearchResponse(BaseModel):
     items: list[SearchHitResponse]
+    top_k: int
+    partial_failures: list[dict[str, Any]]
+
+
+class KnowledgeSearchHitResponse(SearchHitResponse):
+    space_id: str | None
+    kb_id: str | None
+
+
+class KnowledgeSearchResponse(BaseModel):
+    items: list[KnowledgeSearchHitResponse]
     top_k: int
     partial_failures: list[dict[str, Any]]
 
@@ -288,11 +348,12 @@ def _tool_payload(result: CallToolResult) -> dict[str, Any]:
         status_code = {
             "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE": 404,
             "DOCUMENT_NOT_ACCESSIBLE": 404,
-            "NO_ACCESSIBLE_RESOURCE": 404,
+            "NO_ACCESSIBLE_KNOWLEDGE_RESOURCE": 404,
             "DOCUMENT_PERMISSION_DENIED": 403,
             "IDENTITY_CONTEXT_UNAVAILABLE": 409,
             "RERANKER_NOT_CONFIGURED": 409,
             "EXTERNAL_SYNC_RESOURCE_READ_ONLY": 409,
+            "citation_source_changed": 409,
             "POLARRAG_TOOL_LIMITED": 429,
             "POLARRAG_UNAVAILABLE": 503,
         }.get(code, 422)
@@ -417,6 +478,22 @@ async def _resolve_space_knowledge_base(
     if not resources:
         raise _not_accessible_resource()
     return resources[0]
+
+
+async def _resolve_space_knowledge_bases(
+    session: AsyncSession,
+    *,
+    space_id: str,
+    kb_ids: list[str],
+) -> list[str]:
+    return [
+        await _resolve_space_knowledge_base(
+            session,
+            space_id=space_id,
+            kb_id=kb_id,
+        )
+        for kb_id in kb_ids
+    ]
 
 
 async def _resolve_search_targets(
@@ -609,6 +686,7 @@ async def list_knowledge_base_documents(
     limit: int = Query(default=20, ge=1, le=200),
     cursor: str | None = Query(default=None, min_length=1, max_length=512),
     filename: str | None = Query(default=None, min_length=1, max_length=1024),
+    page: int = Query(default=1, ge=1),
     context: PlatformAccessContext = Depends(get_platform_access_context),
     session: AsyncSession = Depends(get_session),
 ):
@@ -624,20 +702,58 @@ async def list_knowledge_base_documents(
             session=session,
         )
         return {"items": payload["documents"], "next_cursor": None}
+    page_cursor = _decode_document_page_cursor(cursor)
+    if page_cursor is not None and page_cursor[1] not in {None, limit}:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "CURSOR_LIMIT_MISMATCH",
+                "message": "Cursor page size does not match limit.",
+            },
+        )
+    requested_page = page_cursor[0] if page_cursor is not None else page
+    upstream_cursor = None if page_cursor is not None else cursor
     payload = await list_documents(
         ListDocumentsRequest(
             agent_id=context.agent.id,
             knowledge_resource_id=knowledge_resource_id,
             size=limit,
-            after_doc_id=cursor,
+            after_doc_id=upstream_cursor,
+            page=requested_page,
         ),
         user=context.user,
         session=session,
     )
-    return {
+    page_response = "total" in payload
+    if cursor is not None and (page_cursor is None) == page_response:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "CURSOR_PROTOCOL_MISMATCH",
+                "message": (
+                    "Cursor does not match the current PolarRAG pagination protocol. Restart from the first page."
+                ),
+            },
+        )
+    response = {
         "items": payload["documents"],
         "next_cursor": payload.get("next_after_doc_id"),
     }
+    if page_response:
+        response.update(
+            total=payload["total"],
+            page=payload["page"],
+            size=payload["size"],
+        )
+        response["next_cursor"] = (
+            _encode_document_page_cursor(
+                payload["page"] + 1,
+                payload["size"],
+            )
+            if payload["has_more"]
+            else None
+        )
+    return response
 
 
 @router.post(
@@ -667,7 +783,7 @@ async def find_knowledge_base_documents(
     session: AsyncSession = Depends(get_session),
 ):
     knowledge_resource_ids = await _resolve_search_targets(session, body.targets)
-    return _tool_payload(
+    payload = _tool_payload(
         await _invoke_tool(
             context,
             "doc_find_by_name",
@@ -678,6 +794,8 @@ async def find_knowledge_base_documents(
             },
         )
     )
+    await _add_knowledge_identifiers(session, payload)
+    return payload
 
 
 @router.post(
@@ -740,11 +858,13 @@ async def get_knowledge_base_document(
         knowledge_resource_id,
     )
     resource = access.resources[0]
+    client = client_from_instance(access.instance)
     try:
-        payload = await client_from_instance(access.instance).document_info(
+        payload = await client.document_info(
             resource.space_id,
             doc_id,
             acl_context=access.acl_context,
+            kb_id=resource.kb_id,
         )
     except PolarRAGUpstreamError as exc:
         raise _upstream_error(exc) from exc
@@ -774,7 +894,13 @@ async def get_knowledge_base_document(
         "active_generation",
         "revision_status",
     }
-    return {key: value for key, value in payload.items() if key in allowed}
+    documents = await attach_document_permissions(
+        client,
+        resource.space_id,
+        [{key: value for key, value in payload.items() if key in allowed}],
+        access.acl_context,
+    )
+    return documents[0]
 
 
 def _image_resources(source: dict[str, Any]) -> list[dict[str, Any]]:
@@ -816,9 +942,12 @@ def _chunk_list_response(
         item["image_resources"] = _image_resources(source)
         items.append(item)
     total_value = hits.get("total") if isinstance(hits, dict) else None
-    if isinstance(total_value, int) and not isinstance(total_value, bool):
-        total = total_value
-    elif isinstance(total_value, dict) and isinstance(total_value.get("value"), int):
+    if (
+        isinstance(total_value, dict)
+        and total_value.get("relation") == "eq"
+        and isinstance(total_value.get("value"), int)
+        and not isinstance(total_value.get("value"), bool)
+    ):
         total = total_value["value"]
     else:
         total = None
@@ -861,6 +990,8 @@ async def list_knowledge_base_document_chunks(
         offset=offset,
         limit=limit,
     )
+    if response["total"] is not None:
+        return response
     response["total"] = None
     response["next_offset"] = None
     if len(response["items"]) < limit:
@@ -898,18 +1029,25 @@ async def get_knowledge_base_document_chunk_context(
     chunk_index: int = Path(ge=0),
     window_size: int = Query(default=2, ge=0, le=100),
     context: PlatformAccessContext = Depends(get_platform_access_context),
+    expected_doc_generation: Annotated[int | None, Query(ge=0, le=2147483647)] = None,
+    query: Annotated[str | None, Query(min_length=1, max_length=10000)] = None,
 ):
+    arguments = {
+        "knowledge_resource_id": knowledge_resource_id,
+        "doc_id": doc_id,
+        "chunk_index": chunk_index,
+        "window_size": window_size,
+    }
+    if expected_doc_generation is not None:
+        arguments["expected_doc_generation"] = expected_doc_generation
+    if query is not None:
+        arguments["query"] = query
     return _tool_result_object(
         _tool_payload(
             await _invoke_tool(
                 context,
                 "kb_fetch_context",
-                {
-                    "knowledge_resource_id": knowledge_resource_id,
-                    "doc_id": doc_id,
-                    "chunk_index": chunk_index,
-                    "window_size": window_size,
-                },
+                arguments,
             )
         )
     )
@@ -976,9 +1114,7 @@ async def batch_rechunk_knowledge_base_documents(
 ):
     accepted = []
     failed = []
-    rechunk_body = DocumentRechunkRequest(
-        **body.model_dump(exclude={"doc_ids"})
-    )
+    rechunk_body = DocumentRechunkRequest(**body.model_dump(exclude={"doc_ids"}))
     for doc_id in body.doc_ids:
         try:
             result = await rechunk_knowledge_base_document(
@@ -988,11 +1124,7 @@ async def batch_rechunk_knowledge_base_documents(
                 context,
             )
         except HTTPException as exc:
-            detail: dict[str, Any] = (
-                cast(dict[str, Any], exc.detail)
-                if isinstance(exc.detail, dict)
-                else {}
-            )
+            detail: dict[str, Any] = cast(dict[str, Any], exc.detail) if isinstance(exc.detail, dict) else {}
             failed.append(
                 {
                     "doc_id": doc_id,
@@ -1047,6 +1179,7 @@ async def list_space_knowledge_base_documents(
     limit: int = Query(default=20, ge=1, le=200),
     cursor: str | None = Query(default=None, min_length=1, max_length=512),
     filename: str | None = Query(default=None, min_length=1, max_length=1024),
+    page: int = Query(default=1, ge=1),
     context: PlatformAccessContext = Depends(get_platform_access_context),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1060,6 +1193,7 @@ async def list_space_knowledge_base_documents(
         limit,
         cursor,
         filename,
+        page,
         context,
         session,
     )
@@ -1087,6 +1221,35 @@ async def upload_space_knowledge_base_document(
         file,
         context,
         session,
+    )
+
+
+@router.post(
+    "/spaces/{space_id}/documents/batch",
+    response_model=FlexibleObjectResponse,
+    status_code=201,
+    responses={207: {"model": FlexibleObjectResponse, "description": "Partial success"}},
+)
+async def upload_space_documents_batch(
+    space_id: str,
+    kb_ids: Annotated[list[str], Form(min_length=1, max_length=20)],
+    files: Annotated[list[UploadFile], File(min_length=1, max_length=20)],
+    response: Response,
+    context: PlatformAccessContext = Depends(get_platform_access_context),
+    session: AsyncSession = Depends(get_session),
+):
+    knowledge_resource_ids = await _resolve_space_knowledge_bases(
+        session,
+        space_id=space_id,
+        kb_ids=kb_ids,
+    )
+    return await upload_documents_batch(
+        response=response,
+        agent_id=context.agent.id,
+        files=files,
+        knowledge_resource_ids=knowledge_resource_ids,
+        user=context.user,
+        session=session,
     )
 
 
@@ -1177,6 +1340,8 @@ async def get_space_knowledge_base_document_chunk_context(
     window_size: int = Query(default=2, ge=0, le=100),
     context: PlatformAccessContext = Depends(get_platform_access_context),
     session: AsyncSession = Depends(get_session),
+    expected_doc_generation: Annotated[int | None, Query(ge=0, le=2147483647)] = None,
+    query: Annotated[str | None, Query(min_length=1, max_length=10000)] = None,
 ):
     knowledge_resource_id = await _resolve_space_knowledge_base(
         session,
@@ -1189,6 +1354,8 @@ async def get_space_knowledge_base_document_chunk_context(
         chunk_index,
         window_size,
         context,
+        expected_doc_generation=expected_doc_generation,
+        query=query,
     )
 
 
@@ -1293,6 +1460,22 @@ async def rechunk_space_knowledge_base_document(
     )
 
 
+async def _add_knowledge_identifiers(session: AsyncSession, payload: dict[str, Any]) -> None:
+    items = [*payload.get("items", []), *payload.get("partial_failures", [])]
+    accessible = [item for item in items if item.get("error") != "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE"]
+    pairs = await knowledge_resource_pairs(
+        session, (item["knowledge_resource_id"] for item in accessible if item.get("knowledge_resource_id")),
+    )
+    for item in items:
+        pair = (
+            pairs.get(item.get("knowledge_resource_id"))
+            if item.get("error") != "KNOWLEDGE_RESOURCE_NOT_ACCESSIBLE"
+            else None
+        )
+        item["space_id"] = pair["space_id"] if pair else None
+        item["kb_id"] = pair["kb_id"] if pair else None
+
+
 def _search_response(payload: dict[str, Any], top_k: int) -> dict[str, Any]:
     items = []
     for hit in payload.get("results", []):
@@ -1306,6 +1489,9 @@ def _search_response(payload: dict[str, Any], top_k: int) -> dict[str, Any]:
             {
                 "knowledge_resource_id": hit.get("knowledge_resource_id"),
                 "doc_id": hit.get("doc_id"),
+                "doc_generation": hit.get("doc_generation"),
+                "filename": hit.get("filename"),
+                "source_uri": hit.get("source_uri"),
                 "chunk_index": hit.get("chunk_index"),
                 "content": hit.get("text"),
                 "score": hit.get("score"),
@@ -1351,6 +1537,9 @@ def _document_search_results(
             {
                 "knowledge_resource_id": knowledge_resource_id,
                 "doc_id": doc_id,
+                "doc_generation": source.get("doc_generation"),
+                "filename": source.get("filename"),
+                "source_uri": source.get("source_uri"),
                 "chunk_index": source.get("chunk_index"),
                 "text": source.get("text"),
                 "score": raw_hit.get("_score", 0.0),
@@ -1358,11 +1547,7 @@ def _document_search_results(
                 "headings": source.get("headings", []),
                 "captions": source.get("captions", []),
                 "image_resources": _image_resources(source),
-                "metadata_hints": (
-                    source["metadata"]
-                    if isinstance(source.get("metadata"), dict)
-                    else {}
-                ),
+                "metadata_hints": (source["metadata"] if isinstance(source.get("metadata"), dict) else {}),
             }
         )
     return normalized
@@ -1390,35 +1575,30 @@ async def _search_selected_knowledge_bases(
     return _search_response(payload, body.top_k)
 
 
-@router.post("/knowledge-bases/search", response_model=SearchResponse)
+@router.post("/knowledge-bases/search", response_model=KnowledgeSearchResponse)
 async def search_knowledge_bases(
     body: KnowledgeBaseSearchRequest,
     context: PlatformAccessContext = Depends(get_platform_access_context),
     session: AsyncSession = Depends(get_session),
 ):
-    knowledge_resource_ids = (
-        await _resolve_search_targets(session, body.targets)
-        if body.targets is not None
-        else None
-    )
-    return await _search_selected_knowledge_bases(
+    knowledge_resource_ids = await _resolve_search_targets(session, body.targets) if body.targets is not None else None
+    response = await _search_selected_knowledge_bases(
         context,
         body,
         knowledge_resource_ids,
     )
+    await _add_knowledge_identifiers(session, response)
+    return response
 
 
-@router.post("/spaces/{space_id}/search", response_model=SearchResponse)
+@router.post("/spaces/{space_id}/search", response_model=KnowledgeSearchResponse)
 async def search_space_knowledge_bases(
     space_id: str,
     body: SpaceSearchRequest,
     context: PlatformAccessContext = Depends(get_platform_access_context),
     session: AsyncSession = Depends(get_session),
 ):
-    targets = [
-        KnowledgeBaseSelector(space_id=space_id, kb_id=kb_id)
-        for kb_id in body.kb_ids or []
-    ] + [
+    targets = [KnowledgeBaseSelector(space_id=space_id, kb_id=kb_id) for kb_id in body.kb_ids or []] + [
         KnowledgeBaseSelector(knowledge_resource_id=knowledge_resource_id)
         for knowledge_resource_id in body.knowledge_resource_ids or []
     ]
@@ -1435,17 +1615,13 @@ async def search_space_knowledge_bases(
             context.agent.id,
             context.user.id,
         )
-        max_resources = (
-            get_config().polarrag_tool_limits.max_exhaustive_knowledge_resources
-        )
-        resources, has_more, _cursor_valid = (
-            await list_visible_knowledge_resources_cursor_page(
-                session,
-                context.user,
-                resource_scope=resource_scope,
-                knowledge_space_id=space.knowledge_space_id,
-                limit=max_resources,
-            )
+        max_resources = get_config().polarrag_tool_limits.max_exhaustive_knowledge_resources
+        resources, has_more, _cursor_valid = await list_visible_knowledge_resources_cursor_page(
+            session,
+            context.user,
+            resource_scope=resource_scope,
+            knowledge_space_id=space.knowledge_space_id,
+            limit=max_resources,
         )
         if has_more:
             raise HTTPException(
@@ -1456,11 +1632,13 @@ async def search_space_knowledge_bases(
                 },
             )
         knowledge_resource_ids = [resource.id for resource in resources]
-    return await _search_selected_knowledge_bases(
+    response = await _search_selected_knowledge_bases(
         context,
         body,
         knowledge_resource_ids,
     )
+    await _add_knowledge_identifiers(session, response)
+    return response
 
 
 @router.post(
@@ -1580,10 +1758,7 @@ async def list_tools(
         tools = [tool for tool in tools if query in tool.name.casefold()]
     page = tools[offset : offset + limit]
     return {
-        "tools": [
-            tool.model_dump(mode="json", by_alias=True, exclude_none=True)
-            for tool in page
-        ],
+        "tools": [tool.model_dump(mode="json", by_alias=True, exclude_none=True) for tool in page],
         "total": len(tools),
         "offset": offset,
         "limit": limit,

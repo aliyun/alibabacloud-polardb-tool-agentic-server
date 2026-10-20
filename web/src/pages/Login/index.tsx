@@ -163,6 +163,7 @@ export default function Login({
                     {t('auth.signInWithFeishu')}
                   </Button>
                 </Form.Item>
+                <Form.Item><Button block onClick={() => window.location.assign('/auth/dingtalk/login')}>{t('auth.signInWithDingTalk')}</Button></Form.Item>
                 <Form.Item>
                   <Button
                     block

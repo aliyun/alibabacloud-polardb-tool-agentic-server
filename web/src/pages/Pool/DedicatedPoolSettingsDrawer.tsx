@@ -17,6 +17,7 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import { getAPIErrorMessage } from '../../api/client'
+import RegionSelect from '../../components/RegionSelect'
 import {
   updateDedicatedPool,
   type DedicatedPool,
@@ -242,7 +243,9 @@ export default function DedicatedPoolSettingsDrawer({
                           label={t('pool.regionId')}
                           rules={[{ required: true, whitespace: true }]}
                         >
-                          <Input />
+                          <RegionSelect resource onChange={() => {
+                            form.setFieldsValue({ zone_id: undefined, vpc_id: undefined, vswitch_id: undefined, network_change_confirmed: false })
+                          }} />
                         </Form.Item>
                       </Col>
                       <Col xs={24} md={12}>

@@ -94,7 +94,7 @@ EXTERNAL_BASE_URL/auth/oidc/callback
 
 如果服务间只使用 Token Exchange，不需要浏览器登录，请关闭**启用浏览器 SSO
 登录**。只配置外部 Token 验证 Provider，然后保存、校验并激活；该流程不需要
-回调地址、浏览器端点、浏览器 Client 凭证或浏览器登录测试，但仍须配置 HTTPS
+回调地址、浏览器端点、浏览器 Client 凭证或浏览器登录测试，但仍须配置 HTTP 或 HTTPS
 External Base URL 以标识 Token Exchange Resource；普通控制台继续使用内置登录。
 飞书 Provider 由调用方在每次 Token Exchange 请求中传入已验证身份源 ID、飞书
 用户 ID 与 union ID，表单不要求固定选择身份源。
@@ -137,9 +137,17 @@ aliyun_access:
 明文。PAS 会加密保存固定凭证，`temporary credentials`（临时凭证）只存在于
 进程内存，绝不会导出到 Agent、sandbox、浏览器或元数据库。
 
-当服务 Pod 具备阿里云 VPC 连通性但没有公网出口时，将
-`openapi_network` 设置为 `vpc`。PolarDB 与 STS 都会使用对应地域的 VPC
-端点。默认值为 `public`；系统会有意拒绝自定义端点域名。
+在凭证表单中显式选择 OpenAPI 网络及 PAS 接入/默认地域。地域名称和端点预览
+与后端解析器使用同一份离线审核目录。当 Pod 可访问 VPC 但没有公网出口时，
+选择 `openapi_network: vpc` 以及 Pod 部署地域。只接受目录中列出的 PolarDB
+和 STS 端点，不回退公网，不支持自定义域名。不支持的组合及同地域限制见
+[生产网络](../deployment/networking.md)。
+
+已有配置保留原值，包括历史省略字段时的 `cn-hangzhou` / `public` 默认值。
+Web 新配置必须完成两项选择；CLI/API 为兼容旧配置保留上述默认值，
+VPC 环境应显式提供这两个字段。只修改这些字段时复用已保存凭证，无需重新输入
+AccessKey 密钥。任一变更都会使当前预检结果失效，必须重新验证并激活。
+切换全局接入网络前，应核对已有资源池和实例。
 
 dry run 与验证请求均由 PAS 后端 Pod 发起，因此该 Pod 必须能够解析并路由到
 所选端点。后端会发送只读 PolarDB 元数据请求；AssumeRole 模式会先获取 STS
@@ -147,6 +155,7 @@ dry run 与验证请求均由 PAS 后端 Pod 发起，因此该 Pod 必须能够
 
 - `OPENAPI_DNS_FAILURE`
 - `OPENAPI_CONNECT_FAILURE`
+- `OPENAPI_CHECK_FAILED`（未分类失败，不能据此判断网络故障）
 - `OPENAPI_TLS_FAILURE`
 - `OPENAPI_ENDPOINT_UNSUPPORTED`
 - `OPENAPI_CREDENTIAL_INVALID`

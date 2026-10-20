@@ -301,7 +301,7 @@ export default function MCPConnections({
                 const usable = row.agent_status === 'active'
                 return (
                   <Space wrap>
-                    {knowledge && <Button
+                    {knowledge && onSelectKnowledgeBases && <Button
                       size="small"
                       aria-label={t('mcpConnections.knowledgeBasesFor', {
                         agent: row.agent_name,

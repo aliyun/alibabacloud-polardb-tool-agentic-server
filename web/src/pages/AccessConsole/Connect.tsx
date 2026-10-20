@@ -11,7 +11,6 @@ import {
   Typography,
   message,
 } from 'antd'
-import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   issuePersonalToken,
@@ -21,7 +20,7 @@ import {
 } from '../../api/accessConsole'
 import { getAPIErrorMessage } from '../../api/client'
 import { formatDateTime } from '../../i18n/format'
-import MyResources from './MyResources'
+import MCPConnections from '../MyInstances/MCPConnections'
 export default function Connect() {
   const { t, i18n } = useTranslation()
   const [url, setUrl] = useState('')
@@ -85,6 +84,7 @@ export default function Connect() {
         </Typography.Text>
       </div>
       {error && <Alert type="error" message={error} />}
+      <MCPConnections />
       <Card title={t('access.personalConnection')} loading={!url && busy}>
         <Typography.Paragraph copyable={url ? { text: url } : false}>
           <Typography.Text code>{url}</Typography.Text>
@@ -172,10 +172,6 @@ export default function Connect() {
           ]}
         />
       </Card>
-      <MyResources compact />
-      <Typography.Paragraph>
-        <Link to="/my-instances">{t('access.legacy')}</Link>
-      </Typography.Paragraph>
       <Modal
         title={t('access.tokenCreated')}
         open={!!secret}

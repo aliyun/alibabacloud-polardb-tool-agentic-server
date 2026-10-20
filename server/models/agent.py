@@ -4,7 +4,7 @@ import enum
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, Integer, String, Text, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from server.models.base import Base, TimestampMixin, generate_uuid
@@ -42,6 +42,7 @@ class Agent(TimestampMixin, Base):
     )
     max_active_resources: Mapped[int | None] = mapped_column(Integer, nullable=True)
     oauth_redirect_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    all_builtin_users: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     knowledge_scope_mode: Mapped[AgentKnowledgeScopeMode] = mapped_column(
         Enum(
             AgentKnowledgeScopeMode,
@@ -51,6 +52,9 @@ class Agent(TimestampMixin, Base):
         ),
         default=AgentKnowledgeScopeMode.LEGACY_ALL,
         server_default=AgentKnowledgeScopeMode.LEGACY_ALL.value,
+    )
+    external_knowledge_auto_bind_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
     )
     bulk_assignment_status: Mapped[str] = mapped_column(
         String(32), default="completed", server_default="completed"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -45,7 +46,7 @@ class FakeAdminClient:
 
     async def check_capabilities(self):
         return PolarRAGCapabilities(
-            version="5faf397",
+            version="1.0.6",
             search=True,
             protected_document_info=True,
             protected_context=True,
@@ -106,6 +107,20 @@ class FakeAdminClient:
     ):
         assert cursor is None
         return (await self.list_unclaimed_knowledge_bases(space_id))[:page_size], None
+
+
+class UnsupportedVersionAdminClient(FakeAdminClient):
+    async def check_capabilities(self):
+        capabilities = await super().check_capabilities()
+        return PolarRAGCapabilities(
+            version="1.0.5",
+            search=capabilities.search,
+            protected_document_info=capabilities.protected_document_info,
+            protected_context=capabilities.protected_context,
+            protected_document_search=capabilities.protected_document_search,
+            space_catalog=capabilities.space_catalog,
+            knowledge_base_catalog=capabilities.knowledge_base_catalog,
+        )
 
 
 class PaginatedSpacesClient(FakeAdminClient):
@@ -270,6 +285,7 @@ async def test_find_knowledge_base_limits_page_count(monkeypatch) -> None:
 
     assert exc_info.value.code == PolarRAGErrorCode.INVALID_RESPONSE
     assert client.calls == 2
+
 
 class MissingIdentityDomainClient(FakeAdminClient):
     async def list_spaces(self):
@@ -487,9 +503,7 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
     assert resources.json()["total"] == 1
     assert resources.json()["items"] == [
         {
-            "knowledge_resource_id": resources.json()["items"][0][
-                "knowledge_resource_id"
-            ],
+            "knowledge_resource_id": resources.json()["items"][0]["knowledge_resource_id"],
             "name": "Public KB",
             "space_id": "space-a",
             "space_name": "Space A",
@@ -550,9 +564,7 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
     )
     assert refreshed_spaces.status_code == 200
     assert refreshed_spaces.json()["items"][0]["oss_bucket"] == "tenant-a-documents"
-    assert refreshed_spaces.json()["items"][0]["oss_endpoint"] == (
-        "oss-cn-beijing.aliyuncs.com"
-    )
+    assert refreshed_spaces.json()["items"][0]["oss_endpoint"] == ("oss-cn-beijing.aliyuncs.com")
 
     disabled = await http.delete(
         f"/api/polarrag/instances/{instance_id}/spaces/space-a",
@@ -570,12 +582,8 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
         instance = await session.get(PolarRAGInstance, instance_id)
         assert decrypt(instance.username_ciphertext) == "shared"
         assert decrypt(instance.password_ciphertext) == secret
-        space = (
-            await session.execute(select(PolarRAGSpace))
-        ).scalar_one()
-        resource = (
-            await session.execute(select(KnowledgeResource))
-        ).scalar_one()
+        space = (await session.execute(select(PolarRAGSpace))).scalar_one()
+        resource = (await session.execute(select(KnowledgeResource))).scalar_one()
         assert space.identity_domain == "tenant-a"
         assert space.oss_bucket == "tenant-a-documents"
         assert space.oss_endpoint == "oss-cn-beijing.aliyuncs.com"
@@ -586,6 +594,41 @@ async def test_admin_registers_encrypted_instance_and_enables_trusted_space(
         assert resource.kb_id == "public-kb"
         assert space.enabled is False
         assert resource.enabled is False
+
+
+async def test_instance_registration_rejects_plugin_older_than_1_0_6(
+    client,
+    setup,
+    monkeypatch,
+) -> None:
+    http, admin_headers, _member_headers = client
+    factory, _admin, _member = setup
+    monkeypatch.setattr(
+        "server.api.polarrag.client_from_instance",
+        lambda _instance: UnsupportedVersionAdminClient(),
+    )
+
+    response = await http.post(
+        "/api/polarrag/instances",
+        json={
+            "name": "Unsupported RAG",
+            "scheme": "https",
+            "host": "rag.example.test",
+            "port": 9200,
+            "username": "shared",
+            "password": "not-returned",
+            "tls_verify": True,
+        },
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "POLARRAG_VERSION_UNSUPPORTED",
+        "message": "PolarRAG plugin 1.0.6 or later is required.",
+    }
+    async with factory() as session:
+        assert (await session.execute(select(PolarRAGInstance))).scalar_one_or_none() is None
 
 
 @pytest.mark.parametrize("operation", ["check", "update"])
@@ -640,9 +683,7 @@ async def test_instance_mutation_activates_newly_discovered_spaces(
     assert response.status_code == 200
     async with factory() as session:
         space = (await session.execute(select(PolarRAGSpace))).scalar_one()
-        resource = (
-            await session.execute(select(KnowledgeResource))
-        ).scalar_one()
+        resource = (await session.execute(select(KnowledgeResource))).scalar_one()
         assert space.enabled is True
         assert resource.enabled is True
 
@@ -675,12 +716,8 @@ async def test_instance_create_rolls_back_when_automatic_space_sync_fails(
 
     assert failed.status_code == 503
     async with factory() as session:
-        assert (
-            await session.execute(select(PolarRAGInstance))
-        ).scalar_one_or_none() is None
-        assert (
-            await session.execute(select(PolarRAGSpace))
-        ).scalar_one_or_none() is None
+        assert (await session.execute(select(PolarRAGInstance))).scalar_one_or_none() is None
+        assert (await session.execute(select(PolarRAGSpace))).scalar_one_or_none() is None
 
 
 async def test_admin_lists_unconfigured_space_but_cannot_enable_it(
@@ -806,9 +843,7 @@ async def test_space_sync_returns_202_and_continues_in_background(
     assert status.json()["result"]["knowledge_bases"] == 1
 
 
-async def test_space_sync_state_and_claim_are_shared_across_app_instances(
-    client, setup, monkeypatch
-) -> None:
+async def test_space_sync_state_and_claim_are_shared_across_app_instances(client, setup, monkeypatch) -> None:
     http_one, admin_headers, _member_headers = client
     factory, admin, _member = setup
     async with factory() as session:
@@ -854,9 +889,7 @@ async def test_space_sync_state_and_claim_are_shared_across_app_instances(
     from tests._knowledge_helpers import enable_knowledge_routes
 
     app_two = enable_knowledge_routes(create_app())
-    async with AsyncClient(
-        transport=ASGITransport(app=app_two), base_url="http://second-app"
-    ) as http_two:
+    async with AsyncClient(transport=ASGITransport(app=app_two), base_url="http://second-app") as http_two:
         first = await http_one.get(
             f"/api/polarrag/instances/{instance_id}/spaces/shared-space/sync",
             headers=admin_headers,
@@ -949,7 +982,7 @@ async def test_reclaimed_space_sync_rolls_back_stale_worker_catalog_writes(
     old_started = asyncio.Event()
     release_old = asyncio.Event()
 
-    async def overlapping_sync(session, synced_space, client, *, commit):
+    async def overlapping_sync(session, synced_space, client, *, commit, worker_id):
         assert commit is False
         if client == "old":
             old_started.set()
@@ -1046,9 +1079,7 @@ async def test_instance_registration_does_not_auto_enable_inactive_space(
 
     assert created.status_code == 201
     async with factory() as session:
-        assert (
-            await session.execute(select(PolarRAGSpace))
-        ).scalar_one_or_none() is None
+        assert (await session.execute(select(PolarRAGSpace))).scalar_one_or_none() is None
 
 
 async def test_instance_create_rolls_back_when_required_audit_fails(
@@ -1084,9 +1115,7 @@ async def test_instance_create_rolls_back_when_required_audit_fails(
         )
 
     async with factory() as session:
-        assert (
-            await session.execute(select(PolarRAGInstance))
-        ).scalar_one_or_none() is None
+        assert (await session.execute(select(PolarRAGInstance))).scalar_one_or_none() is None
 
 
 async def test_principal_api_enforces_provider_and_user_uniqueness(
@@ -1190,9 +1219,7 @@ async def test_principal_api_enforces_provider_and_user_uniqueness(
     assert conflict.status_code == 409
 
     async with factory() as session:
-        assignments = (
-            await session.execute(select(EnterprisePrincipalAssignment))
-        ).scalars().all()
+        assignments = (await session.execute(select(EnterprisePrincipalAssignment))).scalars().all()
         assert len(assignments) == 2
 
 
@@ -1377,11 +1404,7 @@ async def test_admin_assigns_unclaimed_kb_owner_and_synchronizes_catalog(
         assert resource.kb_id == "personal-kb"
         assert resource.enabled is True
         audit = (
-            await session.execute(
-                select(AuditLog).where(
-                    AuditLog.action == "polarrag.knowledge_base.claim"
-        )
-            )
+            await session.execute(select(AuditLog).where(AuditLog.action == "polarrag.knowledge_base.claim"))
         ).scalar_one()
         assert audit.actor_user_id == admin.id
         assert audit.target_id == "space-a/personal-kb"
@@ -1445,9 +1468,7 @@ async def test_admin_assigns_unclaimed_kb_to_active_native_pas_user(
     assert fake.claim_owner == member.external_id
 
 
-async def test_owner_candidates_are_domain_scoped_and_sql_paginated(
-    client, setup
-) -> None:
+async def test_owner_candidates_are_domain_scoped_and_sql_paginated(client, setup) -> None:
     http, admin_headers, _member_headers = client
     factory, admin, _member = setup
     async with factory() as session:
@@ -1549,10 +1570,7 @@ async def test_claim_retry_recovers_after_upstream_success_and_sync_failure(
         },
         headers=admin_headers,
     )
-    endpoint = (
-        f"/api/polarrag/instances/{instance_id}/spaces/space-a/"
-        "knowledge-bases/personal-kb/claim"
-    )
+    endpoint = f"/api/polarrag/instances/{instance_id}/spaces/space-a/knowledge-bases/personal-kb/claim"
 
     first = await http.post(
         endpoint,
@@ -1570,11 +1588,7 @@ async def test_claim_retry_recovers_after_upstream_success_and_sync_failure(
     assert fake.claim_calls == 1
     async with factory() as session:
         resource = (
-            await session.execute(
-                select(KnowledgeResource).where(
-                    KnowledgeResource.kb_id == "personal-kb"
-                )
-            )
+            await session.execute(select(KnowledgeResource).where(KnowledgeResource.kb_id == "personal-kb"))
         ).scalar_one()
         assert resource.owner_pas_user_id == member.id
 
@@ -1622,3 +1636,113 @@ async def test_unclaimed_catalog_rejects_identity_boundary_as_upstream_error(
             "message": "POLARRAG_INVALID_RESPONSE",
         }
     }
+
+
+@pytest.mark.parametrize("operation", ["create", "update", "check", "enable", "prepare"])
+async def test_catalog_entry_points_fetch_before_writing(client, setup, monkeypatch, operation):
+    from types import SimpleNamespace
+    from server.api.features import SpaceRequest, prepare_space
+
+    http, headers, _ = client
+    factory, admin, _ = setup
+    async with factory() as session:
+        instance = PolarRAGInstance(
+            name="Existing", scheme="https", host="rag.example.test", port=9200,
+            username_ciphertext=encrypt("user"), password_ciphertext=encrypt("password"),
+            status=PolarRAGInstanceStatus.ACTIVE, created_by=admin.id,
+        )
+        session.add(instance)
+        await session.commit()
+    writes = []
+
+    @event.listens_for(factory.kw["bind"].sync_engine, "before_cursor_execute")
+    def record_writes(conn, cursor, statement, parameters, context, executemany):
+        if statement.startswith(("INSERT", "UPDATE", "DELETE")):
+            writes.append(statement)
+
+    class Client(FakeAdminClient):
+        async def list_spaces(self):
+            assert not writes, "Space fetch must precede local writes"
+            return await super().list_spaces()
+
+        async def list_knowledge_bases(self, space_id):
+            assert not writes, "KB fetch must precede local writes"
+            return await super().list_knowledge_bases(space_id)
+
+    monkeypatch.setattr("server.api.polarrag.client_from_instance", lambda _: Client())
+    monkeypatch.setattr("server.polarrag.client.client_from_instance", lambda _: Client())
+    if operation == "create":
+        response = await http.post("/api/polarrag/instances", headers=headers, json={
+            "name": "New", "scheme": "https", "host": "rag.example.test", "port": 9200,
+            "username": "user", "password": "password", "tls_verify": True,
+        })
+        assert response.status_code == 201
+    elif operation == "update":
+        response = await http.patch(f"/api/polarrag/instances/{instance.id}", headers=headers,
+                                    json={"name": "Updated"})
+        assert response.status_code == 200
+    elif operation == "prepare":
+        feature = SimpleNamespace(state=SimpleNamespace(repository=SimpleNamespace(session_factory=factory)))
+        assert await prepare_space(instance.id, SpaceRequest(space_id="space-a"), admin, feature) == {"prepared": True}
+    else:
+        path = "check" if operation == "check" else "spaces/enable"
+        response = await http.post(f"/api/polarrag/instances/{instance.id}/{path}", headers=headers,
+                                   json={"space_id": "space-a"} if operation == "enable" else None)
+        assert response.status_code == 200
+    assert any(statement.startswith("INSERT INTO knowledge_resources") for statement in writes)
+
+
+async def test_capability_missing_instance_keeps_required_audit_target(client, setup, monkeypatch):
+    http, headers, _ = client
+    factory, _, _ = setup
+
+    class Client(FakeAdminClient):
+        async def check_capabilities(self):
+            from dataclasses import replace
+            return replace(await super().check_capabilities(), knowledge_base_catalog=False)
+
+    monkeypatch.setattr("server.api.polarrag.client_from_instance", lambda _: Client())
+    response = await http.post("/api/polarrag/instances", headers=headers, json={
+        "name": "Incomplete capabilities", "scheme": "https", "host": "rag.example.test", "port": 9200,
+        "username": "user", "password": "password", "tls_verify": True,
+    })
+    assert response.status_code == 201
+    assert response.json()["status"] == "capability_missing"
+    async with factory() as session:
+        audit = await session.scalar(select(AuditLog).where(AuditLog.action == "polarrag_instance.create"))
+        assert audit.target_id == response.json()["id"]
+
+
+async def test_enable_space_rejects_changed_domain_before_catalog_fetch(client, setup, monkeypatch):
+    http, headers, _ = client
+    factory, admin, _ = setup
+    async with factory() as session:
+        instance = PolarRAGInstance(
+            name="Existing", scheme="https", host="rag.example.test", port=9200,
+            username_ciphertext=encrypt("user"), password_ciphertext=encrypt("password"),
+            status=PolarRAGInstanceStatus.ACTIVE, created_by=admin.id,
+        )
+        session.add(instance)
+        await session.flush()
+        space = PolarRAGSpace(
+            polarrag_instance_id=instance.id, space_id="space-a", name="Original",
+            identity_domain="original-domain", enabled=False,
+        )
+        session.add(space)
+        await session.commit()
+    fake = FakeAdminClient()
+    catalog = AsyncMock(side_effect=AssertionError("domain mismatch must precede catalog fetch"))
+    monkeypatch.setattr(fake, "list_knowledge_bases_page", catalog)
+    monkeypatch.setattr("server.api.polarrag.client_from_instance", lambda _: fake)
+    response = await http.post(
+        f"/api/polarrag/instances/{instance.id}/spaces/enable",
+        headers=headers, json={"space_id": "space-a"},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "PolarRAG Space identity domain changed"
+    catalog.assert_not_awaited()
+    async with factory() as session:
+        stored = await session.get(PolarRAGSpace, space.knowledge_space_id)
+        assert stored.enabled is False
+        assert stored.name == "Original"
+        assert stored.identity_domain == "original-domain"

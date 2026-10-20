@@ -10,13 +10,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   getAgent,
-  listAgentPolarRAGPublicResources,
+  getAgentKnowledgeVisibility,
   listAgentPolarRAGBindings,
   regenerateAgentToken,
   revealAgentToken,
   revokeAgentToken,
   updateAgent,
-  updateAgentPolarRAGPublicResources,
+  updateAgentKnowledgeVisibility,
 } from '../../api/agents'
 import { executeConfig } from '../../api/configuration'
 import { listInstanceCredentials } from '../../api/credentials'
@@ -32,16 +32,17 @@ import {
 } from '../../api/instanceAccess'
 import { listProvisioningBackends } from '../../api/provisioningBackends'
 import AgentDetail from './index'
+import PublicKnowledgeScopePanel from './PublicKnowledgeScopePanel'
 
 vi.mock('../../api/agents', () => ({
   getAgent: vi.fn(),
-  listAgentPolarRAGPublicResources: vi.fn(),
+  getAgentKnowledgeVisibility: vi.fn(),
   listAgentPolarRAGBindings: vi.fn(),
   regenerateAgentToken: vi.fn(),
   revealAgentToken: vi.fn(),
   revokeAgentToken: vi.fn(),
   updateAgent: vi.fn(),
-  updateAgentPolarRAGPublicResources: vi.fn(),
+  updateAgentKnowledgeVisibility: vi.fn(),
 }))
 
 vi.mock('../../api/credentials', () => ({
@@ -306,14 +307,11 @@ describe('Agent detail page', () => {
       screen.getByText('http://10.0.0.8:18760/mcp/rest/db-instances'),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('link', { name: /open live api docs/i }),
-    ).toHaveAttribute('href', 'http://10.0.0.8:18760/mcp/rest/docs')
+      screen.queryByRole('link', { name: /open live api docs/i }),
+    ).not.toBeInTheDocument()
     expect(
-      screen.getByRole('link', { name: /open openapi schema/i }),
-    ).toHaveAttribute(
-      'href',
-      'http://10.0.0.8:18760/mcp/rest/openapi.json',
-    )
+      screen.queryByRole('link', { name: /open openapi schema/i }),
+    ).not.toBeInTheDocument()
     expect(
       screen.getByRole('link', { name: /view github guide/i }),
     ).toHaveAttribute(
@@ -732,76 +730,38 @@ describe('Agent detail page', () => {
       screen.getByRole('tab', { name: /polarrag instances/i }),
     )
 
-    const bindingHeading = screen.getByRole('heading', {
+    expect(screen.queryByRole('heading', {
       name: /bound polarrag instances/i,
-    })
-    const bindingSection = bindingHeading.closest('section')
-    expect(bindingSection).not.toBeNull()
-    const bindingTable = within(bindingSection as HTMLElement)
-    expect(bindingTable.getByText('Primary RAG')).toBeInTheDocument()
-    expect(bindingTable.queryByText('Production')).not.toBeInTheDocument()
+    })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /configure public scope/i })).not.toBeInTheDocument()
+    expect(screen.getByText('PolarRAG access panel')).toBeInTheDocument()
   })
 
-  it('updates a binding to selected PUBLIC knowledge resources', async () => {
+  it('updates knowledge visibility without changing user grants', async () => {
     const user = userEvent.setup()
-    vi.mocked(listAgentPolarRAGBindings).mockResolvedValue(pagedResponse([
-        {
-          id: 'rag-binding-1',
-          polarrag_instance_id: 'rag-1',
-          instance_name: 'Primary RAG',
-          public_knowledge_resource_ids: null,
-          created_at: '2026-08-05T00:00:00Z',
-        },
-      ]))
-    vi.mocked(listAgentPolarRAGPublicResources).mockResolvedValue({
-      data: {
-        items: [
-          {
-            knowledge_resource_id: 'resource-1',
-            name: 'Public handbook',
-            knowledge_space_name: 'Corporate',
-          },
-        ],
-        total: 1,
-        offset: 0,
-        limit: 50,
-      },
-    } as never)
-    vi.mocked(updateAgentPolarRAGPublicResources).mockResolvedValue({
-      data: {
-        id: 'rag-binding-1',
-        polarrag_instance_id: 'rag-1',
-        instance_name: 'Primary RAG',
-        public_knowledge_resource_ids: ['resource-1'],
-        created_at: '2026-08-05T00:00:00Z',
-      },
-    } as never)
-    renderPage()
-
-    await user.click(
-      await screen.findByRole('tab', { name: /polarrag instances/i }),
-    )
-    expect(screen.getByText('All PUBLIC knowledge resources')).toBeInTheDocument()
-    await user.click(
-      screen.getByRole('button', { name: /configure public scope/i }),
-    )
-    await user.click(
-      await screen.findByRole('radio', {
-        name: /selected public knowledge resources/i,
-      }),
-    )
-    await user.click(
-      screen.getByRole('combobox', { name: /public knowledge resources/i }),
-    )
-    await user.click(await screen.findByText('Public handbook · Corporate'))
-    await user.click(screen.getByRole('button', { name: /save public scope/i }))
-
-    expect(updateAgentPolarRAGPublicResources).toHaveBeenCalledWith(
-      'agent-1',
-      'rag-binding-1',
-      ['resource-1'],
-    )
-    expect(await screen.findByText('1 selected PUBLIC resource')).toBeInTheDocument()
+    vi.mocked(getAgentKnowledgeVisibility).mockResolvedValue({ data: {
+      instance_count: 1, statuses: { PUBLIC: 'PARTIAL', PERSONAL: 'BOUND' },
+    } } as never)
+    vi.mocked(updateAgentKnowledgeVisibility).mockResolvedValue({ data: {
+      instance_count: 1, statuses: { PUBLIC: 'BOUND', PERSONAL: 'BOUND' },
+    } } as never)
+    const onChanged = vi.fn()
+    render(<PublicKnowledgeScopePanel agentId="agent-1" onChanged={onChanged} />)
+    expect(screen.queryByRole('button', { name: /configure public scope/i })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: /^bind all public knowledge bases$/i })).toBeEnabled())
+    expect(screen.getByRole('button', { name: /^bind all personal knowledge bases$/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^unbind all public knowledge bases$/i })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: /^bind all public knowledge bases$/i }))
+    expect(updateAgentKnowledgeVisibility).toHaveBeenCalledWith('agent-1', 'PUBLIC', 'BIND')
+    await waitFor(() => expect(onChanged).toHaveBeenCalledOnce())
+    expect(screen.getByRole('button', { name: /^bind all public knowledge bases$/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^unbind all public knowledge bases$/i })).toBeEnabled()
+    vi.mocked(updateAgentKnowledgeVisibility).mockResolvedValue({ data: {
+      instance_count: 1, statuses: { PUBLIC: 'UNBOUND', PERSONAL: 'BOUND' },
+    } } as never)
+    await user.click(screen.getByRole('button', { name: /^unbind all public knowledge bases$/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /^bind all public knowledge bases$/i })).toBeEnabled())
+    expect(screen.getByRole('button', { name: /^unbind all public knowledge bases$/i })).toBeDisabled()
   })
 
   it('prevents saving new access before an instance and capability are selected', async () => {

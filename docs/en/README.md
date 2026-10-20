@@ -61,6 +61,8 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
 
 ## Knowledge
 
+- [Polar knowledge Q&A skill](../../skills/polar-knowledge/README.md):
+  Qwen Work installation, bilingual retrieval, and evidence-based answers.
 - [Enable and disable knowledge](knowledge/activation.md)
 - [PolarRAG administrator onboarding](knowledge/polarrag-onboarding.md):
   end-to-end setup for users, native identities, public and personal knowledge,
@@ -128,6 +130,8 @@ User and operator documentation for Alibaba Cloud PolarDB Tool Agentic Server.
   statuses, idempotency, errors, and credential safety.
 
 ## Operations
+
+- [Browser end-to-end tests](operations/browser-e2e.md): real-service console and administration regression coverage.
 
 - [Health and readiness](operations/health-and-readiness.md): liveness,
   configuration convergence, probes, and alerting.

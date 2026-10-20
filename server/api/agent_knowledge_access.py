@@ -3,12 +3,14 @@ import json
 import uuid
 from dataclasses import asdict
 from datetime import datetime
+from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from server.api.enterprise_user_identity import enterprise_identities_by_user, resolve_enterprise_user_ids
 from server.auth.dependencies import require_admin
 from server.core.agent_enterprise_access_service import (
     EnterpriseAccessAuditError,
@@ -19,8 +21,10 @@ from server.core.agent_enterprise_access_service import (
     preview_enterprise_access,
 )
 from server.core.resource_write_guard import serialized_resource_write
+from server.polarrag.resource_selector import KnowledgePair, resolve_knowledge_pair
 from server.db.engine import get_session
 from server.models import (
+    Agent,
     AgentPolarRAGInstanceBinding,
     KnowledgeBindingMode,
     KnowledgeResource,
@@ -41,7 +45,14 @@ class PolarRAGBindingRequest(BaseModel):
 
 class PolarRAGPublicScopeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    public_knowledge_resource_ids: list[str] | None
+    public_knowledge_resource_ids: list[str] | None = None
+    targets: list[KnowledgePair] | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_selector(self) -> PolarRAGPublicScopeRequest:
+        if len(self.model_fields_set) != 1:
+            raise ValueError("provide exactly one of targets or public_knowledge_resource_ids")
+        return self
 
 
 class EnterpriseAccessSelectionRequest(BaseModel):
@@ -51,12 +62,21 @@ class EnterpriseAccessSelectionRequest(BaseModel):
     all_synced_users: bool = False
     directory_group_ids: list[str] = Field(default_factory=list, max_length=500)
     pas_user_ids: list[str] = Field(default_factory=list, max_length=500)
+    external_user_ids: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(default_factory=list, max_length=500)
     polarrag_instance_ids: list[str] | None = Field(
         default=None,
         min_length=1,
         max_length=200,
     )
     knowledge_space_ids: list[str] = Field(min_length=1, max_length=200)
+    bind_all_knowledge_resources: bool | None = None
+
+
+    @model_validator(mode="after")
+    def validate_user_selection(self) -> EnterpriseAccessSelectionRequest:
+        if self.pas_user_ids and self.external_user_ids:
+            raise ValueError("provide pas_user_ids or external_user_ids")
+        return self
 
 
 class EnterpriseAccessApplyRequest(EnterpriseAccessSelectionRequest):
@@ -68,6 +88,7 @@ class PolarRAGBindingResponse(BaseModel):
     polarrag_instance_id: str
     instance_name: str
     public_knowledge_resource_ids: list[str] | None
+    public_excluded_resource_ids: list[str] = Field(default_factory=list)
     created_at: datetime
 
 
@@ -80,6 +101,8 @@ class PolarRAGBindingListResponse(BaseModel):
 
 class PolarRAGPublicResourceResponse(BaseModel):
     knowledge_resource_id: str
+    space_id: str
+    kb_id: str
     name: str
     knowledge_space_name: str
 
@@ -114,21 +137,37 @@ def _binding_response(
         polarrag_instance_id=row.polarrag_instance_id,
         instance_name=row.instance.name,
         public_knowledge_resource_ids=_public_resource_ids(row),
+        public_excluded_resource_ids=sorted(json.loads(row.public_excluded_resource_ids_json or "[]")),
         created_at=row.created_at,
     )
 
 
-def _enterprise_access_selection(
-    body: EnterpriseAccessSelectionRequest,
+async def _enterprise_access_selection(
+    session: AsyncSession, body: EnterpriseAccessSelectionRequest,
 ) -> EnterpriseAccessSelection:
+    user_ids = body.pas_user_ids
+    if body.external_user_ids:
+        user_ids = await resolve_enterprise_user_ids(session, body.identity_source_id, body.external_user_ids)
     return EnterpriseAccessSelection(
         identity_source_id=body.identity_source_id,
         all_synced_users=body.all_synced_users,
         directory_group_ids=tuple(body.directory_group_ids),
-        pas_user_ids=tuple(body.pas_user_ids),
+        pas_user_ids=tuple(user_ids),
         polarrag_instance_ids=tuple(body.polarrag_instance_ids or ()),
         knowledge_space_ids=tuple(body.knowledge_space_ids),
+        bind_all_knowledge_resources=body.bind_all_knowledge_resources,
     )
+
+
+async def _enterprise_access_response(session: AsyncSession, preview) -> dict:
+    response = asdict(preview)
+    identities = await enterprise_identities_by_user(session, list(preview.selection.pas_user_ids))
+    response["selection"]["external_user_ids"] = sorted({
+        identity["external_user_id"]
+        for values in identities.values() for identity in values
+        if identity["identity_source_id"] == preview.selection.identity_source_id
+    })
+    return response
 
 
 @router.post("/{agent_id}/enterprise-access/preview")
@@ -142,14 +181,14 @@ async def preview_agent_enterprise_access(
         preview = await preview_enterprise_access(
             session,
             agent_id=agent_id,
-            selection=_enterprise_access_selection(body),
+            selection=await _enterprise_access_selection(session, body),
         )
     except EnterpriseAccessValidationError as exc:
         raise HTTPException(
             status_code=422,
             detail={"code": exc.code, "message": exc.message},
         ) from exc
-    return asdict(preview)
+    return await _enterprise_access_response(session, preview)
 
 
 @router.post("/{agent_id}/enterprise-access/apply")
@@ -167,10 +206,13 @@ async def apply_agent_enterprise_access(
                 session,
                 agent_id=agent_id,
                 admin=admin,
-                selection=_enterprise_access_selection(body),
+                selection=await _enterprise_access_selection(session, body),
                 preview_hash=body.preview_hash,
             )
             await session.commit()
+    except HTTPException:
+        await session.rollback()
+        raise
     except EnterpriseAccessPreviewStaleError as exc:
         await session.rollback()
         raise HTTPException(
@@ -178,7 +220,7 @@ async def apply_agent_enterprise_access(
             detail={
                 "code": "ENTERPRISE_ACCESS_PREVIEW_STALE",
                 "message": "Configuration changed; review the refreshed preview",
-                "preview": asdict(exc.preview),
+                "preview": await _enterprise_access_response(session, exc.preview),
             },
         ) from exc
     except EnterpriseAccessValidationError as exc:
@@ -205,7 +247,7 @@ async def apply_agent_enterprise_access(
             status_code=503,
             detail="Enterprise access configuration unavailable",
         ) from exc
-    return asdict(result)
+    return await _enterprise_access_response(session, result)
 
 
 @router.get(
@@ -352,6 +394,8 @@ async def list_polarrag_binding_public_resources(
         items=[
             PolarRAGPublicResourceResponse(
                 knowledge_resource_id=resource.id,
+                space_id=resource.space_id,
+                kb_id=resource.kb_id,
                 name=resource.name,
                 knowledge_space_name=resource.space.name,
             )
@@ -374,8 +418,13 @@ async def update_polarrag_binding_public_resources(
     admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
+    await session.execute(update(Agent).where(Agent.id == agent_id).values(knowledge_scope_mode=Agent.knowledge_scope_mode))
     row = await _require_polarrag_binding(session, agent_id, binding_id)
     requested = body.public_knowledge_resource_ids
+    if "targets" in body.model_fields_set and body.targets is not None:
+        requested = [await resolve_knowledge_pair(
+            session, target.space_id, target.kb_id, instance_ids=[row.polarrag_instance_id],
+        ) for target in body.targets]
     if requested is not None:
         try:
             valid_shape = len(requested) == len(set(requested)) and all(
@@ -412,6 +461,7 @@ async def update_polarrag_binding_public_resources(
             )
         requested = sorted(requested)
     row.public_knowledge_resource_ids_json = None if requested is None else json.dumps(requested, separators=(",", ":"))
+    row.public_excluded_resource_ids_json = None
     scope = "all" if requested is None else "selected"
     try:
         await _audit(

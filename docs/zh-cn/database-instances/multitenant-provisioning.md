@@ -21,6 +21,10 @@
 `draining` 阻止新放置但保留清理能力，`disabled` 为恢复保留后端。容量控制
 放置，但绝不会隐藏 Agent 已有的自有资源。
 
+资源预留会一并检查并锁定活跃实例、后端、Agent 授权和健康状态，在并发请求下同时执行
+Agent 与后端容量上限。SQLite、MySQL 和 PostgreSQL 元数据库均遵循此规则。
+权限模板为可选配置：已配置版本会写入资源权限快照；未配置时，PAS 使用内置数据库权限。
+
 ## Agent 供应
 
 在有效、健康的后端上授予 **Create managed databases**。Agent 随后获得

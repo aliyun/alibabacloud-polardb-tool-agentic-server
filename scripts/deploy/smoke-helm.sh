@@ -4,10 +4,11 @@ set -euo pipefail
 PAS_IMAGE=""
 MYSQL_IMAGE=""
 KIND_IMAGE=""
-CLUSTER_NAME="pas-release-smoke"
+CLUSTER_NAME="pas-release-smoke-$(date +%s)-${RANDOM}"
 NAMESPACE="pas-system"
 RELEASE="pas"
 CHART="deploy/helm/polardb-agentic-server"
+SMOKE_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,19 +46,71 @@ fi
 for command_name in docker kind kubectl helm python3; do
   command -v "$command_name" >/dev/null
 done
+if [[ ! "$CLUSTER_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#CLUSTER_NAME} -gt 63 ]]; then
+  echo "invalid local kind cluster name" >&2
+  exit 2
+fi
+EXISTING_CLUSTERS="$(kind get clusters)"
+while IFS= read -r existing_cluster; do
+  if [[ "$existing_cluster" == "$CLUSTER_NAME" ]]; then
+    echo "kind cluster already exists: $CLUSTER_NAME" >&2
+    exit 2
+  fi
+done <<<"$EXISTING_CLUSTERS"
+
+SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/pas-helm-smoke.XXXXXX")"
+export KUBECONFIG="$SMOKE_ROOT/kubeconfig"
+CLUSTER_OWNED=false
+CLUSTER_READY=false
 
 cleanup() {
-  helm uninstall "$RELEASE" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
-  kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
+  local result=$?
+  trap - EXIT
+  if [[ "$CLUSTER_READY" == true ]]; then
+    if [[ "$result" != 0 ]]; then
+      kubectl get pods,jobs,services --namespace "$NAMESPACE" -o wide >&2 || true
+      kubectl get events --namespace "$NAMESPACE" --sort-by=.lastTimestamp >&2 || true
+      kubectl logs "job/${RELEASE}-polardb-agentic-server-migrate" \
+        --namespace "$NAMESPACE" --all-containers --tail=100 >&2 || true
+    fi
+    helm uninstall "$RELEASE" --namespace "$NAMESPACE" >/dev/null 2>&1 || true
+  fi
+  if [[ "$CLUSTER_OWNED" == true ]]; then
+    kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$SMOKE_ROOT"
+  exit "$result"
 }
 trap cleanup EXIT
 
-kind_create_args=(--name "$CLUSTER_NAME" --wait 120s)
+kind_create_args=(--name "$CLUSTER_NAME" --wait 120s --kubeconfig "$KUBECONFIG")
 if [[ -n "$KIND_IMAGE" ]]; then
   kind_create_args+=(--image "$KIND_IMAGE")
 fi
+CLUSTER_OWNED=true
 kind create cluster "${kind_create_args[@]}"
-kind load docker-image "$PAS_IMAGE" --name "$CLUSTER_NAME"
+CLUSTER_READY=true
+
+load_local_image() {
+  local image="$1"
+  local platform
+  if docker version --format '{{.Server.APIVersion}}' | python3 -c \
+    'import sys; raise SystemExit(tuple(map(int, sys.stdin.read().strip().split("."))) < (1, 48))'; then
+    # Containerd-backed Docker stores may have only one platform of an index.
+    # Export the locally available platform so ctr does not require other blobs.
+    platform="$(docker image inspect "$image" --format '{{.Os}}/{{.Architecture}}')"
+    docker image save --platform "$platform" --output "$SMOKE_ROOT/image.tar" "$image"
+    kind load image-archive "$SMOKE_ROOT/image.tar" --name "$CLUSTER_NAME"
+    rm "$SMOKE_ROOT/image.tar"
+  else
+    kind load docker-image "$image" --name "$CLUSTER_NAME"
+  fi
+}
+load_local_image "$PAS_IMAGE"
+if ! docker image inspect "$MYSQL_IMAGE" >/dev/null 2>&1; then
+  docker pull "$MYSQL_IMAGE"
+fi
+load_local_image "$MYSQL_IMAGE"
 kubectl create namespace "$NAMESPACE"
 
 MYSQL_ROOT_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
@@ -144,10 +197,12 @@ kubectl rollout status \
   "deployment/${RELEASE}-polardb-agentic-server" \
   --namespace "$NAMESPACE" --timeout=180s
 
-READY_PODS="$(kubectl get pods --namespace "$NAMESPACE" \
-  -l app.kubernetes.io/instance="$RELEASE",app.kubernetes.io/name=polardb-agentic-server \
-  --field-selector=status.phase=Running \
-  -o jsonpath='{.items[*].metadata.name}')"
+application_pods() {
+  kubectl get pods --namespace "$NAMESPACE" \
+    -l app.kubernetes.io/instance="$RELEASE",app.kubernetes.io/name=polardb-agentic-server \
+    -o json | python3 "$SMOKE_SCRIPT_DIR/smoke_pods.py"
+}
+READY_PODS="$(application_pods)"
 if [[ "$(wc -w <<<"$READY_PODS" | tr -d ' ')" != "2" ]]; then
   echo "expected two running PAS Pods" >&2
   exit 1
@@ -215,6 +270,46 @@ for pod in $READY_PODS; do
   done
 done
 
+authenticated_replica_smoke() {
+  local phase="$1"
+  local pods pod
+  pods="$(application_pods)"
+  if [[ "$(wc -w <<<"$pods" | tr -d ' ')" != 2 ]]; then
+    echo "expected two PAS replicas during $phase" >&2
+    return 1
+  fi
+  for pod in $pods; do
+    kubectl exec --namespace "$NAMESPACE" "$pod" -- pas database check
+    kubectl exec --namespace "$NAMESPACE" -i "$pod" -- python - "$phase" <<'PY'
+import http.cookiejar
+import json
+import sys
+import urllib.request
+import uuid
+
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+def request(path, data=None):
+    value = urllib.request.Request("http://127.0.0.1:18760" + path,
+        data=None if data is None else json.dumps(data).encode(),
+        headers={"Content-Type": "application/json", "X-PAS-CSRF": "1"})
+    with opener.open(value, timeout=20) as response:
+        return json.load(response)
+
+request("/auth/login", {"username": "admin", "password": "smoke-test-password-only"})
+assert request("/auth/me")["role"] == "admin"
+request("/api/users")
+if sys.argv[1] != "installed":
+    agents = request("/api/agents")
+    assert any(item["name"].startswith("Helm smoke installed ") for item in agents["items"])
+name = "Helm smoke " + sys.argv[1] + " " + uuid.uuid4().hex[:8]
+created = request("/api/agents", {"name": name})
+assert created["name"] == name
+print("Authenticated PAS read/write smoke passed: " + sys.argv[1])
+PY
+  done
+}
+
+authenticated_replica_smoke installed
 helm test "$RELEASE" --namespace "$NAMESPACE" --logs --timeout 2m
 helm upgrade "$RELEASE" "$CHART" \
   --namespace "$NAMESPACE" \
@@ -224,6 +319,7 @@ helm upgrade "$RELEASE" "$CHART" \
 kubectl rollout status \
   "deployment/${RELEASE}-polardb-agentic-server" \
   --namespace "$NAMESPACE" --timeout=180s
+authenticated_replica_smoke rolled-out
 
 generation_before="$(kubectl get deployment \
   "${RELEASE}-polardb-agentic-server" --namespace "$NAMESPACE" \
@@ -243,6 +339,7 @@ if [[ "$generation_before" != "$generation_after" ]]; then
   echo "failed migration changed the Deployment" >&2
   exit 1
 fi
+authenticated_replica_smoke migration-refused
 
 helm upgrade "$RELEASE" "$CHART" \
   --namespace "$NAMESPACE" \
@@ -250,4 +347,5 @@ helm upgrade "$RELEASE" "$CHART" \
   --set 'migration.args[0]=database' \
   --set 'migration.args[1]=migrate' \
   --wait --timeout 5m
+authenticated_replica_smoke recovered
 echo "Helm release smoke test passed"

@@ -155,6 +155,8 @@ class AgentGroupAssignment(TimestampMixin, Base):
         principal_id: str,
         created_by_user_id: str | None,
     ) -> AgentGroupAssignment:
+        if provider.strip().lower() == "dingtalk":
+            raise ValueError("DingTalk conversation membership expansion is not supported; use identity-source directory groups")
         normalized_domain = identity_domain.strip()
         normalized_provider = provider.strip().lower()
         normalized_principal = principal_id.strip()
@@ -254,10 +256,28 @@ class AgentPolarRAGInstanceBinding(TimestampMixin, Base):
         Text,
         nullable=True,
     )
+    personal_knowledge_resource_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_excluded_resource_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    personal_excluded_resource_ids_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     agent: Mapped[Agent] = relationship(lazy="selectin")
     instance: Mapped[PolarRAGInstance] = relationship(lazy="selectin")
     created_by: Mapped[User | None] = relationship(lazy="selectin")
+
+
+class AgentKnowledgePolicy(TimestampMixin, Base):
+    __tablename__ = "agent_knowledge_policies"
+
+    agent_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True
+    )
+    knowledge_resource_id: Mapped[str] = mapped_column(
+        String(36), primary_key=True
+    )
+    select_all: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    excluded_subjects_json: Mapped[str] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=False, default="[]"
+    )
 
 
 class AgentKnowledgeScope(TimestampMixin, Base):

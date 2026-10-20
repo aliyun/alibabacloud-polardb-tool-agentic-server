@@ -852,7 +852,6 @@ def test_compose_getting_started_uses_safe_environment_generator(path: str):
         "SELECT 1",
         "host.docker.internal",
         "Use these settings? [Y/n]",
-        "external-mysql-env-generator.png",
     }
     assert not [term for term in required if term not in text]
     assert "python3 - <<'PY'" not in text

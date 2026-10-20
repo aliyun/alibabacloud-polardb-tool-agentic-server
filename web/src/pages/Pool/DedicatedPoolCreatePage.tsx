@@ -42,6 +42,8 @@ import {
   type PermissionTemplate,
 } from '../../api/permissionTemplates'
 import PageContainer from '../../components/PageContainer'
+import RegionSelect from '../../components/RegionSelect'
+import { useEndpointCatalog } from '../../components/RegionSelect/useEndpointCatalog'
 import './DedicatedPoolCreatePage.css'
 
 const { Paragraph, Text, Title } = Typography
@@ -86,6 +88,12 @@ export default function DedicatedPoolCreatePage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [form] = Form.useForm<PoolFormValues>()
+  const { catalog } = useEndpointCatalog()
+  useEffect(() => {
+    if (catalog?.defaults && !form.getFieldValue('region_id')) {
+      form.setFieldValue('region_id', catalog.defaults.region_id)
+    }
+  }, [catalog, form])
   const [step, setStep] = useState(0)
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
@@ -507,7 +515,9 @@ export default function DedicatedPoolCreatePage() {
                           { pattern: /^[a-z0-9-]+$/, message: t('pool.regionIdInvalid') },
                         ]}
                       >
-                        <Input placeholder="cn-hangzhou" />
+                        <RegionSelect catalog={catalog} resource onChange={() => {
+                          form.setFieldsValue({ zone_id: undefined, vpc_id: undefined, vswitch_id: undefined })
+                        }} />
                       </Form.Item>
                     </Col>
                     <Col xs={24} md={12}>
@@ -747,11 +757,11 @@ export default function DedicatedPoolCreatePage() {
                 {step === 0 ? t('common.cancel') : t('common.back')}
               </Button>
               {step < 3 ? (
-                <Button type="primary" onClick={() => void next()}>
+                <Button key="next" type="primary" htmlType="button" onClick={() => void next()}>
                   {t('common.next')}
                 </Button>
               ) : (
-                <Button type="primary" htmlType="submit" loading={submitting}>
+                <Button key="submit" type="primary" htmlType="submit" loading={submitting}>
                   {canPrewarm
                     ? t('pool.createAndPrewarm')
                     : t('pool.saveNotStarted')}

@@ -36,6 +36,9 @@ from server.polarrag.contracts import (
 
 
 class FakeSearchClient:
+    async def get_search_capabilities(self):
+        raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE, status_code=404)
+
     async def search(self, _space_id, kb_id, **_kwargs):
         if kb_id == "retryable":
             raise PolarRAGUpstreamError(
@@ -54,8 +57,10 @@ class FakeSearchClient:
                         "_score": score,
                         "_source": {
                             "doc_id": f"doc-{kb_id}",
+                            "doc_generation": 2,
                             "text": f"text-{kb_id}",
                             "filename": f"{kb_id}.pdf",
+                            "source_uri": f"oss://bucket/{kb_id}.pdf",
                             "chunk_index": 1,
                             "image_resources": [
                                 {
@@ -75,6 +80,9 @@ class FakeSearchClient:
 
 
 class RerankerNotConfiguredClient:
+    async def get_search_capabilities(self):
+        raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE, status_code=404)
+
     async def search(self, _space_id, _kb_id, **_kwargs):
         raise PolarRAGUpstreamError(
             PolarRAGErrorCode.RERANKER_NOT_CONFIGURED,
@@ -83,6 +91,9 @@ class RerankerNotConfiguredClient:
 
 
 class CountingSearchClient:
+    async def get_search_capabilities(self):
+        raise PolarRAGUpstreamError(PolarRAGErrorCode.INVALID_RESPONSE, status_code=404)
+
     def __init__(self) -> None:
         self.calls = 0
 
@@ -100,7 +111,10 @@ class MultiSearchClient:
 
     async def get_search_capabilities(self):
         self.capability_calls += 1
-        return SimpleNamespace(max_kb_ids=self.max_kb_ids)
+        return SimpleNamespace(
+            multi_kb_search=True,
+            max_kb_ids=self.max_kb_ids,
+        )
 
     async def search_many(self, _space_id, kb_ids, **_kwargs):
         self.batches.append(kb_ids)
@@ -112,6 +126,7 @@ class MultiSearchClient:
                         "_source": {
                             "kb_id": kb_id,
                             "doc_id": f"doc-{kb_id}",
+                            "doc_generation": 0,
                             "chunk_index": 0,
                             "text": kb_id,
                         },
@@ -131,19 +146,54 @@ class CountingFindClient:
         return {"documents": []}
 
 
+class MultiKbFindClient:
+    supports_plugin_107 = True
+
+    def __init__(self) -> None:
+        self.find_calls: list[object] = []
+
+    async def get_search_capabilities(self):
+        return SimpleNamespace(multi_kb_search=True, max_kb_ids=2)
+
+    async def find_by_name(self, _space_id, *, kb_id, **_kwargs):
+        self.find_calls.append(kb_id)
+        return {
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "kb_id": item,
+                            "doc_id": f"doc-{item}",
+                            "filename": "guide.pdf",
+                        }
+                    }
+                    for item in kb_id
+                ]
+            }
+        }
+
+
 class FakeDocumentClient:
-    def __init__(self, *, kb_id: str = "low") -> None:
+    def __init__(
+        self,
+        *,
+        kb_id: str = "low",
+        filename: str = "guide.pdf",
+    ) -> None:
         self.kb_id = kb_id
+        self.filename = filename
         self.calls: list[str] = []
+        self.read_kwargs: list[dict] = []
         self.mutation_kwargs: list[dict] = []
 
-    async def document_info(self, space_id, doc_id, **_kwargs):
+    async def document_info(self, space_id, doc_id, **kwargs):
         self.calls.append("document_info")
+        self.read_kwargs.append(kwargs)
         return {
             "doc_id": doc_id,
             "space_id": space_id,
             "kb_id": self.kb_id,
-            "filename": "guide.pdf",
+            "filename": self.filename,
             "file_type": "pdf",
             "file_size_bytes": 123,
             "file_md5": "abc123",
@@ -152,12 +202,26 @@ class FakeDocumentClient:
             "metadata": {"private": "value"},
         }
 
-    async def fetch_context(self, _space_id, _doc_id, **_kwargs):
+    async def fetch_context(self, _space_id, _doc_id, **kwargs):
         self.calls.append("fetch_context")
-        return {"hits": {"hits": []}}
+        self.read_kwargs.append(kwargs)
+        return {
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "doc_id": _doc_id,
+                            "chunk_index": 1,
+                            "text": "context chunk",
+                        }
+                    }
+                ]
+            }
+        }
 
-    async def list_document_chunks(self, _space_id, doc_id, **_kwargs):
+    async def list_document_chunks(self, _space_id, doc_id, **kwargs):
         self.calls.append("list_document_chunks")
+        self.read_kwargs.append(kwargs)
         return {
             "hits": {
                 "total": {"value": 1},
@@ -368,7 +432,16 @@ async def test_kb_search_merges_scores_and_preserves_retryable_partial_failure(
         "doc-high",
         "doc-low",
     ]
+    assert [item["filename"] for item in payload["results"]] == [
+        "high.pdf",
+        "low.pdf",
+    ]
+    assert [item["source_uri"] for item in payload["results"]] == [
+        "oss://bucket/high.pdf",
+        "oss://bucket/low.pdf",
+    ]
     assert payload["successful_searches"] == 2
+    assert [item["doc_generation"] for item in payload["results"]] == [2, 2]
     assert payload["failed_searches"] == 2
     assert payload["partial_failures"] == [
         {
@@ -391,7 +464,8 @@ async def test_kb_search_merges_scores_and_preserves_retryable_partial_failure(
     ]
 
 
-async def test_kb_search_uses_runtime_multi_kb_batches_for_1_0_7(seeded) -> None:
+@pytest.mark.parametrize("plugin_version", ["1.0.7", "1.0.6", "t-polardb-rag-1.0.6-20260904100106.al8.x86_64", None])
+async def test_kb_search_uses_runtime_multi_kb_batches(seeded, plugin_version) -> None:
     from server.mcp.tools.polarrag import handle_kb_search
 
     session, user, resources = seeded
@@ -400,7 +474,7 @@ async def test_kb_search_uses_runtime_multi_kb_batches_for_1_0_7(seeded) -> None
         resources[0].polarrag_instance_id,
     )
     assert instance is not None
-    instance.plugin_version = "1.0.7"
+    instance.plugin_version = plugin_version
     await session.commit()
     client = MultiSearchClient()
 
@@ -427,6 +501,140 @@ async def test_kb_search_uses_runtime_multi_kb_batches_for_1_0_7(seeded) -> None
     assert {item["knowledge_resource_id"] for item in payload["results"]} == {
         resource.id for resource in resources
     }
+    assert {item["doc_generation"] for item in payload["results"]} == {0}
+
+
+async def test_kb_search_falls_back_when_runtime_disables_multi_kb(seeded) -> None:
+    from server.mcp.tools.polarrag import handle_kb_search
+
+    session, user, resources = seeded
+    instance = await session.get(
+        PolarRAGInstance,
+        resources[0].polarrag_instance_id,
+    )
+    assert instance is not None
+    instance.plugin_version = "1.0.7"
+    await session.commit()
+
+    class DisabledMultiSearchClient(CountingSearchClient):
+        capability_calls = 0
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.legacy_protocols: list[bool] = []
+
+        async def get_search_capabilities(self):
+            self.capability_calls += 1
+            return SimpleNamespace(
+                multi_kb_search=False,
+                max_kb_ids=None,
+            )
+
+        async def search_many(self, *_args, **_kwargs):
+            raise AssertionError("multi-KB search must not be called")
+
+        async def search(self, _space_id, _kb_id, **kwargs):
+            self.calls += 1
+            self.legacy_protocols.append(kwargs.get("legacy_protocol", False))
+            return {"hits": {"hits": []}}
+
+    client = DisabledMultiSearchClient()
+
+    result = await handle_kb_search(
+        session,
+        user,
+        query="acl",
+        knowledge_resource_ids=None,
+        top_k=10,
+        client_factory=lambda _instance: client,
+    )
+
+    assert result.isError is False
+    assert client.capability_calls == 1
+    assert client.calls == len(resources)
+    assert client.legacy_protocols == [True] * len(resources)
+
+
+async def test_plugin_107_find_falls_back_to_legacy_wire_protocol(seeded) -> None:
+    from server.mcp.tools.polarrag import handle_doc_find_by_name
+
+    session, user, resources = seeded
+
+    class CapabilityFallbackFindClient:
+        supports_plugin_107 = True
+
+        def __init__(self) -> None:
+            self.legacy_protocols: list[bool] = []
+
+        async def get_search_capabilities(self):
+            raise PolarRAGUpstreamError(
+                PolarRAGErrorCode.INVALID_RESPONSE,
+                status_code=404,
+            )
+
+        async def find_by_name(self, _space_id, **kwargs):
+            self.legacy_protocols.append(kwargs.get("legacy_protocol", False))
+            return {"items": []}
+
+    client = CapabilityFallbackFindClient()
+    selected = resources[:2]
+    result = await handle_doc_find_by_name(
+        session,
+        user,
+        filename="guide.pdf",
+        knowledge_resource_ids=[resource.id for resource in selected],
+        client_factory=lambda _instance: client,
+    )
+
+    assert result.isError is False
+    assert client.legacy_protocols == [True, True]
+
+
+async def test_plugin_107_find_uses_one_multi_kb_request(seeded) -> None:
+    from server.mcp.tools.polarrag import handle_doc_find_by_name
+
+    session, user, resources = seeded
+    client = MultiKbFindClient()
+    selected = resources[:2]
+
+    result = await handle_doc_find_by_name(
+        session,
+        user,
+        filename="guide.pdf",
+        knowledge_resource_ids=[resource.id for resource in selected],
+        client_factory=lambda _instance: client,
+    )
+    payload = json.loads(result.content[0].text)
+
+    assert result.isError is False
+    assert client.find_calls == [["low", "high"]]
+    assert [item["knowledge_resource_id"] for item in payload["items"]] == [
+        selected[0].id,
+        selected[1].id,
+    ]
+
+
+async def test_plugin_107_find_batches_at_runtime_kb_limit(seeded) -> None:
+    from server.mcp.tools.polarrag import handle_doc_find_by_name
+
+    session, user, resources = seeded
+    client = MultiKbFindClient()
+    selected = resources[:3]
+
+    result = await handle_doc_find_by_name(
+        session,
+        user,
+        filename="guide.pdf",
+        knowledge_resource_ids=[resource.id for resource in selected],
+        client_factory=lambda _instance: client,
+    )
+    payload = json.loads(result.content[0].text)
+
+    assert result.isError is False
+    assert client.find_calls == [["low", "high"], ["retryable"]]
+    assert [item["knowledge_resource_id"] for item in payload["items"]] == [
+        resource.id for resource in selected
+    ]
 
 
 async def test_kb_search_exhausts_500_resources_in_bounded_waves(
@@ -909,6 +1117,10 @@ def test_polarrag_tool_catalog_has_exact_safe_schema(monkeypatch) -> None:
     assert "partial_failures" in descriptions["kb_search"]
     assert "RERANKER_NOT_CONFIGURED" in descriptions["kb_search"]
     assert "chunk_index" in descriptions["kb_fetch_context"]
+    context_schema = manager.get_tool("kb_fetch_context").parameters
+    assert "expected_doc_generation" not in context_schema["required"]
+    assert "query" not in context_schema["required"]
+    assert "Never remove the pin" in descriptions["kb_fetch_context"]
     assert "offset and limit" in descriptions["doc_list_chunks"]
     assert "filename" in descriptions["doc_find_by_name"]
     assert "processing and indexing status" in descriptions["doc_status"]
@@ -942,6 +1154,9 @@ def test_polarrag_tool_catalog_has_exact_safe_schema(monkeypatch) -> None:
     assert manager.get_tool("doc_delete").annotations.readOnlyHint is False
     assert manager.get_tool("doc_rechunk").annotations.destructiveHint is False
     assert manager.get_tool("doc_rechunk").annotations.readOnlyHint is False
+    force_schema = manager.get_tool("doc_rechunk").parameters["properties"]["force"]
+    assert force_schema["type"] == "boolean"
+    assert force_schema["default"] is False
 
 
 async def test_document_tools_verify_selected_resource_and_normalize_original(
@@ -954,7 +1169,7 @@ async def test_document_tools_verify_selected_resource_and_normalize_original(
     )
 
     session, user, resources = seeded
-    document_client = FakeDocumentClient()
+    document_client = FakeDocumentClient(filename="退款 指南.backup.v2.pdf")
 
     def factory(_instance):
         return document_client
@@ -985,18 +1200,21 @@ async def test_document_tools_verify_selected_resource_and_normalize_original(
     assert json.loads(status.content[0].text)["result"] == {
         "doc_id": "doc-a",
         "kb_id": "low",
-        "filename": "guide.pdf",
+        "filename": "退款 指南.backup.v2.pdf",
         "status": "COMPLETED",
     }
     assert json.loads(original.content[0].text)["result"] == {
         "doc_id": "doc-a",
-        "filename": "guide.pdf",
+        "filename": "退款 指南.backup.v2.pdf",
         "file_type": "pdf",
         "oss_path": "oss://bucket/guide.pdf",
         "size": 123,
         "content_hash": "abc123",
     }
     assert context.isError is False
+    assert json.loads(context.content[0].text)["result"]["hits"]["hits"][0][
+        "_source"
+    ]["filename"] == "退款 指南.backup.v2.pdf"
     assert document_client.calls == [
         "document_info",
         "document_info",
@@ -1009,7 +1227,7 @@ async def test_document_chunk_list_preserves_image_resources(seeded) -> None:
     from server.mcp.tools.polarrag import handle_doc_list_chunks
 
     session, user, resources = seeded
-    document_client = FakeDocumentClient()
+    document_client = FakeDocumentClient(filename="退款 指南.backup.v2.pdf")
 
     result = await handle_doc_list_chunks(
         session,
@@ -1030,7 +1248,14 @@ async def test_document_chunk_list_preserves_image_resources(seeded) -> None:
             "oss_uri": "oss://bucket/picture-1.png",
         }
     ]
+    assert json.loads(result.content[0].text)["result"]["hits"]["hits"][0][
+        "_source"
+    ]["filename"] == "退款 指南.backup.v2.pdf"
     assert document_client.calls == ["document_info", "list_document_chunks"]
+    assert [kwargs["kb_id"] for kwargs in document_client.read_kwargs] == [
+        "low",
+        "low",
+    ]
 
 
 async def test_document_tools_hide_cross_resource_document(
@@ -1068,9 +1293,9 @@ async def test_document_tools_hide_cross_resource_document(
         "DOCUMENT_NOT_ACCESSIBLE"
     )
     assert context.isError is True
-    assert json.loads(context.content[0].text)["error"] == (
-        "DOCUMENT_NOT_ACCESSIBLE"
-    )
+    context_error = json.loads(context.content[0].text)
+    assert context_error["error"] == "DOCUMENT_NOT_ACCESSIBLE"
+    assert "filename" not in context_error
     assert document_client.calls == ["document_info", "document_info"]
 
 
@@ -1138,6 +1363,7 @@ async def test_document_mutations_verify_resource_and_use_trusted_identity(
         {
             "chunk_strategy": "hybrid",
             "chunk_max_tokens": 384,
+            "force": False,
             "acl_context": {
                 "identity_domain": "tenant-a",
                     "principals": [
@@ -1767,6 +1993,10 @@ async def test_personal_mcp_search_uses_employee_acl_without_agent(seeded, monke
     from server.mcp.tools import polarrag
     from server.models import UserWorkspace
     session, user, resources = seeded
+    resources[0].kb_type = "PERSONAL"
+    resources[0].binding_mode = KnowledgeBindingMode.OWNER
+    resources[0].owner_pas_user_id = user.id
+    await session.commit()
     @asynccontextmanager
     async def same_session():
         yield session
@@ -1786,6 +2016,19 @@ async def test_personal_mcp_search_uses_employee_acl_without_agent(seeded, monke
     assert captured and 'ou-user' in json.dumps(captured)
     assert await session.scalar(select(UserWorkspace)) is None
     assert await session.scalar(select(Agent)) is None
+    denied = await polarrag._execute_tool('kb_search', polarrag.handle_kb_search,
+        query='public denied', knowledge_resource_ids=[resources[1].id], client_factory=lambda instance: ACLClient())
+    assert denied.isError is True
+    assert len(captured) == 1
+    owner_id = resources[0].owner_pas_user_id
+    resources[0].owner_pas_user_id = None
+    await session.commit()
+    denied = await polarrag._execute_tool('kb_search', polarrag.handle_kb_search,
+        query='ownership required', knowledge_resource_ids=[resources[0].id], client_factory=lambda instance: ACLClient())
+    assert denied.isError is True
+    assert len(captured) == 1
+    resources[0].owner_pas_user_id = owner_id
+    await session.commit()
     # Revoked enterprise identity must be absent from subsequent upstream ACL context.
     assignments = (await session.scalars(select(EnterprisePrincipalAssignment).where(EnterprisePrincipalAssignment.pas_user_id == user.id))).all()
     for assignment in assignments:
@@ -1800,3 +2043,299 @@ async def test_personal_mcp_search_uses_employee_acl_without_agent(seeded, monke
     await polarrag._execute_tool('kb_search', polarrag.handle_kb_search,
         query='read only', knowledge_resource_ids=[resources[0].id], client_factory=lambda instance: ACLClient())
     assert len(captured) == 2
+
+
+@pytest.mark.parametrize("reject_all", [False, True])
+async def test_kb_search_reports_upstream_rate_limits_without_invalid_response(seeded, reject_all):
+    import httpx
+    from fastapi import HTTPException
+    from server.api.platform_polarrag import _tool_payload
+    from server.mcp.tools.polarrag import handle_kb_search
+    from server.polarrag.client import HttpPolarRAGClient
+
+    session, user, resources = seeded
+    calls = 0
+
+    def respond(request):
+        nonlocal calls
+        if request.url.path.endswith("_search_capabilities"):
+            return httpx.Response(200, json={"schema_version": 1, "multi_kb_search": True, "max_kb_ids": 1})
+        calls += 1
+        if reject_all or calls == 2:
+            return httpx.Response(429, json={"error": "Internal search is temporarily unavailable"})
+        kb_id = json.loads(request.content)["kb_ids"][0]
+        return httpx.Response(200, json={"hits": {"hits": [{"_score": 1.0, "_source": {"kb_id": kb_id, "doc_id": "doc", "chunk_index": 0, "text": "result"}}]}})
+
+    client = HttpPolarRAGClient(base_url="https://rag.example.test", username="user", password="test", tls_verify=True, transport=httpx.MockTransport(respond))
+    result = await handle_kb_search(session, user, query="acl", knowledge_resource_ids=[r.id for r in resources[:2]], client_factory=lambda _: client)
+    assert calls == 2
+    if reject_all:
+        with pytest.raises(HTTPException) as error:
+            _tool_payload(result)
+        assert error.value.status_code == 503
+        assert error.value.detail["code"] == "POLARRAG_UNAVAILABLE"
+    else:
+        payload = _tool_payload(result)
+        assert len(payload["results"]) == 1
+        assert payload["successful_searches"] == 1
+        assert payload["failed_searches"] == 1
+        assert payload["partial_failures"][0]["error"] == "POLARRAG_UNAVAILABLE"
+
+
+@pytest.mark.parametrize("version", ["1.0.6", None, "unknown", "1.0.7", "t-polardb-rag-1.0.7-20260915022500.al8.x86_64", "1.0.8"])
+@pytest.mark.parametrize("force", [False, True])
+async def test_rechunk_force_version_gate(seeded, version, force):
+    from server.mcp.tools.polarrag import handle_doc_rechunk
+
+    session, user, resources = seeded
+    instance = await session.get(PolarRAGInstance, resources[0].polarrag_instance_id)
+    instance.plugin_version = version
+    await session.flush()
+    client = FakeDocumentClient()
+    result = await handle_doc_rechunk(
+        session, user, knowledge_resource_id=resources[0].id, doc_id="doc-a",
+        force=force, client_factory=lambda _: client,
+    )
+    unsupported = force and version in ("1.0.6", None, "unknown")
+    assert result.isError is unsupported
+    if unsupported:
+        assert json.loads(result.content[0].text)["error"] == "POLARRAG_VERSION_UNSUPPORTED"
+        assert client.mutation_kwargs == []
+    else:
+        assert client.mutation_kwargs[0]["force"] is force
+        assert client.mutation_kwargs[0]["acl_context"] == client.read_kwargs[0]["acl_context"]
+
+
+@pytest.mark.parametrize("denial", ["resource", "document"])
+async def test_force_rechunk_preserves_authorization(seeded, denial):
+    from server.mcp.tools.polarrag import handle_doc_rechunk
+    from server.polarrag.access import KnowledgeResourceScope
+
+    session, user, resources = seeded
+    instance = await session.get(PolarRAGInstance, resources[0].polarrag_instance_id)
+    instance.plugin_version = "1.0.7"
+    await session.flush()
+    client = FakeDocumentClient(kb_id="high")
+    result = await handle_doc_rechunk(
+        session, user, knowledge_resource_id=resources[0].id, doc_id="doc-a",
+        force=True, client_factory=lambda _: client,
+        resource_scope=KnowledgeResourceScope({}) if denial == "resource" else None,
+    )
+    assert result.isError is True
+    assert json.loads(result.content[0].text)["error"] == (
+        "NO_ACCESSIBLE_KNOWLEDGE_RESOURCE" if denial == "resource" else "DOCUMENT_NOT_ACCESSIBLE"
+    )
+    assert client.mutation_kwargs == []
+
+
+@pytest.mark.parametrize("by_space", [False, True])
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("version", [None, "1.0.6", "1.0.7"])
+async def test_force_rechunk_http_version_responses(seeded, monkeypatch, by_space, batch, version):
+    import httpx
+    from fastapi import FastAPI
+    from server.api import platform_polarrag
+    from server.db.engine import get_session
+    from server.mcp.tools.polarrag import handle_doc_rechunk
+
+    session, user, resources = seeded
+    resource = resources[0]
+    instance = await session.get(PolarRAGInstance, resource.polarrag_instance_id)
+    instance.plugin_version = version
+    await session.flush()
+    client = FakeDocumentClient()
+    app = FastAPI()
+    app.include_router(platform_polarrag.router, prefix="/api")
+    app.dependency_overrides[platform_polarrag.get_platform_access_context] = lambda: SimpleNamespace(user=user)
+    app.dependency_overrides[get_session] = lambda: session
+
+    async def resolve(*args, **kwargs):
+        return resource.id
+
+    async def invoke(context, name, arguments):
+        assert name == "doc_rechunk"
+        return await handle_doc_rechunk(session, context.user, **arguments, client_factory=lambda _: client)
+
+    monkeypatch.setattr(platform_polarrag, "_resolve_space_knowledge_base", resolve)
+    monkeypatch.setattr(platform_polarrag, "_invoke_tool", invoke)
+    prefix = "/api/v1/spaces/space-a/knowledge-bases/low" if by_space else f"/api/v1/knowledge-bases/{resource.id}"
+    path = prefix + ("/documents/rechunk" if batch else "/documents/doc-a/rechunk")
+    body = {"force": True}
+    if batch:
+        body["doc_ids"] = ["doc-a", "doc-b"]
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+        response = await http.post(path, json=body)
+    if version == "1.0.7":
+        assert response.status_code == 202, response.text
+        assert len(client.mutation_kwargs) == (2 if batch else 1)
+    elif batch:
+        assert response.status_code == 207, response.text
+        assert response.json()["accepted"] == []
+        assert [row["doc_id"] for row in response.json()["failed"]] == ["doc-a", "doc-b"]
+        assert all(row["status_code"] == 422 and row["code"] == "POLARRAG_VERSION_UNSUPPORTED"
+                   for row in response.json()["failed"])
+        assert client.mutation_kwargs == []
+    else:
+        assert response.status_code == 422, response.text
+        assert response.json()["detail"]["code"] == "POLARRAG_VERSION_UNSUPPORTED"
+        assert client.mutation_kwargs == []
+
+
+@pytest.mark.parametrize("version", ["1.0.6", "1.0.7"])
+async def test_force_rechunk_execution_retains_audit(seeded, monkeypatch, version):
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock
+    from sqlalchemy import select
+    from server.mcp.tools import polarrag
+    from server.models import AuditLog, AuditStatus
+
+    session, user, resources = seeded
+    instance = await session.get(PolarRAGInstance, resources[0].polarrag_instance_id)
+    instance.plugin_version = version
+    await session.commit()
+
+    @asynccontextmanager
+    async def same_session():
+        yield session
+
+    context = SimpleNamespace(user=user, agent=SimpleNamespace(id="test-agent"))
+    monkeypatch.setattr(polarrag, "get_session_factory", lambda: same_session)
+    monkeypatch.setattr(polarrag, "current_agent_user_context", AsyncMock(return_value=context))
+    monkeypatch.setattr(polarrag, "current_polarrag_resource_scope", AsyncMock(return_value=None))
+    client = FakeDocumentClient()
+    result = await polarrag._execute_tool(
+        "doc_rechunk", polarrag.handle_doc_rechunk,
+        knowledge_resource_id=resources[0].id, doc_id="doc-a", force=True,
+        client_factory=lambda _: client,
+    )
+    audit = await session.scalar(select(AuditLog).where(AuditLog.action == "polarrag.doc_rechunk"))
+    assert audit is not None
+    assert audit.actor_user_id == user.id
+    assert audit.target_id == resources[0].id
+    assert audit.status == (AuditStatus.SUCCESS if version == "1.0.7" else AuditStatus.ERROR)
+    assert audit.error_code == (None if version == "1.0.7" else "POLARRAG_VERSION_UNSUPPORTED")
+    assert result.isError is (version != "1.0.7")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "query", "expected_error", "fetch_count", "recall_count"),
+    [
+        ("same", "refund", None, 1, 0),
+        ("changed", "refund", None, 2, 1),
+        ("changed", None, "citation_source_changed", 1, 0),
+        ("repeated", "refund", "citation_source_changed", 2, 1),
+        ("empty", "refund", "citation_source_changed", 1, 1),
+        ("missing_generation", "refund", "citation_source_changed", 1, 1),
+        ("invalid_generation", "refund", "citation_source_changed", 1, 1),
+        ("acl", "refund", "DOCUMENT_NOT_ACCESSIBLE", 1, 0),
+        ("refresh_acl", "refund", "DOCUMENT_NOT_ACCESSIBLE", 1, 1),
+    ],
+)
+async def test_context_generation_pin_and_bounded_relocation(
+    seeded, outcome, query, expected_error, fetch_count, recall_count,
+):
+    from server.mcp.tools.polarrag import handle_kb_fetch_context
+
+    session, user, resources = seeded
+
+    class Client(FakeDocumentClient):
+        def __init__(self):
+            super().__init__()
+            self.context_calls = []
+            self.recall_calls = []
+
+        async def document_info(self, space_id, doc_id, **kwargs):
+            document = await super().document_info(space_id, doc_id, **kwargs)
+            if len(self.calls) == 2 and outcome == "refresh_acl":
+                raise PolarRAGUpstreamError(PolarRAGErrorCode.DOCUMENT_NOT_ACCESSIBLE)
+            document["filename"] = "old.pdf" if len(self.calls) == 1 else "new.pdf"
+            return document
+
+        async def fetch_context(self, space_id, doc_id, **kwargs):
+            self.context_calls.append((space_id, doc_id, kwargs))
+            if outcome == "acl":
+                raise PolarRAGUpstreamError(PolarRAGErrorCode.DOCUMENT_NOT_ACCESSIBLE)
+            if outcome != "same" and (len(self.context_calls) == 1 or outcome == "repeated"):
+                raise PolarRAGUpstreamError(PolarRAGErrorCode.CITATION_SOURCE_CHANGED, status_code=409)
+            return {"hits": {"hits": [{"_source": {
+                "doc_id": doc_id,
+                "doc_generation": kwargs["expected_doc_generation"],
+                "chunk_index": kwargs["chunk_index"],
+                "text": "fresh context",
+            }}]}}
+
+        async def recall_document(self, space_id, doc_id, **kwargs):
+            self.recall_calls.append((space_id, doc_id, kwargs))
+            source = {"doc_id": doc_id, "chunk_index": 7, "doc_generation": 3, "filename": "new.pdf"}
+            if outcome == "missing_generation":
+                source.pop("doc_generation")
+            if outcome == "invalid_generation":
+                source["doc_generation"] = True
+            return {"hits": {"hits": [] if outcome == "empty" else [{"_source": source}]}}
+
+    client = Client()
+    result = await handle_kb_fetch_context(
+        session, user,
+        knowledge_resource_id=resources[0].id,
+        doc_id="doc-a", chunk_index=1, expected_doc_generation=2,
+        query=query, client_factory=lambda _instance: client,
+    )
+    payload = json.loads(result.content[0].text)
+    assert result.isError is (expected_error is not None)
+    assert len(client.context_calls) == fetch_count
+    assert len(client.recall_calls) == recall_count
+    expected_info_calls = 2 if outcome in {"changed", "repeated", "refresh_acl"} and query is not None else 1
+    assert client.calls == ["document_info"] * expected_info_calls
+    assert client.context_calls[0][2]["expected_doc_generation"] == 2
+    assert client.context_calls[0][2]["chunk_index"] == 1
+    if recall_count:
+        space_id, doc_id, kwargs = client.recall_calls[0]
+        assert (space_id, doc_id, kwargs["kb_id"], kwargs["query"], kwargs["top_k"]) == (
+            "space-a", "doc-a", "low", "refund", 1,
+        )
+        assert kwargs["acl_context"] == client.context_calls[0][2]["acl_context"]
+    if fetch_count == 2:
+        assert client.context_calls[1][2]["expected_doc_generation"] == 3
+        assert client.context_calls[1][2]["chunk_index"] == 7
+    if expected_error:
+        assert payload["error"] == expected_error
+        assert "result" not in payload
+    else:
+        source = payload["result"]["hits"]["hits"][0]["_source"]
+        assert (source["doc_generation"], source["chunk_index"]) == (
+            (3, 7) if outcome == "changed" else (2, 1)
+        )
+        assert source["filename"] == ("new.pdf" if outcome == "changed" else "old.pdf")
+
+
+@pytest.mark.parametrize("generation", [-1, 2147483648, True, "2", 2.0])
+async def test_context_rejects_invalid_generation_without_upstream_calls(seeded, generation):
+    from server.mcp.tools.polarrag import handle_kb_fetch_context
+
+    session, user, resources = seeded
+    client = FakeDocumentClient()
+    result = await handle_kb_fetch_context(
+        session, user, knowledge_resource_id=resources[0].id,
+        doc_id="doc-a", chunk_index=1, expected_doc_generation=generation,
+        client_factory=lambda _instance: client,
+    )
+    assert json.loads(result.content[0].text)["error"] == "INVALID_ARGUMENT"
+    assert client.calls == []
+
+
+async def test_doc_recall_preserves_generation(seeded):
+    from server.mcp.tools.polarrag import handle_doc_recall
+
+    session, user, resources = seeded
+
+    class Client:
+        async def recall_document(self, _space_id, doc_id, **_kwargs):
+            return {"hits": {"hits": [{"_source": {
+                "doc_id": doc_id, "chunk_index": 1, "doc_generation": 0,
+            }}]}}
+
+    result = await handle_doc_recall(
+        session, user, knowledge_resource_id=resources[0].id,
+        doc_id="doc-a", query="refund", client_factory=lambda _instance: Client(),
+    )
+    assert json.loads(result.content[0].text)["result"]["hits"]["hits"][0]["_source"]["doc_generation"] == 0

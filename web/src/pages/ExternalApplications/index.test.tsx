@@ -205,7 +205,13 @@ it('returns all integration values after registering an application', async () =
   ).toBeInTheDocument()
 })
 
-it('submits Feishu identity context from the application test dialog', async () => {
+it.each(['active', 'stale'])('submits Feishu identity context from a usable %s source', async (status) => {
+  vi.mocked(listEnterpriseIdentitySources).mockResolvedValue({ data: { items: [
+    { id: 'source-1', name: 'Verified Feishu tenant', provider: 'feishu', status,
+      snapshot_usable: true, last_synced_at: null },
+    { id: 'expired', name: 'Expired source', provider: 'feishu', status: 'stale',
+      snapshot_usable: false, last_synced_at: null },
+  ] } } as never)
   vi.mocked(getExternalApplicationContext).mockResolvedValue({
     data: { ...enabledContext, provider_type: 'feishu' },
   } as never)
@@ -230,6 +236,7 @@ it('submits Feishu identity context from the application test dialog', async () 
   await user.click(screen.getByRole('combobox', {
     name: 'Verified Feishu identity source',
   }))
+  expect(screen.queryByText('Expired source (expired)')).not.toBeInTheDocument()
   await user.click(await screen.findByText(
     'Verified Feishu tenant (source-1)',
   ))

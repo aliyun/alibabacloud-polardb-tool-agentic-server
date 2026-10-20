@@ -169,8 +169,8 @@ describe('Instance detail administration', () => {
     await user.clear(usage)
     await user.type(usage, 'Read-only reporting workloads')
     const region = screen.getByLabelText(/^region$/i)
-    await user.clear(region)
-    await user.type(region, 'cn-beijing')
+    await user.click(region)
+    await user.click(screen.getByText('China (Beijing) · cn-beijing'))
     const host = screen.getByLabelText(/^host$/i)
     await user.clear(host)
     await user.type(host, 'reporting.example.invalid')
@@ -421,4 +421,9 @@ describe('Instance detail administration', () => {
       expect(disableProvisioningBackend).toHaveBeenCalledWith('backend-1'),
     )
   })
+})
+
+vi.mock('../../api/aliyunEndpoints', async () => {
+  const { endpointCatalog } = await import('../../test/endpointCatalog')
+  return { getEndpointCatalog: vi.fn().mockResolvedValue(endpointCatalog) }
 })

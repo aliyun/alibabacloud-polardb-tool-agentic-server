@@ -3,13 +3,15 @@ from __future__ import annotations
 import sys
 from contextlib import asynccontextmanager
 import subprocess
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete
 
 from server.configuration.bootstrap import initialize_configuration
 from server.configuration.runtime import project_app_config
-from server.models import SystemConfig
+from server.models import AuthProvider, SystemConfig, User, UserStatus
 from tests._configuration_helpers import create_config_context
 
 
@@ -131,6 +133,59 @@ async def test_enabling_requires_protected_read_test(context):
     with pytest.raises(ConfigError, match="verify read access"):
         await activate_configuration(context.repository, expected_revision=doc.revision, document=target)
     assert (await context.repository.get_module("knowledge")).effective.config["enabled"] is False
+
+
+async def test_protected_read_validation_uses_balanced_search(context, monkeypatch):
+    from server.features.knowledge import validate_read_access
+
+    async with context.repository.session_factory() as session:
+        user = User(
+            external_id="validation-user",
+            display_name="Validation User",
+            auth_provider=AuthProvider.BUILTIN,
+            status=UserStatus.ACTIVE,
+        )
+        session.add(user)
+        await session.commit()
+
+    client = SimpleNamespace(
+        check_capabilities=AsyncMock(
+            return_value=SimpleNamespace(
+                as_dict=lambda: {"version": "1.0.7", "protected_search": True}
+            )
+        ),
+        search=AsyncMock(),
+    )
+    access = SimpleNamespace(
+        instance=object(),
+        space=SimpleNamespace(space_id="space-1"),
+        resources=[SimpleNamespace(kb_id="kb-1")],
+        acl_context={"identity_domain": "domain-1", "principals": []},
+    )
+    monkeypatch.setattr(
+        "server.polarrag.access.plan_knowledge_access",
+        AsyncMock(return_value=access),
+    )
+    monkeypatch.setattr(
+        "server.polarrag.client.client_from_instance",
+        lambda _instance: client,
+    )
+
+    await validate_read_access(
+        context.repository,
+        {"validation_resource_id": "resource-1", "validation_user_id": user.id},
+    )
+
+    client.search.assert_awaited_once_with(
+        "space-1",
+        "kb-1",
+        query="PAS knowledge read access verification",
+        search_mode="balanced",
+        top_k=1,
+        min_score=None,
+        reranker=False,
+        acl_context={"identity_domain": "domain-1", "principals": []},
+    )
 
 
 async def test_disabled_http_paths_do_not_turn_into_spa_or_unknown_route():

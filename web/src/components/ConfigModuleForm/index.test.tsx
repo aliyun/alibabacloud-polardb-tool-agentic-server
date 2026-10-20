@@ -83,7 +83,7 @@ it('enforces schema string lengths and reports value changes', async () => {
         password: {
           type: 'string',
           title: 'Administrator password',
-          minLength: 12,
+          minLength: 8,
         },
       },
     },
@@ -109,7 +109,7 @@ it('enforces schema string lengths and reports value changes', async () => {
   await user.click(screen.getByRole('button', { name: /submit/i }))
 
   expect(
-    await screen.findByText(/must be at least 12 characters/i),
+    await screen.findByText(/must be at least 8 characters/i),
   ).toBeInTheDocument()
   expect(onSubmit).not.toHaveBeenCalled()
   expect(onValuesChange).toHaveBeenCalled()
@@ -141,6 +141,27 @@ it('omits the documentation block when no docs are provided', () => {
   render(<ConfigModuleForm module={module} onSubmit={vi.fn()} />)
 
   expect(screen.queryByRole('link')).not.toBeInTheDocument()
+})
+
+it('shows configurable Feishu check, fallback and group reconciliation intervals', () => {
+  const identitySync: ConfigModule = {
+    ...module,
+    name: 'enterprise_identity_sync',
+    draft: null,
+    schema: {
+      type: 'object',
+      properties: {
+        feishu_check_interval_seconds: { type: 'integer', default: 600, minimum: 60 },
+        feishu_fallback_after_seconds: { type: 'integer', default: 86400, minimum: 600 },
+        feishu_group_and_knowledge_scope_interval_seconds: { type: 'integer', default: 3600, minimum: 600 },
+      },
+    },
+  }
+  render(<ConfigModuleForm module={identitySync} onSubmit={vi.fn()} />)
+
+  expect(screen.getByLabelText(/Feishu fallback check interval/)).toHaveValue('600')
+  expect(screen.getByLabelText(/Feishu incremental failure threshold/)).toHaveValue('86400')
+  expect(screen.getByLabelText(/Feishu group and knowledge permission reconciliation interval/)).toHaveValue('3600')
 })
 
 it('renders PolarRAG governance controls and local replica semantics', () => {

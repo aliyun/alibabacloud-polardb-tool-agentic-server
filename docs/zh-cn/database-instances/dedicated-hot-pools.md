@@ -38,7 +38,8 @@ PAS 只支持以下三种数据库供给方式：
 - `max_member_purchases_per_hour`：持久化、多副本安全的购买预算。
 - `max_create_requests_per_agent_per_hour` 和
   `max_delete_requests_per_agent_per_hour`：仅 Dedicated 使用的 Agent 操作预算。
-- 地域、可用区、VPC、VSwitch 和存储类型。这些标识需要手工填写；PAS 不会为了
+- 地域、可用区、VPC、VSwitch 和存储类型。地域从统一审核目录选择，新池初始使用
+  已激活的 PAS 默认地域。可用区、VPC、VSwitch 标识仍需手工填写；PAS 不会为了
   枚举网络资源而额外要求 RAM 权限。填写地域后，向导会链接到
   `https://vpc.console.aliyun.com/vpc/<region_id>/vpcs`，管理员可从阿里云 VPC
   控制台复制 VPC 和 VSwitch。VSwitch 必须属于该 VPC 和可用区，且 PAS 必须能
@@ -62,6 +63,9 @@ PAS 只支持以下三种数据库供给方式：
 VSwitch 和服务端允许的存储类型。当前默认且唯一支持的存储类型为 `essdpl1`；选择器
 允许未来的模板 Revision 增加物理磁盘类型，而不暴露任意购买字段。
 
+向导中的**下一步**仅切换步骤。请在最后一步核对权限与生命周期设置，再显式点击
+**保存但暂不启动**或**创建并开始自动供给**，才会创建资源池。
+
 权限选择器名称为**为 Agent 分配的默认 MySQL 权限**：它控制 PAS 为 Agent 分配
 时返回的 MySQL 账号权限，不假设调用方一定是 Sandbox。
 
@@ -72,10 +76,13 @@ VSwitch 和服务端允许的存储类型。当前默认且唯一支持的存储
 
 修改网络位置时，管理员必须显式确认风险，且请求必须携带最新的资源池配置 Revision。
 该操作不会迁移已有 PolarDB 集群，因此资源池可能暂时同时包含旧网络和新网络中的
-成员。管理员必须确认 PAS 以及路由到该资源池的 Agent 都能访问两处网络。尚未发起
-云端购买的成员（包括进度仍为 `PURCHASE_INTENT_STORED` 的失败成员）重试时使用最新
-保存的网络配置；已经进入 `PURCHASE_REQUESTED` 或后续步骤的成员继续使用已发送给
-阿里云的网络位置。因此，正在进行中的请求仍可能按照修改前的配置完成。
+成员。管理员必须确认 PAS 以及路由到该资源池的 Agent 都能访问两处网络。
+存在 `PENDING` 或 `PURCHASE_INTENT_STORED` 成员时禁止修改网络位置；
+应先暂停补充并核对未完成的购买。PAS 在发出购买请求前固定实例地域。
+旧版本遗留且未保存地域的购买意图需要人工核对后再重试，PAS 不猜测购买位置。
+已有成员后续的所有 OpenAPI 操作（包括销毁）使用实例自身地域。
+表单切换地域会清空可用区、VPC、VSwitch，要求重新选择。
+VPC 模式下池地域必须匹配 PAS 接入地域，后端在实际执行时也会校验。
 
 PAS 私网来源 CIDR 会在购买新成员时传入。修改该配置只影响后续成员，不会自动协调
 已有 PolarDB 集群的白名单。

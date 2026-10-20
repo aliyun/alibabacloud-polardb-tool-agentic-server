@@ -67,7 +67,9 @@ helm upgrade --install pas deploy/helm/polardb-agentic-server \
   --set management.service.enabled=true
 ```
 
-Chart 会拒绝相同的业务端口与管理端口。管理 Service 与业务 Service 分离，但
+Chart 会拒绝相同的业务端口与管理端口。启用管理 Service 时，`trusted-network`
+和 `bearer-token` 两种模式均要求 `management.service.type=ClusterIP`，
+拒绝 `NodePort` 和 `LoadBalancer`。管理 Service 与业务 Service 分离，但
 Chart 不创建 NetworkPolicy；必须增加默认拒绝策略，只允许管控命名空间和工作
 负载身份访问。绝不能把该 Service 接入业务 Ingress 或负载均衡。
 
@@ -145,8 +147,21 @@ PAS_VERSION=X.Y.Z
 scripts/deploy/smoke-helm.sh \
   --image "polardb-agentic-server:local-v${PAS_VERSION}" \
   --mysql-image registry.example.com/library/mysql:8.0.44 \
-  --kind-image registry.example.com/kindest/node:v1.35.0
+  --kind-image registry.example.com/kindest/node:v1.37.0
 ```
 
 `--kind-image` 是可选参数。当 Docker Hub 不可达，或镜像仓库中的 manifest
-digest 与源仓库不同时应显式设置。脚本会创建临时 Kind 集群，并在退出时清理。
+digest 与源仓库不同时应显式设置。PAS 镜像必须以 `repository:tag` 形式存在于
+本地。MySQL 镜像会按需拉取并在部署前加载到 Kind，集群无需配置镜像仓库凭据。
+Docker API 1.48 及以上会先导出本地已有平台，再加载镜像，也支持仅缓存部分平台
+的多架构索引。
+
+脚本使用随机集群名和私有 kubeconfig，拒绝已存在的 `--cluster-name`，退出时
+仅删除自己创建的集群，不改写调用方 kubeconfig 或当前 context。失败时会先输出
+Pod、Job 和事件诊断，再执行清理。
+
+验收覆盖全新迁移、两个 Ready 的 Deployment 副本、认证读写、同镜像滚动、
+故意失败的迁移不改动 Deployment，以及成功重试。副本检查排除已完成 hook 和
+正在退出的旧 Pod。此用例不能证明不同版本之间的 schema 兼容性，也不验收托管
+升级编排器。显式启用 pytest 和完整后端执行见
+[本地回归指南](../../../scripts/dev/local-regression.zh-CN.md)。

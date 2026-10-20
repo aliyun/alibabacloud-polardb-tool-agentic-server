@@ -258,7 +258,9 @@ async def _reserve_candidate(
     )
     if _dialect_name(session) != "sqlite":
         agent_statement = agent_statement.with_for_update()
-        backend_statement = backend_statement.with_for_update()
+        # Lock mutable placement state, excluding the optional immutable
+        # permission revision on the nullable side of the outer join.
+        backend_statement = backend_statement.with_for_update(of=(ProvisioningBackend, Instance))
         binding_statement = binding_statement.with_for_update()
         health_statement = health_statement.with_for_update()
     agent = (await session.execute(agent_statement)).one_or_none()

@@ -13,7 +13,6 @@ import { FeaturesProvider } from './hooks/useFeatures'
 // Lazy-loaded pages for code splitting
 const Resources = lazy(() => import('./pages/AccessConsole/Resources'))
 const Accounts = lazy(() => import('./pages/AccessConsole/Accounts'))
-const PersonalResources = lazy(() => import('./pages/AccessConsole/MyResources'))
 const Connect = lazy(() => import('./pages/AccessConsole/Connect'))
 const Features = lazy(() => import('./pages/Features'))
 const Dashboard = lazy(() => import('./pages/Dashboard'))
@@ -89,7 +88,7 @@ function ReadyRoutes({
           path="/dashboard"
           element={<Dashboard isAdmin={user?.role === 'admin'} />}
         />
-        <Route path="/my-resources" element={<PersonalResources />} />
+        <Route path="/my-resources" element={<MyInstances knowledgeOnly />} />
         <Route path="/connect" element={<Connect />} />
         {(loading || user?.role === 'admin') && (
           <>

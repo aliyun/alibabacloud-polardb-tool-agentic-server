@@ -1,3 +1,4 @@
+import RegionSelect from '../../components/RegionSelect'
 import {
   useCallback,
   useLayoutEffect,
@@ -720,7 +721,9 @@ export default function InstanceDetail() {
                   { max: 64 },
                 ]}
               >
-                <Input placeholder="cn-hangzhou" />
+                {instance.engine === 'polardb_mysql'
+                  ? <RegionSelect allowClear={!instance.region} />
+                  : <Input />}
               </Form.Item>
               <Form.Item
                 name="port"

@@ -49,7 +49,9 @@ request. Configure:
 - `max_create_requests_per_agent_per_hour` and
   `max_delete_requests_per_agent_per_hour`: Dedicated-only Agent operation
   budgets.
-- region, zone, VPC, VSwitch, and storage type. Enter these identifiers
+- region, zone, VPC, VSwitch, and storage type. Select the region from the
+  shared reviewed catalog; new pools initially use the active PAS default.
+  Enter the zone, VPC, and VSwitch identifiers
   manually; PAS deliberately does not request additional RAM permissions to
   enumerate network resources. After entering the region, the wizard links to
   `https://vpc.console.aliyun.com/vpc/<region_id>/vpcs` so you can copy a VPC
@@ -79,6 +81,10 @@ The initial default and only supported storage type is `essdpl1`; the selector
 allows future profile revisions to add physical storage types without exposing
 arbitrary purchase fields.
 
+The wizard's **Next** button only advances to the next step. Review the final
+access and lifecycle settings, then explicitly select **Save as not started**
+or **Create and start automatic supply** to create the pool.
+
 The permission selector is **Agent MySQL default permissions**: it controls the
 MySQL account PAS returns for an Agent allocation, regardless of whether the
 caller is a sandbox or another Agent runtime.
@@ -94,11 +100,15 @@ Changing network placement requires an explicit risk confirmation and the
 latest pool configuration revision. The change does not migrate existing
 PolarDB clusters, so the pool can temporarily contain members in both the old
 and new networks. Administrators must confirm that PAS and routed Agents can
-reach both placements. Members that have not started a cloud purchase,
-including failed members whose progress is still `PURCHASE_INTENT_STORED`, use
-the latest saved placement when retried. A member at `PURCHASE_REQUESTED` or a
-later step keeps the placement already sent to Alibaba Cloud; an in-flight
-request can therefore complete with the previous configuration.
+reach both placements. Placement cannot change while any member is at
+`PENDING` or `PURCHASE_INTENT_STORED`; pause replenishment and reconcile
+outstanding purchases first. PAS pins the instance region before dispatching
+a purchase. An older purchase intent without a stored region requires manual
+reconciliation before retry; PAS does not guess its purchase location.
+Existing members use their own instance region for all subsequent OpenAPI
+operations, including deletion. Changing a region in the form clears zone,
+VPC, and VSwitch so they must be selected again. In VPC mode, pool regions must
+match the PAS access region; the backend also checks this at execution time.
 
 The PAS private source CIDR setting is sent when PAS purchases a new member.
 Changing it affects future members only; it does not reconcile the whitelist

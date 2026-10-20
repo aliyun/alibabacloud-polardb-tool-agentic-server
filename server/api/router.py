@@ -59,8 +59,10 @@ core_router.include_router(external_applications_router)
 
 def build_knowledge_router() -> APIRouter:
     from server.api import (
+        admin_space_sync,
         agent_knowledge_access,
         agent_knowledge_scopes,
+        external_knowledge_scopes,
         platform_polarrag,
         polarrag,
         polarrag_documents,
@@ -68,9 +70,11 @@ def build_knowledge_router() -> APIRouter:
 
     result = APIRouter(prefix="/api", tags=["knowledge"])
     for module in (
+        admin_space_sync,
         polarrag,
         agent_knowledge_access,
         agent_knowledge_scopes,
+        external_knowledge_scopes,
         polarrag_documents,
         platform_polarrag,
     ):

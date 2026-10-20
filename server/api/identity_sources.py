@@ -7,24 +7,34 @@ import secrets
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, exists, func, inspect, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from server.api.enterprise_user_identity import resolve_enterprise_user_ids
 from server.auth.dependencies import require_admin
 from server.config import get_config
 from server.core.audit_logger import log_audit
+from server.core.agent_knowledge_scope import resource_ids_from_json
 from server.core.crypto import decrypt, encrypt
+from server.core.identity_source_space import (
+    bind_identity_source_to_enabled_spaces,
+    identity_source_binds_all_spaces,
+)
 from server.db.engine import get_session
+from server.enterprise_identity.service import identity_source_snapshot_is_usable
+from server.enterprise_identity.providers import DIRECTORY_SYNC_ADAPTERS
 from server.enterprise_identity.feishu_tenant_verification import (
     build_feishu_authorization_url,
     feishu_tenant_verification_callback_url,
 )
 from server.models import (
     AgentGroupAssignment,
+    AgentGroupKind,
     AgentKnowledgeScope,
+    AgentKnowledgePolicy,
     AgentKnowledgeScopeBinding,
     AuditStatus,
     EnterpriseDirectoryEntryStatus,
@@ -37,8 +47,12 @@ from server.models import (
     EnterpriseIdentitySourceStatus,
     EnterpriseIdentitySourceSpaceBinding,
     ExternalUserPrincipalMembership,
+    EnterpriseIdentitySourceEvent,
+    EnterpriseIdentitySourceEventStatus,
     FeishuTenantVerificationState,
+    DingTalkLoginState,
     IdentitySourceProvider,
+    KnowledgeResource,
     PolarRAGSpace,
     User,
     UserExternalIdentity,
@@ -49,7 +63,10 @@ from server.models import (
 from server.models.identity_source import DEFAULT_IDENTITY_SOURCE_STALE_AFTER_SECONDS
 from server.enterprise_identity.principals import resolve_external_user_principals
 from server.enterprise_identity.service import identity_provider_key, sync_identity_source
-from server.enterprise_identity.sync import schedule_identity_source_sync, sync_task
+from server.enterprise_identity.sync import (
+    schedule_identity_source_sync,
+    sync_task,
+)
 
 
 router = APIRouter(prefix="/identity-sources", tags=["identity-sources"])
@@ -60,13 +77,14 @@ class IdentitySourceCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=255)
-    provider: Literal["feishu", "sharepoint"]
+    provider: Literal["feishu", "sharepoint", "dingtalk"]
     tenant_id: str | None = Field(default=None, min_length=1, max_length=255)
     app_id: str | None = Field(default=None, max_length=255)
     app_secret: str | None = Field(default=None, max_length=4096)
     cloud: Literal["global", "china"] = "global"
     client_id: str | None = Field(default=None, max_length=255)
     client_secret: str | None = Field(default=None, max_length=4096)
+    bind_all_spaces: bool = True
     stale_after_seconds: int = Field(
         default=DEFAULT_IDENTITY_SOURCE_STALE_AFTER_SECONDS,
         ge=60,
@@ -98,9 +116,7 @@ class IdentitySourceCreate(BaseModel):
             if self.tenant_id is not None:
                 raise ValueError("tenant_id is discovered during Feishu verification")
         elif not self.tenant_id or not self.client_id or not self.client_secret:
-            raise ValueError(
-                "client_id and client_secret are required for SharePoint"
-            )
+            raise ValueError("client_id and client_secret are required for this provider")
         return self
 
 
@@ -141,18 +157,27 @@ class AclMembershipSnapshotConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     host: str = Field(min_length=1, max_length=255)
-    port: int = Field(default=3306, ge=1, le=65535)
+    port: int | None = Field(default=None, ge=1, le=65535)
     database: str = Field(default="polar_rag_meta", min_length=1, max_length=255)
     username: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=1, max_length=4096)
+    password: str | None = Field(default=None, min_length=1, max_length=4096)
+    dialect: Literal["mysql", "postgresql"] = "mysql"
 
     @field_validator("host", "database", "username", "password")
     @classmethod
-    def validate_snapshot_value(cls, value: str) -> str:
+    def validate_snapshot_value(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
             raise ValueError("value must not be blank")
         return normalized
+
+    @model_validator(mode="after")
+    def default_dialect_port(self) -> AclMembershipSnapshotConfig:
+        if self.port is None:
+            self.port = 5432 if self.dialect == "postgresql" else 3306
+        return self
 
 
 class ExternalPrincipalMembershipInput(BaseModel):
@@ -239,9 +264,20 @@ def _acl_membership_snapshot_configured(source: EnterpriseIdentitySource) -> boo
         config = json.loads(decrypt(source.config_ciphertext))
     except Exception:
         return False
-    return isinstance(config, dict) and isinstance(
-        config.get("acl_membership_snapshot"), dict
-    )
+    return isinstance(config, dict) and isinstance(config.get("acl_membership_snapshot"), dict)
+
+
+def _acl_membership_snapshot_public_config(source: EnterpriseIdentitySource) -> dict[str, object] | None:
+    if not source.config_ciphertext:
+        return None
+    try:
+        config = json.loads(decrypt(source.config_ciphertext))
+        snapshot = config.get("acl_membership_snapshot") if isinstance(config, dict) else None
+        if not isinstance(snapshot, dict):
+            return None
+        return {key: snapshot[key] for key in ("dialect", "host", "port", "database", "username") if key in snapshot}
+    except Exception:
+        return None
 
 
 def _sharepoint_cloud(source: EnterpriseIdentitySource) -> str | None:
@@ -260,9 +296,7 @@ async def _identity_principals(
     source: EnterpriseIdentitySource,
     external_user_id: str,
 ) -> list[dict[str, str]]:
-    principals: set[tuple[str, str, str]] = {
-        (source.provider.value, "user", external_user_id)
-    }
+    principals: set[tuple[str, str, str]] = {(source.provider.value, "user", external_user_id)}
     principals.update(
         (source.provider.value, principal_type.value, principal_id)
         for principal_type, principal_id in await resolve_external_user_principals(
@@ -284,14 +318,8 @@ async def _identity_principals(
                 .select_from(EnterpriseDirectoryMembership)
                 .join(
                     EnterpriseDirectoryGroup,
-                    (
-                        EnterpriseDirectoryGroup.identity_source_id
-                        == EnterpriseDirectoryMembership.identity_source_id
-                    )
-                    & (
-                        EnterpriseDirectoryGroup.external_group_id
-                        == EnterpriseDirectoryMembership.external_group_id
-                    ),
+                    (EnterpriseDirectoryGroup.identity_source_id == EnterpriseDirectoryMembership.identity_source_id)
+                    & (EnterpriseDirectoryGroup.external_group_id == EnterpriseDirectoryMembership.external_group_id),
                 )
                 .where(
                     EnterpriseDirectoryMembership.identity_source_id == source.id,
@@ -306,10 +334,7 @@ async def _identity_principals(
             for group_id, principal_type in rows
             if str(group_id) not in visited_groups
         }
-        principals.update(
-            (source.provider.value, principal_type, group_id)
-            for group_id, principal_type in groups
-        )
+        principals.update((source.provider.value, principal_type, group_id) for group_id, principal_type in groups)
         frontier = {group_id for group_id, _principal_type in groups}
         visited_groups.update(frontier)
         member_type = EnterpriseDirectoryMembershipType.GROUP
@@ -347,9 +372,7 @@ async def _identity_mapping_response(
         "display_name": directory_user.display_name,
         "email": directory_user.email,
         "status": directory_user.status.value,
-        "mapping_mode": (
-            "synced" if user.external_id == default_external_id else "pas_managed"
-        ),
+        "mapping_mode": ("synced" if user.external_id == default_external_id else "pas_managed"),
         "native_principal_id": user.external_id,
         "principals": await _identity_principals(
             session,
@@ -387,9 +410,7 @@ async def _default_source_user(
     directory_user: EnterpriseDirectoryUser,
 ) -> User:
     external_id = f"{identity_provider_key(source)}:{directory_user.external_user_id}"
-    user = (
-        await session.execute(select(User).where(User.external_id == external_id))
-    ).scalar_one_or_none()
+    user = (await session.execute(select(User).where(User.external_id == external_id))).scalar_one_or_none()
     if user is not None:
         return user
     user = User(
@@ -424,17 +445,34 @@ def _source_response(
         "provider": source.provider.value,
         "tenant_id": source.tenant_id,
         "status": source.status.value,
+        "snapshot_usable": identity_source_snapshot_is_usable(source),
         "last_synced_at": source.last_synced_at,
         "stale_after_seconds": source.stale_after_seconds,
         "last_error": source.last_error,
+        "full_sync_in_progress": source.full_sync_requested_at is not None
+        or (source.sync_worker_id is not None and source.sync_kind != "groups"),
+        "group_sync_in_progress": source.sync_worker_id is not None and source.sync_kind == "groups",
+        "last_group_synced_at": source.last_group_synced_at,
+        "last_group_error": source.last_group_error,
         "sync_warning": sync_warning,
-        "sync_supported": source.provider in {
-            IdentitySourceProvider.FEISHU,
-            IdentitySourceProvider.SHAREPOINT,
-        },
+        "sync_supported": source.provider in DIRECTORY_SYNC_ADAPTERS,
+        "event_subscription": (
+            {
+                "status": (
+                    source.event_listener_status.value if source.event_listener_status is not None else "connecting"
+                ),
+                "fallback_after_seconds": 300 if source.provider == IdentitySourceProvider.DINGTALK else get_config().enterprise_identity_sync.feishu_fallback_after_seconds,
+            }
+            if source.provider in {IdentitySourceProvider.FEISHU, IdentitySourceProvider.DINGTALK}
+            else None
+        ),
         "acl_membership_snapshot_configured": _acl_membership_snapshot_configured(source),
+        "acl_membership_snapshot": _acl_membership_snapshot_public_config(source),
         "space_bindings": space_bindings,
     }
+    if source.provider == IdentitySourceProvider.DINGTALK:
+        response.update(permission_observed_at=source.permission_observed_at, permission_error=source.permission_error,
+                        supported_principal_types=["user", "department", "domain"])
     cloud = _sharepoint_cloud(source)
     if cloud is not None:
         response["cloud"] = cloud
@@ -475,23 +513,25 @@ async def create_identity_source(
     )
     if source.provider == IdentitySourceProvider.FEISHU and source.tenant_id is None:
         source.status = EnterpriseIdentitySourceStatus.PENDING_TENANT_VERIFICATION
-    source.stale_after_seconds = body.stale_after_seconds
-    source.config_ciphertext = encrypt(
-        json.dumps(
-            (
-                {"app_id": body.app_id, "app_secret": body.app_secret}
-                if source.provider == IdentitySourceProvider.FEISHU
-                else {
-                    "cloud": body.cloud,
-                    "client_id": body.client_id,
-                    "client_secret": body.client_secret,
-                }
-            )
-        )
+    if source.provider == IdentitySourceProvider.DINGTALK:
+        source.status = EnterpriseIdentitySourceStatus.PENDING_TENANT_VERIFICATION
+    source.stale_after_seconds = min(body.stale_after_seconds, 900) if source.provider == IdentitySourceProvider.DINGTALK else body.stale_after_seconds
+    provider_config = (
+        {"app_id": body.app_id, "app_secret": body.app_secret}
+        if source.provider == IdentitySourceProvider.FEISHU
+        else {
+            "cloud": body.cloud,
+            "client_id": body.client_id,
+            "client_secret": body.client_secret,
+        }
     )
+    if not body.bind_all_spaces:
+        provider_config["bind_all_spaces"] = False
+    source.config_ciphertext = encrypt(json.dumps(provider_config))
     session.add(source)
     try:
         await session.flush()
+        space_bindings = await bind_identity_source_to_enabled_spaces(session, source) if body.bind_all_spaces else []
         await _commit_with_audit(
             session,
             user_id=admin.id,
@@ -502,14 +542,12 @@ async def create_identity_source(
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail="Identity source already exists") from exc
-    return _source_response(source, space_bindings=[])
+    return _source_response(source, space_bindings=sorted(space_bindings))
 
 
 def _feishu_verification_callback_url() -> str:
     try:
-        return feishu_tenant_verification_callback_url(
-            get_config().server.public_base_url
-        )
+        return feishu_tenant_verification_callback_url(get_config().server.public_base_url)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -525,8 +563,7 @@ async def start_feishu_tenant_verification(
         raise HTTPException(status_code=404, detail="Identity source not found")
     if (
         source.provider != IdentitySourceProvider.FEISHU
-        or source.status
-        != EnterpriseIdentitySourceStatus.PENDING_TENANT_VERIFICATION
+        or source.status != EnterpriseIdentitySourceStatus.PENDING_TENANT_VERIFICATION
         or source.tenant_id is not None
     ):
         raise HTTPException(
@@ -584,12 +621,7 @@ async def list_identity_sources(
                 EnterpriseIdentitySource.name.ilike(pattern),
             )
         )
-    total = (
-        await session.scalar(
-            select(func.count(EnterpriseIdentitySource.id)).where(*filters)
-        )
-        or 0
-    )
+    total = await session.scalar(select(func.count(EnterpriseIdentitySource.id)).where(*filters)) or 0
     sources = list(
         (
             await session.execute(
@@ -614,9 +646,7 @@ async def list_identity_sources(
     )
     bindings_by_source: dict[str, list[str]] = {}
     for binding in bindings:
-        bindings_by_source.setdefault(binding.identity_source_id, []).append(
-            binding.knowledge_space_id
-        )
+        bindings_by_source.setdefault(binding.identity_source_id, []).append(binding.knowledge_space_id)
     return {
         "items": [
             _source_response(
@@ -642,11 +672,14 @@ async def sync_source_now(
     source = await session.get(EnterpriseIdentitySource, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Identity source not found")
-    if source.provider not in {
-        IdentitySourceProvider.FEISHU,
-        IdentitySourceProvider.SHAREPOINT,
-    }:
+    if source.provider not in DIRECTORY_SYNC_ADAPTERS:
         raise HTTPException(status_code=409, detail="Identity source synchronization is not supported")
+    if source.provider == IdentitySourceProvider.DINGTALK:
+        from server.enterprise_identity.dingtalk_auth import verified_dingtalk_config
+        try:
+            verified_dingtalk_config(source)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=409, detail="Verify DingTalk enterprise before synchronization") from None
     if source.tenant_id is None or source.config_ciphertext is None:
         raise HTTPException(status_code=409, detail="Identity source is not ready for synchronization")
     session_factory = getattr(request.app.state, "session_factory", None)
@@ -654,12 +687,27 @@ async def sync_source_now(
         from server.db.engine import get_session_factory
 
         session_factory = get_session_factory()
+    if source.provider == IdentitySourceProvider.FEISHU and source.sync_kind == "groups":
+        source.full_sync_requested_at = datetime.now(UTC)
+        await session.commit()
     started = await schedule_identity_source_sync(
         session_factory,
         source.id,
         background_tasks=getattr(request.app.state, "background_tasks", None),
         sync_callable=sync_identity_source,
     )
+    if source.provider == IdentitySourceProvider.FEISHU:
+        await session.refresh(source)
+        if started:
+            await _commit_with_audit(
+                session,
+                user_id=admin.id,
+                action="identity_source.sync_started",
+                target_type="enterprise_identity_source",
+                target_id=source.id,
+            )
+        response.status_code = 202
+        return _source_response(source, space_bindings=[])
     if not started:
         response.status_code = 202
         return _source_response(source, space_bindings=[])
@@ -724,7 +772,7 @@ async def update_identity_source(
         if not body.client_id or not body.client_secret:
             raise HTTPException(
                 status_code=422,
-                detail="client_id and client_secret are required for SharePoint",
+                detail="client_id and client_secret are required for this provider",
             )
         config = {
             "cloud": body.cloud,
@@ -732,11 +780,31 @@ async def update_identity_source(
             "client_secret": body.client_secret,
         }
         source.status = EnterpriseIdentitySourceStatus.PENDING_BINDING
+    if not identity_source_binds_all_spaces(source):
+        config["bind_all_spaces"] = False
     source.name = body.name
-    source.stale_after_seconds = body.stale_after_seconds
+    if source.provider == IdentitySourceProvider.DINGTALK:
+        source.status = EnterpriseIdentitySourceStatus.PENDING_TENANT_VERIFICATION
+    source.stale_after_seconds = min(body.stale_after_seconds, 900) if source.provider == IdentitySourceProvider.DINGTALK else body.stale_after_seconds
     source.config_ciphertext = encrypt(json.dumps(config))
     source.last_synced_at = None
+    source.last_group_synced_at = None
+    source.last_group_error = None
+    source.group_next_retry_at = None
+    source.full_sync_requested_at = None
     source.last_error = None
+    source.event_listener_worker_id = None
+    source.event_listener_lease_until = None
+    source.event_listener_retry_count = 0
+    source.event_unavailable_since = None
+    source.event_listener_status = None
+    if source.provider == IdentitySourceProvider.DINGTALK:
+        # Pending notifications belong to the old credential/visibility epoch.
+        # Preserve their dedup IDs, but let the verified full scan rebuild facts.
+        await session.execute(update(EnterpriseIdentitySourceEvent).where(
+            EnterpriseIdentitySourceEvent.identity_source_id == source.id,
+            EnterpriseIdentitySourceEvent.status != EnterpriseIdentitySourceEventStatus.PROCESSED,
+        ).values(status=EnterpriseIdentitySourceEventStatus.PROCESSED, next_retry_at=None))
     await _commit_with_audit(
         session,
         user_id=admin.id,
@@ -765,32 +833,24 @@ async def delete_identity_source(
     source = await session.get(EnterpriseIdentitySource, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Identity source not found")
-    source_scope_ids = select(AgentKnowledgeScope.id).where(
-        AgentKnowledgeScope.identity_source_id == source.id
-    )
-    source_group_ids = select(AgentGroupAssignment.id).where(
-        AgentGroupAssignment.identity_source_id == source.id
-    )
+    source_scope_ids = select(AgentKnowledgeScope.id).where(AgentKnowledgeScope.identity_source_id == source.id)
+    source_group_ids = select(AgentGroupAssignment.id).where(AgentGroupAssignment.identity_source_id == source.id)
     await session.execute(
         delete(AgentKnowledgeScopeBinding).where(
             or_(
                 AgentKnowledgeScopeBinding.scope_id.in_(source_scope_ids),
-                AgentKnowledgeScopeBinding.group_assignment_id.in_(
-                    source_group_ids
-                ),
+                AgentKnowledgeScopeBinding.group_assignment_id.in_(source_group_ids),
             )
         )
     )
+    await session.execute(delete(AgentKnowledgeScope).where(AgentKnowledgeScope.identity_source_id == source.id))
     await session.execute(
-        delete(AgentKnowledgeScope).where(
-            AgentKnowledgeScope.identity_source_id == source.id
-        )
+        delete(ExternalUserPrincipalMembership).where(ExternalUserPrincipalMembership.identity_source_id == source.id)
     )
     await session.execute(
-        delete(ExternalUserPrincipalMembership).where(
-            ExternalUserPrincipalMembership.identity_source_id == source.id
-        )
+        delete(EnterpriseIdentitySourceEvent).where(EnterpriseIdentitySourceEvent.identity_source_id == source.id)
     )
+    await session.execute(delete(DingTalkLoginState).where(DingTalkLoginState.identity_source_id == source.id))
     await session.delete(source)
     await _commit_with_audit(
         session,
@@ -799,6 +859,58 @@ async def delete_identity_source(
         target_type="enterprise_identity_source",
         target_id=source_id,
     )
+
+
+@router.get("/enterprise-users/identities")
+async def list_enterprise_user_identities(
+    identity_source_id: str = Query(min_length=1, max_length=36),
+    external_user_id: str = Query(min_length=1, max_length=255),
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=255),
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user_id = (await resolve_enterprise_user_ids(session, identity_source_id, [external_user_id]))[0]
+    return await list_user_enterprise_identities(user_id, offset, limit, search, admin, session)
+
+
+@router.post("/enterprise-users/identities", status_code=201)
+async def create_enterprise_user_identity(
+    body: EnterpriseIdentityMappingRequest,
+    response: Response,
+    identity_source_id: str = Query(min_length=1, max_length=36),
+    external_user_id: str = Query(min_length=1, max_length=255),
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user_id = (await resolve_enterprise_user_ids(session, identity_source_id, [external_user_id]))[0]
+    return await create_user_enterprise_identity(user_id, body, response, admin, session)
+
+
+@router.put("/enterprise-users/identities/{identity_id}")
+async def update_enterprise_user_identity(
+    identity_id: str,
+    body: EnterpriseIdentityMappingRequest,
+    identity_source_id: str = Query(min_length=1, max_length=36),
+    external_user_id: str = Query(min_length=1, max_length=255),
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user_id = (await resolve_enterprise_user_ids(session, identity_source_id, [external_user_id]))[0]
+    return await update_user_enterprise_identity(user_id, identity_id, body, admin, session)
+
+
+@router.delete("/enterprise-users/identities/{identity_id}", status_code=204)
+async def delete_enterprise_user_identity(
+    identity_id: str,
+    identity_source_id: str = Query(min_length=1, max_length=36),
+    external_user_id: str = Query(min_length=1, max_length=255),
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    user_id = (await resolve_enterprise_user_ids(session, identity_source_id, [external_user_id]))[0]
+    return await delete_user_enterprise_identity(user_id, identity_id, admin, session)
 
 
 @router.get("/users/{user_id}/identities")
@@ -814,47 +926,19 @@ async def list_user_enterprise_identities(
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     sources = list(
-        (
-            await session.execute(
-                select(EnterpriseIdentitySource).order_by(EnterpriseIdentitySource.name)
-            )
-        ).scalars()
+        (await session.execute(select(EnterpriseIdentitySource).order_by(EnterpriseIdentitySource.name))).scalars()
     )
-    sources_by_provider = {
-        identity_provider_key(source): source for source in sources
-    }
+    sources_by_provider = {identity_provider_key(source): source for source in sources}
     provider_keys = list(sources_by_provider)
     if not provider_keys:
         return {"items": [], "total": 0, "offset": offset, "limit": limit}
-    ownership_filters: list[Any] = [UserExternalIdentity.user_id == user_id]
-    if user.auth_provider == AuthProvider.OIDC:
-        for provider_key in provider_keys:
-            prefix = f"{provider_key}:"
-            if user.external_id.startswith(prefix):
-                ownership_filters.append(
-                    (
-                        UserExternalIdentity.identity_provider == provider_key
-                    )
-                    & (
-                        UserExternalIdentity.external_subject
-                        == user.external_id.removeprefix(prefix)
-                    )
-                )
-                break
     filters: list[Any] = [
         UserExternalIdentity.identity_provider.in_(provider_keys),
-        or_(*ownership_filters),
+        UserExternalIdentity.user_id == user_id,
     ]
     if search and search.strip():
-        filters.append(
-            UserExternalIdentity.external_subject.ilike(f"%{search.strip()}%")
-        )
-    total = (
-        await session.scalar(
-            select(func.count(UserExternalIdentity.id)).where(*filters)
-        )
-        or 0
-    )
+        filters.append(UserExternalIdentity.external_subject.ilike(f"%{search.strip()}%"))
+    total = await session.scalar(select(func.count(UserExternalIdentity.id)).where(*filters)) or 0
     identities = list(
         (
             await session.execute(
@@ -921,9 +1005,7 @@ async def create_user_enterprise_identity(
         await session.flush()
     if identity.user_id != user.id:
         current_user = await session.get(User, identity.user_id)
-        expected_external_id = (
-            f"{identity_provider_key(source)}:{directory_user.external_user_id}"
-        )
+        expected_external_id = f"{identity_provider_key(source)}:{directory_user.external_user_id}"
         if current_user is None or current_user.external_id != expected_external_id:
             raise HTTPException(
                 status_code=409,
@@ -958,18 +1040,14 @@ async def update_user_enterprise_identity(
     current_source = next(
         (
             source
-            for source in (
-                await session.execute(select(EnterpriseIdentitySource))
-            ).scalars()
+            for source in (await session.execute(select(EnterpriseIdentitySource))).scalars()
             if current_identity.identity_provider == identity_provider_key(source)
         ),
         None,
     )
     if current_source is None:
         raise HTTPException(status_code=409, detail="Enterprise identity source is unavailable")
-    if user.external_id == (
-        f"{identity_provider_key(current_source)}:{current_identity.external_subject}"
-    ):
+    if user.external_id == (f"{identity_provider_key(current_source)}:{current_identity.external_subject}"):
         raise HTTPException(
             status_code=409,
             detail="Synchronized enterprise identity cannot be edited",
@@ -1000,9 +1078,7 @@ async def update_user_enterprise_identity(
         return await _identity_mapping_response(session, replacement, source)
     if replacement.user_id != user.id:
         mapped_user = await session.get(User, replacement.user_id)
-        expected_external_id = (
-            f"{identity_provider_key(source)}:{directory_user.external_user_id}"
-        )
+        expected_external_id = f"{identity_provider_key(source)}:{directory_user.external_user_id}"
         if mapped_user is None or mapped_user.external_id != expected_external_id:
             raise HTTPException(
                 status_code=409,
@@ -1019,9 +1095,7 @@ async def update_user_enterprise_identity(
     ).scalar_one_or_none()
     if current_directory_user is None:
         raise HTTPException(status_code=409, detail="Enterprise identity is no longer synchronized")
-    current_identity.user_id = (
-        await _default_source_user(session, current_source, current_directory_user)
-    ).id
+    current_identity.user_id = (await _default_source_user(session, current_source, current_directory_user)).id
     await session.flush()
     await _commit_with_audit(
         session,
@@ -1046,9 +1120,7 @@ async def delete_user_enterprise_identity(
     source = next(
         (
             source
-            for source in (
-                await session.execute(select(EnterpriseIdentitySource))
-            ).scalars()
+            for source in (await session.execute(select(EnterpriseIdentitySource))).scalars()
             if identity.identity_provider == identity_provider_key(source)
         ),
         None,
@@ -1126,8 +1198,7 @@ async def list_identity_source_directory(
         users = list(
             (
                 await session.execute(
-                    user_query
-                    .order_by(EnterpriseDirectoryUser.display_name, EnterpriseDirectoryUser.external_user_id)
+                    user_query.order_by(EnterpriseDirectoryUser.display_name, EnterpriseDirectoryUser.external_user_id)
                     .offset(offset)
                     .limit(limit)
                 )
@@ -1141,8 +1212,9 @@ async def list_identity_source_directory(
         groups = list(
             (
                 await session.execute(
-                    group_query
-                    .order_by(EnterpriseDirectoryGroup.display_name, EnterpriseDirectoryGroup.external_group_id)
+                    group_query.order_by(
+                        EnterpriseDirectoryGroup.display_name, EnterpriseDirectoryGroup.external_group_id
+                    )
                     .offset(offset)
                     .limit(limit)
                 )
@@ -1157,25 +1229,18 @@ async def list_identity_source_directory(
             (
                 await session.execute(
                     select(UserExternalIdentity).where(
-                        UserExternalIdentity.identity_provider
-                        == identity_provider_key(source),
-                        UserExternalIdentity.external_subject.in_(
-                            [user.external_user_id for user in users]
-                        ),
+                        UserExternalIdentity.identity_provider == identity_provider_key(source),
+                        UserExternalIdentity.external_subject.in_([user.external_user_id for user in users]),
                     )
                 )
             ).scalars()
         )
-    pas_user_by_external_subject = {
-        identity.external_subject: identity.user_id for identity in identities
-    }
+    pas_user_by_external_subject = {identity.external_subject: identity.user_id for identity in identities}
     return {
         "users": [
             {
                 "id": user.id,
-                "pas_user_id": pas_user_by_external_subject.get(
-                    user.external_user_id
-                ),
+                "pas_user_id": pas_user_by_external_subject.get(user.external_user_id),
                 "external_user_id": user.external_user_id,
                 "display_name": user.display_name,
                 "email": user.email,
@@ -1202,6 +1267,9 @@ async def list_enabled_identity_source_spaces(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     search: str | None = Query(default=None, max_length=255),
+    identity_source_id: str | None = Query(default=None, max_length=36),
+    agent_id: str | None = Query(default=None, max_length=36),
+    binding_status: Literal["bound", "unbound"] | None = Query(default=None),
     _admin: User = Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -1215,12 +1283,19 @@ async def list_enabled_identity_source_spaces(
                 PolarRAGSpace.space_id.ilike(pattern),
             )
         )
-    total = (
-        await session.scalar(
-            select(func.count(PolarRAGSpace.knowledge_space_id)).where(*filters)
+    binding_exists = None
+    if identity_source_id:
+        binding_exists = exists(
+            select(EnterpriseIdentitySourceSpaceBinding.id).where(
+                EnterpriseIdentitySourceSpaceBinding.identity_source_id == identity_source_id,
+                EnterpriseIdentitySourceSpaceBinding.knowledge_space_id == PolarRAGSpace.knowledge_space_id,
+            )
         )
-        or 0
-    )
+        if binding_status == "bound":
+            filters.append(binding_exists)
+        elif binding_status == "unbound":
+            filters.append(~binding_exists)
+    total = await session.scalar(select(func.count(PolarRAGSpace.knowledge_space_id)).where(*filters)) or 0
     rows = list(
         (
             await session.execute(
@@ -1232,20 +1307,49 @@ async def list_enabled_identity_source_spaces(
             )
         ).scalars()
     )
-    return {
-        "items": [
-            {
-                "knowledge_space_id": space.knowledge_space_id,
-                "polarrag_instance_id": space.polarrag_instance_id,
-                "name": space.name,
-                "identity_domain": space.identity_domain,
-            }
-            for space in rows
-        ],
+    bound_space_ids: set[str] = set()
+    if identity_source_id and rows:
+        bound_space_ids = set(
+            (
+                await session.execute(
+                    select(EnterpriseIdentitySourceSpaceBinding.knowledge_space_id).where(
+                        EnterpriseIdentitySourceSpaceBinding.identity_source_id == identity_source_id,
+                        EnterpriseIdentitySourceSpaceBinding.knowledge_space_id.in_(
+                            [space.knowledge_space_id for space in rows]
+                        ),
+                    )
+                )
+            ).scalars()
+        )
+    items = [
+        {
+            "knowledge_space_id": space.knowledge_space_id,
+            "polarrag_instance_id": space.polarrag_instance_id,
+            "name": space.name,
+            "identity_domain": space.identity_domain,
+        }
+        for space in rows
+    ]
+    if identity_source_id:
+        for item in items:
+            item["is_bound"] = item["knowledge_space_id"] in bound_space_ids
+    response: dict[str, Any] = {
+        "items": items,
         "total": total,
         "offset": offset,
         "limit": limit,
     }
+    if identity_source_id and agent_id:
+        response["all_users_bound"] = bool(
+            await session.scalar(
+                select(func.count(AgentGroupAssignment.id)).where(
+                    AgentGroupAssignment.agent_id == agent_id,
+                    AgentGroupAssignment.group_kind == AgentGroupKind.IDENTITY_SOURCE_ALL,
+                    AgentGroupAssignment.identity_source_id == identity_source_id,
+                )
+            )
+        )
+    return response
 
 
 @router.post("/{source_id}/spaces/{knowledge_space_id}", status_code=201)
@@ -1262,6 +1366,8 @@ async def bind_identity_source_space(
     space = await session.get(PolarRAGSpace, knowledge_space_id)
     if space is None or not space.enabled:
         raise HTTPException(status_code=404, detail="Enabled PolarRAG Space not found")
+    from server.core.identity_source_space import ensure_identity_domain_tenant
+    await ensure_identity_domain_tenant(session, source, space)
     binding = (
         await session.execute(
             select(EnterpriseIdentitySourceSpaceBinding).where(
@@ -1297,6 +1403,111 @@ async def bind_identity_source_space(
     }
 
 
+async def _cascade_source_space_knowledge_bindings(
+    session: AsyncSession,
+    *,
+    source_id: str,
+    knowledge_space_id: str,
+) -> None:
+    resource_ids = set(
+        (
+            await session.execute(
+                select(KnowledgeResource.id).where(KnowledgeResource.knowledge_space_id == knowledge_space_id)
+            )
+        ).scalars()
+    )
+    if not resource_ids:
+        return
+    has_other_source = bool(
+        await session.scalar(
+            select(func.count(EnterpriseIdentitySourceSpaceBinding.id)).where(
+                EnterpriseIdentitySourceSpaceBinding.knowledge_space_id == knowledge_space_id,
+                EnterpriseIdentitySourceSpaceBinding.identity_source_id != source_id,
+            )
+        )
+    )
+    source_assignment_ids = set(
+        (
+            await session.execute(
+                select(AgentGroupAssignment.id).where(AgentGroupAssignment.identity_source_id == source_id)
+            )
+        ).scalars()
+    )
+    for policy in await session.scalars(
+        select(AgentKnowledgePolicy).where(
+            AgentKnowledgePolicy.knowledge_resource_id.in_(resource_ids),
+        )
+    ):
+        if not has_other_source:
+            policy.select_all = False
+            policy.excluded_subjects_json = "[]"
+        else:
+            policy.excluded_subjects_json = json.dumps(
+                [
+                    key
+                    for key in json.loads(policy.excluded_subjects_json)
+                    if not (key[0] in {"GROUP", "IDENTITY_SOURCE"} and key[1] == source_id)
+                ],
+                separators=(",", ":"),
+            )
+    scopes = list((await session.execute(select(AgentKnowledgeScope))).scalars())
+    for scope in scopes:
+        current_resources = resource_ids_from_json(scope.knowledge_resource_ids_json)
+        if not current_resources.intersection(resource_ids):
+            continue
+        bindings = list(
+            (
+                await session.execute(
+                    select(AgentKnowledgeScopeBinding).where(AgentKnowledgeScopeBinding.scope_id == scope.id)
+                )
+            ).scalars()
+        )
+        affected = (
+            bindings
+            if not has_other_source
+            else [
+                row
+                for row in bindings
+                if scope.identity_source_id == source_id or row.group_assignment_id in source_assignment_ids
+            ]
+        )
+        if not affected:
+            continue
+        remaining_resources = current_resources - resource_ids
+        if len(affected) == len(bindings):
+            if remaining_resources:
+                scope.knowledge_resource_ids_json = json.dumps(
+                    sorted(remaining_resources),
+                    separators=(",", ":"),
+                )
+            else:
+                for row in bindings:
+                    await session.delete(row)
+                await session.delete(scope)
+            continue
+        replacement: AgentKnowledgeScope | None = None
+        if remaining_resources:
+            replacement = AgentKnowledgeScope(
+                agent_id=scope.agent_id,
+                name=scope.name,
+                origin=scope.origin,
+                identity_source_id=scope.identity_source_id,
+                external_scope_id=scope.external_scope_id,
+                knowledge_resource_ids_json=json.dumps(
+                    sorted(remaining_resources),
+                    separators=(",", ":"),
+                ),
+                created_by_user_id=scope.created_by_user_id,
+            )
+            session.add(replacement)
+            await session.flush()
+        for row in affected:
+            if replacement is None:
+                await session.delete(row)
+            else:
+                row.scope_id = replacement.id
+
+
 @router.delete("/{source_id}/spaces/{knowledge_space_id}", status_code=204)
 async def unbind_identity_source_space(
     source_id: str,
@@ -1317,6 +1528,11 @@ async def unbind_identity_source_space(
     ).scalar_one_or_none()
     if binding is None:
         raise HTTPException(status_code=404, detail="Identity source Space binding not found")
+    await _cascade_source_space_knowledge_bindings(
+        session,
+        source_id=source.id,
+        knowledge_space_id=knowledge_space_id,
+    )
     await session.delete(binding)
     await _commit_with_audit(
         session,
@@ -1337,7 +1553,7 @@ async def configure_feishu_acl_membership_snapshot(
     source = await session.get(EnterpriseIdentitySource, source_id)
     if source is None:
         raise HTTPException(status_code=404, detail="Identity source not found")
-    if source.provider != IdentitySourceProvider.FEISHU or source.tenant_id is None:
+    if source.provider not in {IdentitySourceProvider.FEISHU, IdentitySourceProvider.DINGTALK} or source.tenant_id is None:
         raise HTTPException(
             status_code=409,
             detail="Feishu tenant verification must complete before configuring ACL membership",
@@ -1365,10 +1581,15 @@ async def configure_feishu_acl_membership_snapshot(
         raise HTTPException(status_code=409, detail="Identity source configuration is invalid") from None
     if not isinstance(config, dict):
         raise HTTPException(status_code=409, detail="Identity source configuration is invalid")
-    config["acl_membership_snapshot"] = body.model_dump()
+    previous = config.get("acl_membership_snapshot")
+    password = body.password or (previous.get("password") if isinstance(previous, dict) else None)
+    if not isinstance(password, str) or not password:
+        raise HTTPException(status_code=422, detail="Password is required for a new permission data source connection")
+    config["acl_membership_snapshot"] = {**body.model_dump(exclude_none=True), "password": password}
     source.config_ciphertext = encrypt(json.dumps(config))
-    source.status = EnterpriseIdentitySourceStatus.PENDING_BINDING
-    source.last_error = None
+    from server.enterprise_identity.etl_permissions import configuration_saved
+
+    await configuration_saved(session, source)
     await _commit_with_audit(
         session,
         user_id=admin.id,
@@ -1399,27 +1620,36 @@ async def replace_external_user_principal_memberships(
         )
 
     external_user_ids = [item.external_user_id for item in body.users]
-    existing_rows = list(
-        (
-            await session.execute(
-                select(ExternalUserPrincipalMembership).where(
-                    ExternalUserPrincipalMembership.identity_source_id == source.id,
-                    ExternalUserPrincipalMembership.external_user_id.in_(
-                        external_user_ids
-                    ),
+    existing_rows = (
+        list(
+            (
+                await session.execute(
+                    select(ExternalUserPrincipalMembership).where(
+                        ExternalUserPrincipalMembership.identity_source_id == source.id,
+                        ExternalUserPrincipalMembership.external_user_id.in_(external_user_ids),
+                    )
                 )
-            )
-        ).scalars()
-    ) if external_user_ids else []
-    existing = {
-        (row.external_user_id, row.principal_type, row.principal_id): row
-        for row in existing_rows
-    }
+            ).scalars()
+        )
+        if external_user_ids
+        else []
+    )
+    existing = {(row.external_user_id, row.principal_type, row.principal_id): row for row in existing_rows}
     desired = {
         (item.external_user_id, principal.principal_type, principal.principal_id): principal
         for item in body.users
         for principal in item.principals
     }
+    connection = await session.connection()
+    has_prerelease_metadata_column = await connection.run_sync(
+        lambda sync_connection: (
+            "source_subject_type"
+            in {
+                column["name"]
+                for column in inspect(sync_connection).get_columns("identity_source_user_principal_snapshot_entries")
+            }
+        )
+    )
     for key, stale_row in existing.items():
         if key not in desired:
             await session.delete(stale_row)
@@ -1434,6 +1664,28 @@ async def replace_external_user_principal_memberships(
                 principal_id=key[2],
                 expires_at=principal.expires_at,
             )
+            if has_prerelease_metadata_column:
+                await session.execute(
+                    text(
+                        "INSERT INTO identity_source_user_principal_snapshot_entries "
+                        "(id, identity_source_id, external_user_id, principal_type, "
+                        "principal_id, source_subject_type, expires_at, created_at) "
+                        "VALUES (:id, :identity_source_id, :external_user_id, "
+                        ":principal_type, :principal_id, :source_subject_type, "
+                        ":expires_at, :created_at)"
+                    ),
+                    {
+                        "id": existing_row.id,
+                        "identity_source_id": source.id,
+                        "external_user_id": key[0],
+                        "principal_type": key[1].value,
+                        "principal_id": key[2],
+                        "source_subject_type": "local_snapshot",
+                        "expires_at": principal.expires_at,
+                        "created_at": current,
+                    },
+                )
+                continue
             session.add(existing_row)
         else:
             existing_row.expires_at = principal.expires_at
@@ -1449,3 +1701,48 @@ async def replace_external_user_principal_memberships(
         "replaced_users": len(body.users),
         "membership_count": len(desired),
     }
+
+
+@router.get("/{source_id}/etl-permissions")
+async def get_etl_permissions_status(source_id: str, _admin: User = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    from server.enterprise_identity.etl_permissions import status
+    if await session.get(EnterpriseIdentitySource, source_id) is None:
+        raise HTTPException(status_code=404, detail="Identity source not found")
+    return await status(session, source_id)
+
+
+@router.post("/{source_id}/etl-permissions/{operation}", status_code=202)
+async def trigger_etl_permissions(source_id: str, operation: Literal["verify", "sync"], background_tasks: BackgroundTasks, admin: User = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    from server.enterprise_identity.etl_permissions import claim, run, status
+    source = await session.get(EnterpriseIdentitySource, source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Identity source not found")
+    owner = await claim(session, source, operation)
+    await _commit_with_audit(session, user_id=admin.id, action=f"identity_source.etl_permissions_{operation}", target_type="enterprise_identity_source", target_id=source.id)
+    background_tasks.add_task(run, source_id, owner)
+    return await status(session, source_id)
+
+
+@router.post("/{source_id}/dingtalk-verification")
+async def start_dingtalk_verification(source_id: str, request: Request, response: Response,
+                                      admin: User = Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    from server.auth.router import begin_dingtalk_authorization, set_dingtalk_state_cookie
+    from server.enterprise_identity.dingtalk_auth import DingTalkCallbackConfigurationError
+    source = await session.get(EnterpriseIdentitySource, source_id)
+    if source is None:
+        raise HTTPException(404, "Identity source not found")
+    if source.provider != IdentitySourceProvider.DINGTALK or source.status != EnterpriseIdentitySourceStatus.PENDING_TENANT_VERIFICATION:
+        raise HTTPException(409, "DingTalk source is not pending verification")
+    try:
+        url, browser = await begin_dingtalk_authorization(session, source, request, purpose="verify", admin_id=admin.id)
+        await _commit_with_audit(session, user_id=admin.id, action="identity_source.dingtalk_verification_start",
+                                 target_type="enterprise_identity_source", target_id=source.id)
+    except DingTalkCallbackConfigurationError as exc:
+        await session.rollback()
+        raise HTTPException(409, str(exc), headers={"Cache-Control": "no-store"}) from None
+    except (ValueError, TypeError):
+        await session.rollback()
+        raise HTTPException(409, "DingTalk configuration is invalid") from None
+    set_dingtalk_state_cookie(response, browser, request)
+    response.headers["Cache-Control"] = "no-store"
+    return {"identity_source_id": source.id, "authorization_url": url}

@@ -53,7 +53,7 @@ def test_database_migrate_handler_runs_upgrade(
 ) -> None:
     called = False
 
-    def migrate(*, reporter=None) -> None:
+    def migrate(*, reporter=None, maintenance=False) -> None:
         nonlocal called
         called = True
         assert reporter is not None

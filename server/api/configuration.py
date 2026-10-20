@@ -77,6 +77,26 @@ async def resolve_config_actor(
     return ConfigActor(scope=f"admin:{user.id}", actor_type="admin")
 
 
+@router.get("/config/aliyun-endpoints")
+async def aliyun_endpoints(
+    actor: ConfigActor = Depends(resolve_config_actor),
+) -> JSONResponse:
+    from server.aliyun.endpoints import endpoint_catalog
+    from server.config import get_config
+
+    config = get_config().aliyun
+    return JSONResponse(
+        {
+            **endpoint_catalog(),
+            "defaults": {
+                "region_id": config.region_id,
+                "openapi_network": config.openapi_network,
+            } if config.has_active_credentials() else None,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.post("/config", response_model=ConfigResult)
 async def config_command(
     body: ConfigCommand,

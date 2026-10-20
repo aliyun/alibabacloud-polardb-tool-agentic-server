@@ -683,6 +683,9 @@ export default function Setup({
                       >
                         <Space direction="vertical" size={2}>
                           <Text>{t('setup.dryRunEndpoint', { endpoint: check.endpoint })}</Text>
+                          {check.regionId && <Text>{t('cloudConnection.diagnostic', {
+                            region: check.regionId, network: check.network ?? '—', stage: check.stage ?? '—',
+                          })}</Text>}
                           <Text>{t('setup.dryRunCheckStatus', { status: check.status })}</Text>
                           {check.identityHint && (
                             <Text>{t('setup.dryRunIdentity', { identity: check.identityHint })}</Text>

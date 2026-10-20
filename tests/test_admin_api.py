@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
 from server.aliyun.polardb_client import MockPolarDBClient, set_polardb_client, reset_polardb_client
 from server.app import create_app
-from server.auth.builtin import hash_password
+from server.auth.builtin import hash_password, verify_password
 from server.auth.jwt_manager import create_access_token, reset_keys
 from server.config import reset_config
 from tests._helpers import init_test_jwt_keys
@@ -196,6 +196,32 @@ class TestInstanceAPI:
 
 
 class TestUserAPI:
+    @pytest.mark.parametrize("length", [7, 8, 9, 11, 12])
+    async def test_create_user_password_boundary(self, client, admin_headers, length):
+        password = "a" * length
+        username = f"password-boundary-{length}"
+        response = await client.post(
+            "/api/users",
+            json={"username": username, "password": password},
+            headers=admin_headers,
+        )
+        assert password not in response.text
+        async with engine_mod._session_factory() as session:
+            user = await session.scalar(select(User).where(User.external_id == username))
+            if length < 8:
+                assert response.status_code == 400
+                assert "8 characters" in response.json()["detail"]
+                assert user is None
+                return
+            assert response.status_code == 201, response.text
+            assert user is not None
+            assert user.id == response.json()["id"]
+            assert verify_password(password, user.password_hash)
+        login = await client.post(
+            "/auth/login", json={"username": username, "password": password}
+        )
+        assert login.status_code == 200
+
     async def test_delete_user_with_audit_history_requires_disable(
         self, client, admin_headers
     ):
@@ -264,24 +290,40 @@ class TestUserAPI:
     ):
         resp = await client.post(
             "/api/users",
-            json={"username": "short-password", "password": "short123"},
+            json={"username": "short-password", "password": "short12"},
             headers=admin_headers,
         )
 
         assert resp.status_code == 400
-        assert "12 characters" in resp.json()["detail"]
+        assert "8 characters" in resp.json()["detail"]
+
+    @pytest.mark.parametrize("length", [8, 9, 11, 12])
+    async def test_reset_password_accepts_shared_policy_boundary(
+        self, client, admin_headers, admin_user, length
+    ):
+        password = "b" * length
+        response = await client.put(
+            f"/api/users/{admin_user.id}/reset-password",
+            json={"new_password": password}, headers=admin_headers,
+        )
+        assert response.status_code == 200
+        assert password not in response.text
+        login = await client.post(
+            "/auth/login", json={"username": "admin", "password": password}
+        )
+        assert login.status_code == 200
 
     async def test_reset_password_rejects_password_shorter_than_shared_policy(
         self, client, admin_headers, admin_user
     ):
         resp = await client.put(
             f"/api/users/{admin_user.id}/reset-password",
-            json={"new_password": "short123"},
+            json={"new_password": "short12"},
             headers=admin_headers,
         )
 
         assert resp.status_code == 400
-        assert "12 characters" in resp.json()["detail"]
+        assert "8 characters" in resp.json()["detail"]
 
     async def test_reset_password_invalidates_only_target_user_sessions(
         self,

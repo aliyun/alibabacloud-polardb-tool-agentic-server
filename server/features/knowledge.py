@@ -353,7 +353,7 @@ async def validate_read_access(repository: ConfigRepository, config: dict):
                 plan.space.space_id,
                 plan.resources[0].kb_id,
                 query="PAS knowledge read access verification",
-                search_mode="fulltext",
+                search_mode="balanced",
                 top_k=1,
                 min_score=None,
                 reranker=False,

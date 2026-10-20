@@ -1,5 +1,5 @@
 import { Button, Descriptions, Space, Typography } from 'antd'
-import { ApiOutlined, GithubOutlined } from '@ant-design/icons'
+import { GithubOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
 
 const { Paragraph, Text, Title } = Typography
@@ -16,8 +16,6 @@ export default function RESTAPIConnectionPanel({
 }: RESTAPIConnectionPanelProps) {
   const { t, i18n } = useTranslation()
   const lifecycleUrl = `${serverBaseUrl}/mcp/rest/db-instances`
-  const docsUrl = `${serverBaseUrl}/mcp/rest/docs`
-  const openapiUrl = `${serverBaseUrl}/mcp/rest/openapi.json`
   const guideLocale = i18n.language.toLowerCase().startsWith('zh')
     ? 'zh-cn'
     : 'en'
@@ -75,21 +73,6 @@ export default function RESTAPIConnectionPanel({
       <Space wrap style={{ marginTop: 16 }}>
         <Button
           type="primary"
-          icon={<ApiOutlined />}
-          href={docsUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {t('components.restApiConnection.openDocs')}
-        </Button>
-        <Button
-          href={openapiUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          {t('components.restApiConnection.openSchema')}
-        </Button>
-        <Button
           icon={<GithubOutlined />}
           href={guideUrl}
           target="_blank"

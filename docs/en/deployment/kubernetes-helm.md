@@ -74,7 +74,10 @@ helm upgrade --install pas deploy/helm/polardb-agentic-server \
   --set management.service.enabled=true
 ```
 
-The Chart rejects equal business and management ports. The management Service
+The Chart rejects equal business and management ports and requires
+`management.service.type=ClusterIP` for an enabled management Service, in both
+`trusted-network` and `bearer-token` modes. `NodePort` and `LoadBalancer` are rejected.
+The management Service
 is separate from the business Service, but the Chart does not create a
 NetworkPolicy: add a deny-by-default policy that admits only the control-plane
 namespace and workload identity. Never attach this Service to the business
@@ -156,9 +159,25 @@ PAS_VERSION=X.Y.Z
 scripts/deploy/smoke-helm.sh \
   --image "polardb-agentic-server:local-v${PAS_VERSION}" \
   --mysql-image registry.example.com/library/mysql:8.0.44 \
-  --kind-image registry.example.com/kindest/node:v1.35.0
+  --kind-image registry.example.com/kindest/node:v1.37.0
 ```
 
 `--kind-image` is optional. Set it when Docker Hub is unavailable or when the
-mirror has a registry-specific manifest digest. The script creates a temporary
-Kind cluster and removes it on exit.
+mirror has a registry-specific manifest digest. The PAS image must already be
+available locally as `repository:tag`. MySQL is pulled if necessary and loaded
+into Kind before deployment, so the cluster does not need registry credentials.
+For Docker API 1.48 or newer, the script exports the locally available platform
+before loading it; this also supports a partially cached multi-platform index.
+
+The script uses a random cluster name and a private kubeconfig, refuses an
+existing `--cluster-name`, and removes only its own cluster on exit. It leaves
+the caller's kubeconfig and selected context unchanged. Failures print Pod,
+Job and event diagnostics before cleanup.
+
+Acceptance covers fresh migration, two ready Deployment replicas, authenticated
+reads/writes, a same-image rollout, a deliberately failed migration that leaves
+the Deployment unchanged, and a successful retry. Completed hooks and draining
+old Pods are excluded from replica checks. This does not establish schema
+compatibility between different releases or validate a managed upgrade
+orchestrator. See the [local regression guide](../../../scripts/dev/local-regression.md)
+for opt-in pytest and complete-backend execution.

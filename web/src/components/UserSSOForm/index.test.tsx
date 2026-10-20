@@ -187,6 +187,40 @@ describe('User SSO identity source selector', () => {
       access_token_ttl_seconds: 900,
     })
   })
+  it('round-trips static DingTalk direct MCP configuration', async () => {
+    const onSubmit = vi.fn()
+    const staticDingTalkModule: ConfigModule = {
+      ...module,
+      draft: {
+        ...module.draft,
+        browser_login_enabled: false,
+        external_token_trust: {
+          enabled: true,
+          provider: 'dingtalk',
+          identity_source_id: 'source-1',
+          direct_mcp_enabled: true,
+          access_token_ttl_seconds: 900,
+        },
+      },
+    }
+    renderForm(staticDingTalkModule, 'external-token-trust', onSubmit)
+
+    expect(screen.getByRole('switch', {
+      name: 'Allow external Bearer Token directly at /mcp',
+    })).toBeChecked()
+    fireEvent.submit(screen.getByRole('form', {
+      name: 'User single sign-on configuration',
+    }))
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled())
+    expect(onSubmit.mock.calls[0][0].external_token_trust).toMatchObject({
+      enabled: true,
+      provider: 'dingtalk',
+      identity_source_id: 'source-1',
+      direct_mcp_enabled: true,
+      access_token_ttl_seconds: 900,
+    })
+  })
 
   it('offers source management and refresh actions when no active source exists', async () => {
     vi.mocked(listEnterpriseIdentitySources).mockResolvedValue({
@@ -238,19 +272,21 @@ describe('User SSO identity source selector', () => {
     })
   })
 
-  it('shows external UserInfo mapping and provider credentials', async () => {
+  it('allows usable stale UserInfo sources but excludes expired sources', async () => {
     vi.mocked(listEnterpriseIdentitySources).mockResolvedValue({
       data: {
         items: [{
           id: 'source-1',
           name: 'External directory',
           provider: 'sharepoint',
-          status: 'active',
+          status: 'stale',
+          snapshot_usable: true,
         }, {
           id: 'source-stale',
           name: 'Stale directory',
           provider: 'feishu',
           status: 'stale',
+          snapshot_usable: false,
         }],
       },
     } as never)
@@ -298,15 +334,14 @@ describe('User SSO identity source selector', () => {
     await user.click(screen.getByRole('combobox', {
       name: 'Verified identity source',
     }))
-    expect(
-      await screen.findByRole('option', { name: 'External directory' }),
-    ).toBeVisible()
+    await waitFor(() => expect(screen.getByText('External directory')).toBeVisible())
     expect(
       screen.queryByRole('option', { name: 'Stale directory' }),
     ).not.toBeInTheDocument()
   })
 
-  it('warns when external validation endpoints use HTTP', async () => {
+  it.each(['http://winner.internal', 'http://provider.example.com'])(
+    'warns when external validation endpoints use HTTP: %s', async (providerBaseUrl) => {
     vi.mocked(listEnterpriseIdentitySources).mockResolvedValue({
       data: { items: [] },
     } as never)
@@ -318,9 +353,9 @@ describe('User SSO identity source selector', () => {
           enabled: true,
           provider: 'oauth2_introspection',
           introspection_endpoint:
-            'http://winner.internal/oauth2/introspect',
+            `${providerBaseUrl}/oauth2/introspect`,
           userinfo_endpoint:
-            'http://winner.internal/oauth2/user_info',
+            `${providerBaseUrl}/oauth2/user_info`,
         },
       },
     }
@@ -333,8 +368,9 @@ describe('User SSO identity source selector', () => {
       screen.getByText('These external endpoints use HTTP'),
     ).toBeVisible()
     expect(
-      screen.getByText(/trusted, isolated private network/i),
+      screen.getByText(/public HTTP addresses require browser SSO to be disabled/i),
     ).toBeVisible()
+    expect(screen.getByText(/not encrypted in transit/i)).toBeVisible()
   })
 
   it('reveals the identity source after entering external UserInfo', async () => {

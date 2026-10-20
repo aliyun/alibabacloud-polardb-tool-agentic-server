@@ -23,12 +23,12 @@ from server.enterprise_identity.feishu_tenant_verification import (
 )
 from server.enterprise_identity.service import (
     identity_provider_key,
+    identity_source_snapshot_is_usable,
     upsert_external_user,
 )
 from server.models import (
     AuthProvider,
     EnterpriseIdentitySource,
-    EnterpriseIdentitySourceStatus,
     IdentitySourceProvider,
     User,
     UserRole,
@@ -172,9 +172,7 @@ class ExternalTokenAuthenticator:
             raise ExternalTokenInvalid("External access token is invalid")
 
         provider = self._config.auth.external_token_trust.provider
-        if provider != "feishu" and any(
-            (identity_source_id, feishu_user_id, feishu_union_id)
-        ):
+        if (provider not in {"feishu", "dingtalk"} and identity_source_id) or (provider != "feishu" and any((feishu_user_id, feishu_union_id))):
             raise ExternalTokenInvalid(
                 "External identity context is only supported for Feishu"
             )
@@ -187,6 +185,8 @@ class ExternalTokenAuthenticator:
                 subject_token,
                 buc=provider == "buc",
             )
+        if provider == "dingtalk":
+            return await self._validate_dingtalk(subject_token, identity_source_id)
         if provider == "feishu":
             return await self._validate_feishu(
                 subject_token,
@@ -202,8 +202,9 @@ class ExternalTokenAuthenticator:
         identity: ExternalTokenIdentity,
     ) -> User:
         trust = self._config.auth.external_token_trust
-        if identity.provider_type == "feishu":
-            source = await self._load_feishu_source(
+        if identity.provider_type in {"feishu", "dingtalk"}:
+            loader = self._load_dingtalk_source if identity.provider_type == "dingtalk" else self._load_feishu_source
+            source = await loader(
                 session,
                 identity.identity_source_id or trust.identity_source_id,
             )
@@ -211,6 +212,11 @@ class ExternalTokenAuthenticator:
                 raise ExternalTokenInvalid(
                     "External identity provider changed during authentication"
                 )
+            if identity.provider_type == "dingtalk":
+                from server.enterprise_identity.dingtalk_auth import verified_dingtalk_config
+                live = self._dingtalk_fingerprint(source, verified_dingtalk_config(source))
+                if not secrets.compare_digest(live, identity.provider_fingerprint):
+                    raise ExternalTokenInvalid("DingTalk source changed during authentication")
             feishu_user = await upsert_external_user(
                 session,
                 source,
@@ -472,7 +478,7 @@ class ExternalTokenAuthenticator:
                 "External UserInfo endpoint is not configured"
             )
         async with self._session_factory() as session:
-            source = await self._load_active_identity_source(
+            source = await self._load_usable_identity_source(
                 session,
                 trust.identity_source_id,
             )
@@ -676,12 +682,49 @@ class ExternalTokenAuthenticator:
             identity_source_id=source.id,
         )
 
+    def _dingtalk_fingerprint(self, source, config):
+        from server.enterprise_identity.dingtalk_auth import dingtalk_config_digest
+        return hashlib.sha256(f"{self._base_fingerprint()}:{source.id}:{dingtalk_config_digest(source, config)}".encode()).hexdigest()
+
+    async def _load_dingtalk_source(self, session, identity_source_id):
+        from server.enterprise_identity.dingtalk_auth import verified_dingtalk_config
+        trust = self._config.auth.external_token_trust
+        # One explicitly configured trust source; no caller-selected enterprise.
+        if not trust.identity_source_id or identity_source_id != trust.identity_source_id:
+            raise ExternalTokenInvalid("DingTalk trust source does not match")
+        source = await self._load_usable_identity_source(session, identity_source_id)
+        if source.provider != IdentitySourceProvider.DINGTALK:
+            raise ExternalTokenInvalid("DingTalk identity source is unavailable")
+        try:
+            verified_dingtalk_config(source)
+        except ValueError:
+            raise ExternalTokenInvalid("DingTalk identity source is unverified") from None
+        return source
+
+    async def _validate_dingtalk(self, subject_token, identity_source_id):
+        from server.enterprise_identity.dingtalk import DingTalkDirectoryClient, DingTalkIdentityError
+        from server.enterprise_identity.dingtalk_auth import verified_dingtalk_config
+        trust = self._config.auth.external_token_trust
+        async with self._session_factory() as session:
+            source = await self._load_dingtalk_source(session, identity_source_id or trust.identity_source_id)
+            config = verified_dingtalk_config(source)
+            fingerprint = self._dingtalk_fingerprint(source, config)
+        try:
+            async with DingTalkDirectoryClient(tenant_id=source.tenant_id, client_id=config["client_id"],
+                                               client_secret=config["client_secret"]) as client:
+                identity = await client.authenticate_token(subject_token)
+        except DingTalkIdentityError:
+            raise ExternalTokenInvalid("DingTalk access token was rejected") from None
+        return ExternalTokenIdentity(provider_type="dingtalk", provider_key=identity_provider_key(source),
+            provider_fingerprint=fingerprint, subject=identity["user_id"], display_name=identity["display_name"],
+            email=None, scopes=(), expires_at=None, identity_source_id=source.id)
+
     async def _load_feishu_source(
         self,
         session: AsyncSession,
         identity_source_id: str | None,
     ) -> EnterpriseIdentitySource:
-        source = await self._load_active_identity_source(
+        source = await self._load_usable_identity_source(
             session,
             identity_source_id,
         )
@@ -706,7 +749,7 @@ class ExternalTokenAuthenticator:
             )
         return source
 
-    async def _load_active_identity_source(
+    async def _load_usable_identity_source(
         self,
         session: AsyncSession,
         identity_source_id: str | None,
@@ -721,7 +764,7 @@ class ExternalTokenAuthenticator:
         )
         if (
             source is None
-            or source.status != EnterpriseIdentitySourceStatus.ACTIVE
+            or not identity_source_snapshot_is_usable(source)
             or not source.tenant_id
         ):
             raise ExternalTokenInvalid(

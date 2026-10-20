@@ -62,8 +62,18 @@ class ExhaustiveKnowledgeAccessPlan:
 class KnowledgeResourceScope:
     bindings: dict[str, set[str] | None]
     allowed_resource_ids: set[str] | None = None
+    personal_only: bool = False
+    personal_bindings: dict[str, set[str] | None] | None = None
+    excluded_resource_ids: frozenset[str] = frozenset()
 
     def allows(self, resource: KnowledgeResource) -> bool:
+        if self.personal_only:
+            return (
+                resource.kb_type == "PERSONAL"
+                and resource.binding_mode == KnowledgeBindingMode.OWNER
+            )
+        if resource.id in self.excluded_resource_ids:
+            return False
         if (
             self.allowed_resource_ids is not None
             and resource.id not in self.allowed_resource_ids
@@ -72,8 +82,10 @@ class KnowledgeResourceScope:
         if resource.polarrag_instance_id not in self.bindings:
             return False
         selected = self.bindings[resource.polarrag_instance_id]
+        if resource.kb_type == "PERSONAL":
+            selected = self.personal_bindings.get(resource.polarrag_instance_id) if self.personal_bindings is not None else None
         return (
-            resource.kb_type != "PUBLIC"
+            resource.kb_type not in {"PUBLIC", "PERSONAL"}
             or selected is None
             or resource.id in selected
         )
@@ -419,7 +431,17 @@ async def _visible_resource_filters(
     ]
     if resource_id is not None:
         filters.append(KnowledgeResource.id == resource_id)
+    if resource_scope is not None and resource_scope.personal_only:
+        filters.extend(
+            [
+                KnowledgeResource.kb_type == "PERSONAL",
+                KnowledgeResource.binding_mode == KnowledgeBindingMode.OWNER,
+            ]
+        )
+        return filters
     if resource_scope is not None:
+        if resource_scope.excluded_resource_ids:
+            filters.append(KnowledgeResource.id.not_in(resource_scope.excluded_resource_ids))
         scoped = []
         for instance_id, selected_resource_ids in resource_scope.bindings.items():
             if selected_resource_ids is None:
@@ -437,6 +459,15 @@ async def _visible_resource_filters(
         if not scoped:
             return None
         filters.append(or_(*scoped))
+        if resource_scope.personal_bindings is not None:
+            personal_scoped = [
+                and_(
+                    KnowledgeResource.polarrag_instance_id == instance_id,
+                    KnowledgeResource.id.in_(selected) if selected is not None else True,
+                )
+                for instance_id, selected in resource_scope.personal_bindings.items()
+            ]
+            filters.append(or_(KnowledgeResource.kb_type != "PERSONAL", *personal_scoped))
         if resource_scope.allowed_resource_ids is not None:
             if not resource_scope.allowed_resource_ids:
                 return None

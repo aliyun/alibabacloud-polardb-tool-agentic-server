@@ -11,7 +11,10 @@ export type SafeDryRunGuidance =
 export interface SafeDryRunCheck {
   service: 'sts' | 'polardb' | 'ecs_metadata' | 'oidc_discovery' | 'oidc_jwks'
   endpoint: string
-  status: 'REACHABLE' | 'WARNING' | 'PASSED' | 'SKIPPED'
+  status: 'REACHABLE' | 'WARNING' | 'PASSED' | 'SKIPPED' | 'FAILED'
+  regionId?: string
+  network?: 'public' | 'vpc'
+  stage?: 'polardb' | 'assume_role' | 'ecs_metadata'
   identityHint?: string
   expiresAt?: number
   requestId?: string
@@ -48,6 +51,7 @@ export function createIdempotencyKey(): string {
 }
 
 const externalErrorCodes = new Set([
+  'OPENAPI_CHECK_FAILED',
   'OPENAPI_CONNECT_FAILURE',
   'OPENAPI_CREDENTIAL_INVALID',
   'OPENAPI_DNS_FAILURE',
@@ -90,6 +94,7 @@ const credentialModes = new Set<SafeCredentialMode>([
   'ecs_ram_role',
 ])
 const checkStatuses = new Set<SafeDryRunCheck['status']>([
+  'FAILED',
   'REACHABLE',
   'WARNING',
   'PASSED',
@@ -222,6 +227,9 @@ function normalizeCheck(value: unknown): SafeDryRunCheck | undefined {
     status: source.status as SafeDryRunCheck['status'],
   }
   const identityHint = safeIdentityHint(source.service, source.identity_hint)
+  if (typeof source.region_id === 'string' && source.region_id.length <= 64 && regionPattern.test(source.region_id)) check.regionId = source.region_id
+  if (source.network === 'public' || source.network === 'vpc') check.network = source.network
+  if (source.stage === 'polardb' || source.stage === 'assume_role' || source.stage === 'ecs_metadata') check.stage = source.stage
   if (identityHint) check.identityHint = identityHint
   const expiresAt = integer(source.expires_at)
   if (expiresAt !== undefined && expiresAt >= 0 && expiresAt <= maxEpochSeconds) {

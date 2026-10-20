@@ -82,7 +82,7 @@ async def test_user_sso_external_validation_checks_discovery_and_jwks() -> None:
         patch.object(
             validator,
             "_require_safe_oidc_url",
-            new=AsyncMock(side_effect=lambda value: value),
+            new=AsyncMock(side_effect=lambda value, **_kwargs: value),
         ) as require_safe,
     ):
         result = await validator.validate(
@@ -109,12 +109,12 @@ async def test_user_sso_external_validation_uses_private_endpoint_policy() -> No
         patch.object(
             validator,
             "_require_safe_oidc_url",
-            new=AsyncMock(side_effect=lambda value: value),
+            new=AsyncMock(side_effect=lambda value, **_kwargs: value),
         ),
         patch.object(
             validator,
             "_require_safe_external_token_url",
-            new=AsyncMock(side_effect=lambda value: value),
+            new=AsyncMock(side_effect=lambda value, **_kwargs: value),
         ) as require_external_safe,
         patch.object(
             validator,
@@ -147,8 +147,8 @@ async def test_user_sso_external_validation_uses_private_endpoint_policy() -> No
     assert result.status == "PASSED"
     require_external_safe.assert_has_awaits(
         [
-            call("http://winner.internal/oauth2/introspect"),
-            call("http://winner.internal/oauth2/user_info"),
+            call("http://winner.internal/oauth2/introspect", allow_public_http=False),
+            call("http://winner.internal/oauth2/user_info", allow_public_http=False),
         ]
     )
 
@@ -165,7 +165,7 @@ async def test_token_exchange_only_validation_skips_browser_oidc_endpoints() -> 
         patch.object(
             validator,
             "_require_safe_external_token_url",
-            new=AsyncMock(side_effect=lambda value: value),
+            new=AsyncMock(side_effect=lambda value, **_kwargs: value),
         ) as require_external_safe,
         patch.object(
             validator,
@@ -191,12 +191,56 @@ async def test_token_exchange_only_validation_skips_browser_oidc_endpoints() -> 
     assert result.status == "PASSED"
     require_browser_safe.assert_not_awaited()
     require_external_safe.assert_awaited_once_with(
-        "https://idp.example/introspect"
+        "https://idp.example/introspect", allow_public_http=True,
     )
     get_oidc_json.assert_not_awaited()
 
 
-async def test_token_exchange_only_activation_skips_browser_login_test() -> None:
+@pytest.mark.parametrize("browser_login_enabled", [False, True])
+@pytest.mark.parametrize("endpoint_name", ["introspection_endpoint", "userinfo_endpoint"])
+async def test_public_http_external_token_endpoint_requires_token_only_mode(
+    monkeypatch, browser_login_enabled: bool, endpoint_name: str,
+) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 80))
+        ],
+    )
+    config = {
+        "browser_login_enabled": browser_login_enabled,
+        "external_token_trust": {
+            "enabled": True,
+            "provider": "oauth2_introspection",
+            "introspection_endpoint": "https://provider.example.com/introspect",
+            endpoint_name: f"http://provider.example.com/{endpoint_name}",
+        },
+    }
+    if browser_login_enabled:
+        config.update({
+            "issuer": "https://idp.example.com",
+            "authorization_endpoint": "https://idp.example.com/authorize",
+            "token_endpoint": "https://idp.example.com/token",
+            "jwks_uri": "https://idp.example.com/jwks",
+        })
+    validator = AlibabaCloudExternalValidator()
+    with patch.object(
+        validator, "_get_oidc_json", new=AsyncMock(return_value={"keys": [{"kid": "key"}]})
+    ):
+        if browser_login_enabled:
+            with pytest.raises(ExternalValidationError, match="trusted private"):
+                await validator.validate("user_sso", config)
+        else:
+            assert (await validator.validate("user_sso", config)).status == "PASSED"
+
+
+@pytest.mark.parametrize(
+    "external_base_url", ["https://pas.example.com", "http://pas.example.com"],
+)
+async def test_token_exchange_only_activation_skips_browser_login_test(
+    external_base_url: str,
+) -> None:
     context = await create_config_context()
     try:
         runtime = await context.repository.get_module("runtime_policy")
@@ -210,7 +254,7 @@ async def test_token_exchange_only_activation_skips_browser_login_test() -> None
                         update={
                             "config": {
                                 **runtime.effective.config,
-                                "external_base_url": "https://pas.example.com",
+                                "external_base_url": external_base_url,
                             }
                         }
                     )
@@ -381,13 +425,16 @@ async def test_local_sso_dev_validator_rejects_spoofed_localhost_resolution(
     ("url", "address"),
     [
         ("http://winner.internal/oauth2/introspect", "10.20.30.40"),
+        ("http://provider.example.com/introspect", "8.8.8.8"),
+        ("http://provider.example.com/userinfo", "8.8.8.8"),
+        ("http://8.8.8.8/introspect", "8.8.8.8"),
         ("http://winner.internal/oauth2/user_info", "172.20.30.40"),
         ("http://winner.internal/oauth2/introspect", "100.64.10.20"),
         ("http://winner.internal/oauth2/user_info", "fd00::20"),
         ("https://winner.internal/oauth2/introspect", "192.168.10.20"),
     ],
 )
-async def test_external_token_validator_accepts_private_provider_urls(
+async def test_external_token_validator_accepts_http_and_https_provider_urls(
     monkeypatch,
     url: str,
     address: str,
@@ -407,17 +454,14 @@ async def test_external_token_validator_accepts_private_provider_urls(
     )
     validator = AlibabaCloudExternalValidator()
 
-    assert await validator._require_safe_external_token_url(url) == url
+    assert await validator._require_safe_external_token_url(
+        url, allow_public_http=True,
+    ) == url
 
 
 @pytest.mark.parametrize(
     ("url", "address", "message"),
     [
-        (
-            "http://provider.example.com/introspect",
-            "8.8.8.8",
-            "trusted private network",
-        ),
         (
             "http://winner.internal/introspect",
             "169.254.169.254",

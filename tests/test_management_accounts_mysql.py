@@ -31,14 +31,13 @@ from server.management.settings import ManagedIdentitySettings
 from server.management.types import ManagedTarget
 from server.models import (
     AuthProvider,
-    Base,
     PasswordState,
     User,
     UserRefreshToken,
     UserRole,
     UserStatus,
 )
-from tests._helpers import init_test_jwt_keys
+from tests._helpers import init_test_jwt_keys, isolated_model_metadata
 
 
 def _mysql_url() -> str:
@@ -57,7 +56,7 @@ async def test_mysql_case_insensitive_admin_match_is_rejected() -> None:
     engine = create_async_engine(_mysql_url())
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(isolated_model_metadata().create_all)
             collation = await connection.scalar(text("SELECT @@collation_database"))
         assert isinstance(collation, str)
         assert collation.lower().endswith("_ci")
@@ -155,7 +154,7 @@ async def test_mysql_reset_serializes_with_builtin_login() -> None:
     engine = create_async_engine(_mysql_url())
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(isolated_model_metadata().create_all)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         external_id = "mysql-race-login"
         user_id = await _create_mysql_race_user(factory, external_id)
@@ -217,7 +216,7 @@ async def test_mysql_reset_serializes_with_rest_refresh() -> None:
     engine = create_async_engine(_mysql_url())
     try:
         async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
+            await connection.run_sync(isolated_model_metadata().create_all)
         factory = async_sessionmaker(engine, expire_on_commit=False)
         external_id = "mysql-race-refresh"
         user_id = await _create_mysql_race_user(factory, external_id)

@@ -13,6 +13,8 @@ import uuid
 
 import httpx
 
+from server.enterprise_identity.checkpoints import checkpoint_precedes_completed_sync
+
 
 _CLOUD_ENDPOINTS = {
     "global": (
@@ -61,6 +63,8 @@ class SharePointDirectoryClient:
         max_concurrency: int = 8,
         checkpoint_dir: Path | str | None = None,
         checkpoint_key: str | None = None,
+        last_completed_at: datetime | None = None,
+        sync_worker_id: str | None = None,
     ) -> None:
         if not all((tenant_id, client_id, client_secret)):
             raise ValueError("SharePoint tenant_id, client_id, and client_secret are required")
@@ -79,6 +83,8 @@ class SharePointDirectoryClient:
         self._access_token: str | None = None
         self._checkpoint_lock = asyncio.Lock()
         self._checkpoint_key = checkpoint_key
+        self._last_completed_at = last_completed_at
+        self._sync_worker_id = sync_worker_id
         if checkpoint_key is None:
             self._checkpoint_path: Path | None = None
         else:
@@ -103,6 +109,7 @@ class SharePointDirectoryClient:
         return {
             "version": _CHECKPOINT_VERSION,
             "source": self._checkpoint_key,
+            "sync_worker_id": self._sync_worker_id,
             "stage": "users",
             "has_more": True,
             "sync_started_at": None,
@@ -128,6 +135,10 @@ class SharePointDirectoryClient:
             or payload.get("version") != _CHECKPOINT_VERSION
             or payload.get("source") != self._checkpoint_key
         ):
+            return self._new_checkpoint()
+        if self._sync_worker_id is not None and payload.get("sync_worker_id") != self._sync_worker_id:
+            return self._new_checkpoint()
+        if checkpoint_precedes_completed_sync(payload, self._last_completed_at):
             return self._new_checkpoint()
         return payload
 

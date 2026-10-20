@@ -315,11 +315,8 @@ describe('MCP connections', () => {
 
     render(<MCPConnections />)
 
-    expect(
-      await screen.findByRole('button', {
-        name: 'Knowledge bases for Knowledge Agent',
-      }),
-    ).toBeEnabled()
+    expect(await screen.findByText('Knowledge Agent')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Knowledge bases for Knowledge Agent' })).not.toBeInTheDocument()
     expect(
       screen.getByRole('radio', {
         name: 'Use Knowledge Agent as the default Agent',

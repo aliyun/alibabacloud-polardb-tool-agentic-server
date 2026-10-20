@@ -24,6 +24,31 @@ verify CoreDNS can resolve the VPC endpoints through Alibaba Cloud DNS or
 PrivateZone, and verify routes and security policy allow HTTPS port `443`.
 Custom endpoint hostnames are not accepted.
 
+PAS uses an offline, reviewed catalog from the official
+[PolarDB endpoints](https://api.aliyun.com/product/polardb?tab=endpoints) and
+[STS endpoints](https://help.aliyun.com/zh/ram/developer-reference/api-sts-2015-04-01-endpoint)
+tables (reviewed 2026-09-24). The names above describe supported entries, not
+a rule for inventing hostnames. Unknown regions or missing endpoints fail with
+`OPENAPI_ENDPOINT_UNSUPPORTED`; VPC never falls back to public. In particular,
+PolarDB VPC is unavailable in `cn-beijing-finance-1`, and STS VPC is unavailable
+in `cn-hangzhou-finance`. Direct AccessKey mode does not require STS.
+
+`aliyun_access.region_id` is the PAS access/default region for preflight and
+STS. In VPC mode it must be the PAS deployment region, and all OpenAPI-managed
+resources must be in that same region. Cross-region VPC connectivity does not
+make regional VPC OpenAPI endpoints cross-region. Public mode can manage
+multiple regions, using each pool or instance's own region for PolarDB calls.
+Changing the global default never rewrites existing resource regions.
+
+Failed preflights include the resolved service, region, network, endpoint,
+stage, and a sanitized error code/request ID when available. Check these fields
+before testing DNS, routing, port 443, or credentials from the backend Pod.
+`OPENAPI_DNS_FAILURE`, `OPENAPI_TLS_FAILURE`, and `OPENAPI_CONNECT_FAILURE`
+also classify typed transport errors retained inside Alibaba Cloud SDK retry
+wrappers. Raw SDK messages and credentials are not returned to the browser.
+`OPENAPI_CHECK_FAILED` means an unclassified check failure, not proof of a
+network outage. No raw SDK exception or credential is returned.
+
 ## AssumeRole and ECS requirements
 
 For `assume_role`, create a dedicated source identity for PAS. Its source

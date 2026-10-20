@@ -1,6 +1,6 @@
 [project]
 name = "alibabacloud-polardb-tool-agentic-server"
-version = "0.0.12"
+version = "0.0.13"
 description = "alibabacloud polardb tool agentic server — MCP gateway for PolarDB MySQL instances"
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -24,6 +24,8 @@ dependencies = [
     "alibabacloud-sts20150401>=1.1.0",
     "alibabacloud-tea-openapi>=0.4.6",
     "httpx>=0.27.0",
+    "lark-channel-sdk>=1.4.0,<2.0.0",
+    "dingtalk-stream>=0.24.0,<1.0.0",
     "oss2>=2.19.1",
     "python-multipart>=0.0.20",
     "mcp>=1.28.1,<2.0.0",

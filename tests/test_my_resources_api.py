@@ -5,9 +5,13 @@ from server.models import (
     AgentPolarRAGInstanceBinding,
     AgentStatus,
     AgentUserAssignment,
+    EnterpriseIdentitySource,
+    EnterpriseIdentitySourceSpaceBinding,
+    EnterpriseIdentitySourceStatus,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalType,
+    IdentitySourceProvider,
     KnowledgeBindingMode,
     KnowledgeResource,
     KnowledgeResourceSyncStatus,
@@ -106,6 +110,7 @@ async def test_my_resources_returns_only_user_visible_knowledge_resources(
             "knowledge_space_name": "Space A",
             "polarrag_instance_id": instance.id,
             "polarrag_instance_name": "RAG A",
+            "force_rechunk_supported": False,
             "name": "Public KB",
                 "kb_id": "public-kb",
                 "kb_type": "PUBLIC",
@@ -186,10 +191,20 @@ async def test_my_resources_filters_public_kbs_for_selected_agent(
             enabled=True,
         )
         agent = Agent(name="scoped-agent", created_by=admin.id)
-        session.add_all([allowed, blocked, agent])
+        source = EnterpriseIdentitySource(
+            name="Scoped source",
+            provider=IdentitySourceProvider.FEISHU,
+            tenant_id="tenant-a",
+            status=EnterpriseIdentitySourceStatus.ACTIVE,
+        )
+        session.add_all([allowed, blocked, agent, source])
         await session.flush()
         session.add_all(
             [
+                EnterpriseIdentitySourceSpaceBinding(
+                    identity_source_id=source.id,
+                    knowledge_space_id=space.knowledge_space_id,
+                ),
                 AgentUserAssignment(
                     agent_id=agent.id,
                     user_id=member.id,

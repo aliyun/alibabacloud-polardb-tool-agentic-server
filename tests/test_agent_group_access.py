@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from server.core.agent_access import has_agent_access, list_accessible_agent_ids
@@ -18,6 +19,8 @@ from server.models import (
     AuthProvider,
     Base,
     Department,
+    EnterpriseDirectoryEntryStatus,
+    EnterpriseDirectoryUser,
     EnterprisePrincipalAssignment,
     EnterprisePrincipalSource,
     EnterprisePrincipalType,
@@ -185,6 +188,68 @@ async def test_identity_source_group_grant_tracks_synced_membership(
     )
     await session.commit()
     assert not await has_agent_access(session, agent.id, member.id)
+
+
+async def test_identity_source_group_grant_checks_all_linked_external_identities(
+    access_rows,
+) -> None:
+    session, admin, alice, agent, _department = access_rows
+    source = EnterpriseIdentitySource.create(
+        name="Feishu directory",
+        provider=IdentitySourceProvider.FEISHU,
+        tenant_id="tenant-001",
+    )
+    source.status = EnterpriseIdentitySourceStatus.ACTIVE
+    source.last_synced_at = datetime.now(UTC)
+    session.add(source)
+    await session.flush()
+    for external_user_id in ("ou-first", "ou-second"):
+        await upsert_external_user(
+            session,
+            source,
+            external_user_id=external_user_id,
+            display_name=external_user_id,
+            email=None,
+            user=alice,
+        )
+    group = await upsert_directory_group(
+        session,
+        source,
+        external_group_id="oc-second",
+        display_name="Second identity group",
+    )
+    await upsert_directory_membership(
+        session,
+        source,
+        external_group_id=group.external_group_id,
+        member_type=EnterpriseDirectoryMembershipType.USER,
+        external_member_id="ou-second",
+    )
+    session.add(
+        AgentGroupAssignment.for_identity_source_group(
+            agent_id=agent.id,
+            identity_source_id=source.id,
+            external_group_id=group.external_group_id,
+            created_by_user_id=admin.id,
+        )
+    )
+    await session.commit()
+
+    assert await has_agent_access(session, agent.id, alice.id)
+    assert await list_accessible_agent_ids(session, alice.id) == {agent.id}
+
+    second_directory_user = (
+        await session.execute(
+            select(EnterpriseDirectoryUser).where(
+                EnterpriseDirectoryUser.identity_source_id == source.id,
+                EnterpriseDirectoryUser.external_user_id == "ou-second",
+            )
+        )
+    ).scalar_one()
+    second_directory_user.status = EnterpriseDirectoryEntryStatus.DISABLED
+    await session.commit()
+
+    assert not await has_agent_access(session, agent.id, alice.id)
 
 
 async def test_identity_source_parent_department_grant_includes_child_department_users(

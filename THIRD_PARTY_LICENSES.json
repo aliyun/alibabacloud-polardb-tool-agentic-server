@@ -499,6 +499,12 @@
     },
     {
       "ecosystem": "npm",
+      "name": "@playwright/test",
+      "version": "1.63.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "ecosystem": "npm",
       "name": "@rc-component/async-validator",
       "version": "5.1.2",
       "license": "MIT"
@@ -789,6 +795,12 @@
       "ecosystem": "npm",
       "name": "@types/json-schema",
       "version": "7.0.15",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "@types/node",
+      "version": "22.20.4",
       "license": "MIT"
     },
     {
@@ -1825,6 +1837,18 @@
     },
     {
       "ecosystem": "npm",
+      "name": "playwright",
+      "version": "1.63.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "ecosystem": "npm",
+      "name": "playwright-core",
+      "version": "1.63.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "ecosystem": "npm",
       "name": "postcss",
       "version": "8.5.23",
       "license": "MIT"
@@ -2341,6 +2365,12 @@
     },
     {
       "ecosystem": "npm",
+      "name": "undici-types",
+      "version": "6.21.0",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "npm",
       "name": "update-browserslist-db",
       "version": "1.2.3",
       "license": "MIT"
@@ -2647,6 +2677,12 @@
     },
     {
       "ecosystem": "python",
+      "name": "dingtalk-stream",
+      "version": "0.24.3",
+      "license": "MIT"
+    },
+    {
+      "ecosystem": "python",
       "name": "fastapi",
       "version": "0.136.3",
       "license": "MIT"
@@ -2728,6 +2764,12 @@
       "name": "jsonschema-specifications",
       "version": "2025.9.1",
       "license": "MIT"
+    },
+    {
+      "ecosystem": "python",
+      "name": "lark-channel-sdk",
+      "version": "1.4.0",
+      "license": "MIT AND BSD-3-Clause"
     },
     {
       "ecosystem": "python",
@@ -2899,6 +2941,12 @@
     },
     {
       "ecosystem": "python",
+      "name": "requests-toolbelt",
+      "version": "1.0.0",
+      "license": "Apache-2.0"
+    },
+    {
+      "ecosystem": "python",
       "name": "rpds-py",
       "version": "2026.5.1",
       "license": "MIT"
@@ -3008,7 +3056,7 @@
     {
       "ecosystem": "python",
       "name": "websockets",
-      "version": "16.0",
+      "version": "15.0.1",
       "license": "BSD-3-Clause"
     },
     {

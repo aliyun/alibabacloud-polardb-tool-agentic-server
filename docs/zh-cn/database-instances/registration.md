@@ -11,6 +11,11 @@
 用户名和密码。PolarDB MySQL 默认端口为 `3306`。分配模式固定为
 `registered`，不作为选项展示。
 
+PolarDB 新建及编辑时的地域选择使用统一审核的阿里云地域目录。请选择实例的实际地域，
+修改 PAS 默认地域不会迁移或改写该实例。仅使用 SQL 连接时地域仍可不填，
+但通过 PolarDB OpenAPI 创建云端账号等操作必须提供地域。
+VPC OpenAPI 还要求实例地域与 PAS 接入地域一致。
+
 用途文本会由 `list_db_instances` 和 `describe_db_instance` 返回，帮助 Agent
 选择正确工作负载，同时不改变稳定的实例 UUID。
 

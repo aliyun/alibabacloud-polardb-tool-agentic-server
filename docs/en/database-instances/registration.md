@@ -13,6 +13,12 @@ usage, plus host, port, username, and password. PolarDB for MySQL uses port
 `3306` by default. Allocation mode is fixed to `registered` and is not shown
 as a choice.
 
+For PolarDB, region creation and editing use the shared reviewed Alibaba Cloud region
+selector. Choose the instance's actual region; changing the PAS default does
+not move or relabel it. Region remains optional for SQL-only connections, but
+cloud account creation and other PolarDB OpenAPI operations require it.
+VPC OpenAPI also requires the instance region to match the PAS access region.
+
 The usage text is returned by `list_db_instances` and
 `describe_db_instance`, helping an Agent select the correct workload without
 changing the stable instance UUID.

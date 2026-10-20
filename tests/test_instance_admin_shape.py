@@ -663,7 +663,9 @@ async def test_instance_inventory_is_paginated_stable_and_constant_query_count(
 
 async def test_instance_pagination_bounds_are_in_openapi(client):
     http, _, _ = client
-    schema = (await http.get("/openapi.json")).json()
+    from server.app import create_app
+
+    schema = create_app().openapi()
     parameters = {
         parameter["name"]: parameter["schema"]
         for parameter in schema["paths"]["/api/instances"]["get"]["parameters"]

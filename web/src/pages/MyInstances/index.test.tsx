@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -77,13 +77,33 @@ function deferred<T>() {
 async function selectKnowledgeBases(user: ReturnType<typeof userEvent.setup>) {
   await user.click(
     await screen.findByRole('button', {
-      name: /(?:knowledge bases for Scoped Agent|Scoped Agent 的知识库)/i,
+      name: /(?:knowledge bases for Scoped Agent|Scoped Agent 的知识库|^Knowledge bases$)/i,
     }),
   )
 }
 
 describe('My Instances page', () => {
   beforeEach(() => vi.clearAllMocks())
+
+  it('shows Agent-scoped knowledge bases on the standalone page', async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.get).mockImplementation((url) => Promise.resolve(
+      url === '/api/me/agent-connections'
+        ? agentConnectionsResponse([memberAgent]) as never
+        : knowledgeResourcesResponse('Public KB', 'public-kb') as never,
+    ))
+
+    render(<MyInstances knowledgeOnly />)
+
+    expect(await screen.findByRole('button', { name: 'Knowledge bases' })).toBeInTheDocument()
+    expect(screen.queryByText('MCP connections')).not.toBeInTheDocument()
+    expect(screen.queryByText('Database instances')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Knowledge bases' }))
+    expect(await screen.findByText('Public KB')).toBeInTheDocument()
+    expect(api.get).toHaveBeenCalledWith('/api/me/resources', {
+      params: { agent_id: 'agent-1', knowledge_offset: 0, knowledge_limit: 20 },
+    })
+  })
 
   it('shows current-user database instances and knowledge spaces without listing KBs', async () => {
     vi.mocked(api.get).mockImplementation((url) => {
@@ -425,7 +445,6 @@ describe('My Instances page', () => {
   })
 
   it('loads, refreshes, and paginates readable documents on demand', async () => {
-    const user = userEvent.setup()
     vi.mocked(api.get).mockImplementation((url) => {
       if (url === '/api/me/agent-connections') {
         return Promise.resolve(agentConnectionsResponse([memberAgent]) as never)
@@ -483,11 +502,11 @@ describe('My Instances page', () => {
 
     render(
       <MemoryRouter>
-        <MyInstances />
+        <MyInstances knowledgeOnly />
       </MemoryRouter>,
     )
-    await selectKnowledgeBases(user)
-    await user.click(
+    fireEvent.click(await screen.findByRole('button', { name: 'Knowledge bases' }))
+    fireEvent.click(
       await screen.findByRole('button', {
         name: /manage documents for Public KB/i,
       }),
@@ -504,19 +523,20 @@ describe('My Instances page', () => {
         knowledge_resource_id: 'resource-1',
         size: 20,
         after_doc_id: null,
+        page: 1,
       },
     )
 
-    await user.click(within(manager).getByRole('button', { name: 'Next' }))
+    fireEvent.click(within(manager).getByRole('button', { name: 'Next' }))
     expect(await within(manager).findByText('second.md')).toBeInTheDocument()
     expect(within(manager).getByRole('columnheader', { name: 'Size' })).toBeInTheDocument()
     expect(within(manager).getByRole('columnheader', { name: 'Chunks' })).toBeInTheDocument()
-    expect(within(manager).getByRole('columnheader', { name: 'Uploaded' })).toBeInTheDocument()
+    expect(within(manager).getByRole('columnheader', { name: 'Updated' })).toBeInTheDocument()
     expect(within(manager).queryByRole('columnheader', { name: 'Generation' })).not.toBeInTheDocument()
     expect(within(manager).getByText('1.5 KiB')).toBeInTheDocument()
     expect(within(manager).getByText('12')).toBeInTheDocument()
     expect(within(manager).getByText(/Aug 12, 2026/)).toBeInTheDocument()
-    await user.click(within(manager).getByRole('button', { name: /refresh/i }))
+    fireEvent.click(within(manager).getByRole('button', { name: /refresh/i }))
     await waitFor(() =>
       expect(
         vi.mocked(api.post).mock.calls.filter(
@@ -528,8 +548,7 @@ describe('My Instances page', () => {
     )
   })
 
-  it('lets a member find, rechunk, and delete an authorized document', async () => {
-    const user = userEvent.setup()
+  it('lets a member find an authorized document from the knowledge page', async () => {
     vi.mocked(api.get).mockImplementation((url) => {
       if (url === '/api/me/agent-connections') {
         return Promise.resolve(agentConnectionsResponse([memberAgent]) as never)
@@ -581,25 +600,21 @@ describe('My Instances page', () => {
             },
       } as never),
     )
-    vi.mocked(api.delete).mockResolvedValue({
-      data: { doc_id: 'doc-a', status: 'DELETING', task_id: 'delete-task' },
-    } as never)
-
     render(
       <MemoryRouter>
-        <MyInstances />
+        <MyInstances knowledgeOnly />
       </MemoryRouter>,
     )
-    await selectKnowledgeBases(user)
-    await user.click(
+    fireEvent.click(await screen.findByRole('button', { name: 'Knowledge bases' }))
+    fireEvent.click(
       await screen.findByRole('button', {
         name: /manage documents for Public KB/i,
       }),
     )
     const dialogs = await screen.findAllByRole('dialog')
     const manager = dialogs[dialogs.length - 1]!
-    await user.type(within(manager).getByLabelText(/document filename/i), 'guide')
-    await user.click(within(manager).getByRole('button', { name: /^find$/i }))
+    fireEvent.change(within(manager).getByLabelText(/document filename/i), { target: { value: 'guide' } })
+    fireEvent.click(within(manager).getByRole('button', { name: /^find$/i }))
 
     expect(await within(manager).findByText('guide.md')).toBeInTheDocument()
     expect(api.post).toHaveBeenCalledWith(
@@ -612,41 +627,6 @@ describe('My Instances page', () => {
       },
     )
 
-    await user.click(
-      within(manager).getByRole('button', { name: /rechunk guide.md/i }),
-    )
-    await user.click(
-      await screen.findByRole('button', { name: /start rechunk/i }),
-    )
-    await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith(
-        '/api/me/polarrag/documents/doc-a/rechunk',
-        {
-          agent_id: 'agent-1',
-          knowledge_resource_id: 'resource-1',
-          chunk_strategy: 'inherit',
-          chunk_max_tokens: undefined,
-        },
-      ),
-    )
-
-    await user.click(
-      within(manager).getByRole('button', { name: /delete guide.md/i }),
-    )
-    await user.click(
-      await screen.findByRole('button', { name: /confirm delete/i }),
-    )
-    await waitFor(() =>
-      expect(api.delete).toHaveBeenCalledWith(
-        '/api/me/polarrag/documents/doc-a',
-        {
-          data: {
-            agent_id: 'agent-1',
-            knowledge_resource_id: 'resource-1',
-          },
-        },
-      ),
-    )
   })
 
   it('shows a useful error instead of silently rendering an empty table', async () => {

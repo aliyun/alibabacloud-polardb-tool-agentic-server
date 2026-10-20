@@ -144,7 +144,7 @@ export interface EnabledPolarRAGSpace {
   sync: PolarRAGSyncResult
 }
 
-export type EnterprisePrincipalProvider = 'feishu' | 'sharepoint' | 'polarrag'
+export type EnterprisePrincipalProvider = 'feishu' | 'sharepoint' | 'dingtalk' | 'polarrag'
 export type EnterprisePrincipalType = 'user' | 'group'
 export type EnterprisePrincipalStatus = 'active' | 'disabled'
 
@@ -177,8 +177,23 @@ export interface UpdateEnterprisePrincipalInput {
 
 const encoded = (value: string) => encodeURIComponent(value)
 
-export const listPolarRAGInstances = (params: PageParams = {}) =>
-  api.get<Page<PolarRAGInstance>>('/api/polarrag/instances', { params })
+export const listPolarRAGInstances = (
+  params: PageParams & {
+    agent_id?: string
+    binding_status?: 'bound' | 'unbound'
+    status?: PolarRAGInstanceStatus
+  } = {},
+) =>
+  api.get<Page<PolarRAGInstance>>('/api/polarrag/instances', {
+    params: {
+      offset: params.offset,
+      limit: params.limit,
+      q: params.search,
+      agent_id: params.agent_id,
+      binding_status: params.binding_status,
+      status: params.status,
+    },
+  })
 
 export const createPolarRAGInstance = (
   input: CreatePolarRAGInstanceInput,

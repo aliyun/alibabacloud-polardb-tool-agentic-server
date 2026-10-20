@@ -9,6 +9,7 @@ BlueOak-1.0.0
 CC-BY-4.0
 ISC
 MIT
+MIT AND BSD-3-Clause
 MIT AND PSF-2.0
 MIT-0
 MPL-2.0

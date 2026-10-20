@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from server.aliyun.polardb_client import (
@@ -14,6 +15,7 @@ from server.aliyun.polardb_client import (
     OpenAPIError,
     PolarDBClient,
 )
+from server.aliyun.endpoints import OpenAPIEndpointError
 from server.core.crypto import decrypt, encrypt
 from server.core.dedicated_mysql import DedicatedMySQL
 from server.core.dedicated_pool_repository import activate_dedicated_member
@@ -30,6 +32,7 @@ from server.logging import safe_request_id
 from server.models import (
     AllocationMode,
     DedicatedMemberStatus,
+    DedicatedPool,
     DedicatedPoolMember,
     DedicatedPreparationStep,
     InstanceStatus,
@@ -67,7 +70,7 @@ def _purchase_parameters(member: DedicatedPoolMember) -> dict[str, str]:
     params.update(
         {
             "region_id": _network_identifier(
-                member.pool.region_id, "region_id"
+                member.instance.region, "region_id"
             ),
             "vpc_id": _network_identifier(member.pool.vpc_id, "vpc_id"),
             "vswitch_id": _network_identifier(
@@ -106,12 +109,15 @@ class DedicatedPoolProvisioner:
         self._client = client
         self._mysql = mysql
 
-    def _client_or_raise(self) -> PolarDBClient:
+    def _client_or_raise(self, region_id: str | None) -> PolarDBClient:
         if self._client is None:
             raise AliyunCredentialsUnavailable(
                 "Alibaba Cloud access is not configured"
             )
-        return self._client
+        try:
+            return self._client.for_region(region_id)
+        except OpenAPIEndpointError as error:
+            raise OpenAPIError("OPENAPI_ENDPOINT_UNSUPPORTED", str(error)) from None
 
     async def advance(
         self,
@@ -137,8 +143,8 @@ class DedicatedPoolProvisioner:
                     await session.commit()
             raise
 
-    async def delete_cluster(self, cluster_id: str) -> None:
-        await self._client_or_raise().delete_cluster(cluster_id)
+    async def delete_cluster(self, cluster_id: str, *, region_id: str | None) -> None:
+        await self._client_or_raise(region_id).delete_cluster(cluster_id)
 
     async def _advance_once(
         self,
@@ -155,6 +161,13 @@ class DedicatedPoolProvisioner:
             step = member.preparation_step
 
             if step is DedicatedPreparationStep.PENDING:
+                # Serialize placement pinning with pool placement edits.
+                pool = await session.scalar(
+                    select(DedicatedPool).where(DedicatedPool.id == member.pool_id)
+                    .with_for_update().execution_options(populate_existing=True)
+                )
+                assert pool is not None
+                member.instance.region = pool.region_id.strip()
                 member.purchase_token = str(uuid.uuid4())
                 member.preparation_step = (
                     DedicatedPreparationStep.PURCHASE_INTENT_STORED
@@ -162,11 +175,19 @@ class DedicatedPoolProvisioner:
                 await session.commit()
 
             elif step is DedicatedPreparationStep.PURCHASE_INTENT_STORED:
+                if not member.instance.region:
+                    raise DedicatedPoolProvisioningError(
+                        "Stored purchase region is missing; reconcile the purchase before retrying"
+                    )
+                if member.instance.region != member.pool.region_id.strip():
+                    raise DedicatedPoolProvisioningError(
+                        "Pool placement changed after purchase intent was stored"
+                    )
                 purchase_parameters = _purchase_parameters(member)
                 pool_description = f"PAS Dedicated pool {member.pool.name}"
                 member_description = f"PAS prewarmed member {member.id}"
                 await session.commit()
-                result = await self._client_or_raise().create_dedicated_cluster(
+                result = await self._client_or_raise(member.instance.region).create_dedicated_cluster(
                     purchase_parameters,
                     agentic_db_type="dedicated",
                     agentic_db_cluster_id=None,
@@ -179,7 +200,6 @@ class DedicatedPoolProvisioner:
                         "Dedicated cluster purchase returned no cluster ID"
                     )
                 member.instance.cluster_id = cluster_id
-                member.instance.region = member.pool.region_id
                 member.instance.allocation_mode = AllocationMode.DEDICATED_POOL
                 member.instance.status = InstanceStatus.CREATING
                 member.agentic_db_cluster_id = _optional_string(
@@ -196,7 +216,7 @@ class DedicatedPoolProvisioner:
             elif step is DedicatedPreparationStep.PURCHASE_REQUESTED:
                 cluster_id = member.instance.cluster_id
                 await session.commit()
-                result = await self._client_or_raise().describe_cluster_attribute(
+                result = await self._client_or_raise(member.instance.region).describe_cluster_attribute(
                     cluster_id
                 )
                 if result.get("status") == "Running":
@@ -210,7 +230,7 @@ class DedicatedPoolProvisioner:
                 endpoint_net_type = member.pool.endpoint_net_type
                 await session.commit()
                 host, port = await resolve_primary_endpoint(
-                    self._client_or_raise(),
+                    self._client_or_raise(member.instance.region),
                     cluster_id,
                     endpoint_net_type,
                 )
@@ -246,7 +266,7 @@ class DedicatedPoolProvisioner:
                 )
                 await session.commit()
                 try:
-                    await self._client_or_raise().create_account(
+                    await self._client_or_raise(member.instance.region).create_account(
                         cluster_id,
                         lifecycle_username,
                         lifecycle_password,
@@ -266,7 +286,7 @@ class DedicatedPoolProvisioner:
                     str(member.lifecycle_username_ciphertext)
                 )
                 await session.commit()
-                account = await self._client_or_raise().describe_account(
+                account = await self._client_or_raise(member.instance.region).describe_account(
                     cluster_id,
                     lifecycle_username,
                 )
@@ -306,7 +326,7 @@ class DedicatedPoolProvisioner:
                 )
                 await session.commit()
                 try:
-                    await self._client_or_raise().create_account(
+                    await self._client_or_raise(member.instance.region).create_account(
                         cluster_id,
                         sandbox_username,
                         sandbox_password,
@@ -327,14 +347,14 @@ class DedicatedPoolProvisioner:
                 )
                 database_name = str(member.database_name)
                 await session.commit()
-                account = await self._client_or_raise().describe_account(
+                account = await self._client_or_raise(member.instance.region).describe_account(
                     cluster_id,
                     sandbox_username,
                 )
                 if not _account_available(account):
                     return member.preparation_step
                 try:
-                    await self._client_or_raise().create_database(
+                    await self._client_or_raise(member.instance.region).create_database(
                         cluster_id,
                         database_name,
                     )

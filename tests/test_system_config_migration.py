@@ -10,9 +10,10 @@ from alembic.script import ScriptDirectory
 from sqlalchemy.dialects import mysql
 
 from server.models import SystemConfig
+from server.db.schema import required_schema_head
 
 
-HEAD_REVISION = "9c1d2e3f4a5b"
+HEAD_REVISION = required_schema_head()
 KEY = base64.b64encode(b"01234567890123456789012345678901").decode()
 
 

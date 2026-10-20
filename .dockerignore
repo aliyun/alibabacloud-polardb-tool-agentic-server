@@ -14,7 +14,7 @@ __pycache__
 data
 log
 tests
-docs
+docs/customer
 docs/superpowers
 web/dist
 web/node_modules

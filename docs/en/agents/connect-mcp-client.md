@@ -2,7 +2,7 @@
 
 [简体中文](../../zh-cn/agents/connect-mcp-client.md)
 
-Open **Connect MCP** for a personal connection. An administrator grants your personal account database access under **Resources** or **Access management**; no Agent is required. Knowledge uses your enterprise identity, ownership and upstream ACL.
+Open **Connect MCP** to choose an available Agent and issue, copy, regenerate, or revoke its user-specific Agent Token. The same page retains a general personal connection. An administrator directly grants your personal account database access under **Resources** or **Access management**; no Agent is required for that connection. Personal MCP can only search and read PERSONAL knowledge bases you own, subject to upstream ACL. It cannot access PUBLIC knowledge bases or another user's PERSONAL knowledge bases, or upload, delete, or rechunk documents. PUBLIC knowledge bases and document management require an authorized Agent connection.
 
 ```json
 {
@@ -17,7 +17,7 @@ Open **Connect MCP** for a personal connection. An administrator grants your per
 
 OAuth clients must use this exact URL as the authorization `resource`; refresh retains the personal audience. Clients without OAuth can issue an expiring, one-time-visible `pas_personal_` token from **Token connection**. See [Accounts and resources](../administration/accounts-and-resources.md) for permissions, token lifecycle and rollback.
 
-The remaining sections describe existing `/mcp` connections, which retain their Agent/workspace scope. They are available from **Connect MCP → Existing Agent connections and document upload**. Personal credentials cannot be used at `/mcp`, and legacy credentials cannot be used at `/mcp/personal`.
+The remaining sections describe `/mcp` connections, which retain their Agent/workspace scope. Knowledge bases and their document operations are on the separate **Knowledge bases** page (`/my-resources`), grouped by available Agent. Personal credentials cannot be used at `/mcp`, and Agent credentials cannot be used at `/mcp/personal`.
 
 ## Select the user's default Agent
 

@@ -1,0 +1,31 @@
+.document-manager-permissions.ant-btn {
+  width: 100%;
+  height: auto;
+  padding-inline: 0;
+  white-space: normal;
+  text-align: start;
+}
+
+.document-manager-permission-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+}
+
+.document-manager-permission-tags .ant-tag {
+  margin-inline-end: 0;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* Sticky actions must not reveal scrolled cells through the global hover tint. */
+.document-manager-table .ant-table-tbody > tr > .ant-table-cell-fix-right {
+  background: var(--surface-primary) !important;
+}
+
+.document-manager-table .ant-table-tbody > tr:hover > .ant-table-cell-fix-right {
+  background: #f7fbff !important;
+}

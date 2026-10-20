@@ -148,36 +148,38 @@ async def _resolve_source_context(
     for source in sources:
         if not identity_source_snapshot_is_usable(source):
             continue
-        external_user_id = (
-            await session.execute(
-                select(UserExternalIdentity.external_subject)
-                .where(
-                    UserExternalIdentity.user_id == user_id,
-                    UserExternalIdentity.identity_provider
-                    == identity_provider_key(source),
+        external_user_ids = set(
+            (
+                await session.execute(
+                    select(UserExternalIdentity.external_subject).where(
+                        UserExternalIdentity.user_id == user_id,
+                        UserExternalIdentity.identity_provider == identity_provider_key(source),
+                    )
                 )
-            )
-        ).scalar_one_or_none()
-        if external_user_id is None:
-            continue
-        directory_user_exists = (
-            await session.execute(
-                select(EnterpriseDirectoryUser.id).where(
-                    EnterpriseDirectoryUser.identity_source_id == source.id,
-                    EnterpriseDirectoryUser.external_user_id == external_user_id,
-                    EnterpriseDirectoryUser.status
-                    == EnterpriseDirectoryEntryStatus.ACTIVE,
-                )
-            )
-        ).first() is not None
-        local_principals = await resolve_external_user_principals(
-            session,
-            source.id,
-            external_user_id,
-            now=current,
+            ).scalars()
         )
-        if directory_user_exists or local_principals:
-            source_identities.append((source, external_user_id))
+        if not external_user_ids:
+            continue
+        active_directory_ids = set(
+            (
+                await session.execute(
+                    select(EnterpriseDirectoryUser.external_user_id).where(
+                        EnterpriseDirectoryUser.identity_source_id == source.id,
+                        EnterpriseDirectoryUser.external_user_id.in_(external_user_ids),
+                        EnterpriseDirectoryUser.status == EnterpriseDirectoryEntryStatus.ACTIVE,
+                    )
+                )
+            ).scalars()
+        )
+        for external_user_id in external_user_ids:
+            local_principals = await resolve_external_user_principals(
+                session,
+                source.id,
+                external_user_id,
+                now=current,
+            )
+            if external_user_id in active_directory_ids or (source.provider.value != "dingtalk" and local_principals):
+                source_identities.append((source, external_user_id))
     source_keys = {
         identity_provider_key(source)
         for source in (
@@ -273,6 +275,8 @@ async def resolve_acl_context(
     for source, external_user_id in source_identities:
         provider = source.provider.value
         principals.add((provider, "user", external_user_id))
+        if provider == "dingtalk":
+            principals.add((provider, "domain", source.tenant_id))
         principals.update(
             (provider, principal_type.value, principal_id)
             for principal_type, principal_id in await resolve_external_user_principals(
@@ -281,6 +285,7 @@ async def resolve_acl_context(
                 external_user_id,
                 now=current,
             )
+            if provider != "dingtalk"
         )
         frontier = {external_user_id}
         member_type = EnterpriseDirectoryMembershipType.USER
@@ -322,7 +327,8 @@ async def resolve_acl_context(
                 if str(group_id) not in visited_groups
             }
             for group_id, principal_type in groups:
-                principals.add((provider, principal_type.value, group_id))
+                if provider != "dingtalk" or principal_type.value == "department":
+                    principals.add((provider, principal_type.value, group_id))
             frontier = {group_id for group_id, _principal_type in groups}
             visited_groups.update(frontier)
             member_type = EnterpriseDirectoryMembershipType.GROUP
@@ -353,6 +359,7 @@ async def resolve_acl_context(
                 assignment.principal_id,
             )
             for assignment in assignments
+            if assignment.provider != "dingtalk"
         }
     )
     if not principals and (space is None or has_enterprise_identity):

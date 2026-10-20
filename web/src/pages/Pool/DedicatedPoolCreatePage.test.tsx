@@ -155,7 +155,8 @@ describe('DedicatedPoolCreatePage', () => {
     expect(await screen.findByText('Purchases / hour')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /next/i }))
 
-    await user.type(screen.getByLabelText(/^region id/i), 'cn-beijing')
+    await user.click(screen.getByLabelText(/^region id/i))
+    await user.click(screen.getByText('China (Beijing) · cn-beijing'))
     expect(await screen.findByRole('link', { name: /open Alibaba Cloud VPC console/i }))
       .toHaveAttribute('href', 'https://vpc.console.aliyun.com/vpc/cn-beijing/vpcs')
     await user.type(screen.getByLabelText(/^zone id/i), 'cn-beijing-k')
@@ -164,9 +165,13 @@ describe('DedicatedPoolCreatePage', () => {
     expect(screen.getByText('essdpl1')).toBeInTheDocument()
     await user.click(screen.getByText(/view complete purchase parameters/i))
     expect(screen.getByText('8.0.2')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /next/i }))
+    const nextButton = screen.getByRole('button', { name: /next/i })
+    await user.click(nextButton)
 
     expect(screen.getByLabelText('Agent MySQL default permissions')).toBeInTheDocument()
+    // Reusing the clicked DOM node as a submit button can submit in Chromium.
+    expect(nextButton).not.toBeInTheDocument()
+    expect(createDedicatedPool).not.toHaveBeenCalled()
     expect(screen.getByText(/Permissions granted to the MySQL account PAS creates/i))
       .toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /save as not started/i }))
@@ -254,4 +259,9 @@ describe('DedicatedPoolCreatePage', () => {
       name: /configure Alibaba Cloud credentials/i,
     })).not.toBeInTheDocument()
   })
+})
+
+vi.mock('../../api/aliyunEndpoints', async () => {
+  const { endpointCatalog } = await import('../../test/endpointCatalog')
+  return { getEndpointCatalog: vi.fn().mockResolvedValue(endpointCatalog) }
 })

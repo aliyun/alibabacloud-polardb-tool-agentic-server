@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -11,6 +11,8 @@ from sqlalchemy import event, select
 
 from server.core.crypto import decrypt
 from server.models import (
+    Agent,
+    AgentPolarRAGInstanceBinding,
     EnterpriseDirectoryMembershipType,
     EnterpriseDirectoryPrincipalType,
     EnterpriseDirectoryGroup,
@@ -19,6 +21,8 @@ from server.models import (
     EnterpriseIdentitySourceStatus,
     FeishuTenantVerificationState,
     FeishuUserLoginState,
+    FeishuEventSubscriptionStatus,
+    EnterpriseIdentitySourceEvent,
     IdentitySourceProvider,
     PolarRAGInstance,
     PolarRAGInstanceStatus,
@@ -33,6 +37,65 @@ from server.enterprise_identity.service import (
 )
 
 pytest_plugins = ("tests._admin_api_fixtures",)
+
+
+@pytest.mark.parametrize(("status", "age", "usable"), [
+    ("active", None, True), ("stale", 30, True), ("stale", 7200, False),
+    ("stale", None, False), ("disabled", 30, False), ("pending_binding", 30, False),
+])
+async def test_source_response_reports_snapshot_usability(client, setup, status, age, usable):
+    http, headers, _ = client
+    async with setup[0]() as session:
+        source = EnterpriseIdentitySource.create(name="Usability", provider=IdentitySourceProvider.FEISHU,
+                                                 tenant_id="usability")
+        source.status = EnterpriseIdentitySourceStatus(status)
+        source.stale_after_seconds = 3600
+        source.last_synced_at = None if age is None else datetime.now(UTC) - timedelta(seconds=age)
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+    response = await http.get("/api/identity-sources", headers=headers)
+    assert response.status_code == 200, response.text
+    item = next(item for item in response.json()["items"] if item["id"] == source_id)
+    assert item["snapshot_usable"] is usable
+
+
+async def test_source_response_reports_feishu_event_subscription_health(client, setup):
+    http, headers, _ = client
+    async with setup[0]() as session:
+        source = EnterpriseIdentitySource.create(
+            name="Event health",
+            provider=IdentitySourceProvider.FEISHU,
+            tenant_id="event-health",
+        )
+        source.event_listener_status = FeishuEventSubscriptionStatus.CONNECTED_UNCONFIRMED
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    response = await http.get("/api/identity-sources", headers=headers)
+    item = next(item for item in response.json()["items"] if item["id"] == source_id)
+    assert item["event_subscription"] == {
+        "status": "connected_unconfirmed",
+        "fallback_after_seconds": 86400,
+    }
+
+
+async def test_sharepoint_source_has_no_event_subscription(client, setup):
+    http, headers, _ = client
+    async with setup[0]() as session:
+        source = EnterpriseIdentitySource.create(
+            name="SharePoint without events",
+            provider=IdentitySourceProvider.SHAREPOINT,
+            tenant_id="sharepoint-no-events",
+        )
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    response = await http.get("/api/identity-sources", headers=headers)
+    item = next(item for item in response.json()["items"] if item["id"] == source_id)
+    assert item["event_subscription"] is None
 
 
 def test_identity_source_model_leaves_the_database_stale_default_unchanged() -> None:
@@ -381,7 +444,7 @@ async def test_admin_maps_a_pas_user_to_a_synced_enterprise_identity(client, set
         headers=admin_headers,
     )
     assert listed_synced.status_code == 200
-    assert listed_synced.json()["items"] == [payload]
+    assert listed_synced.json()["items"] == []
 
     updated = await http.put(
         f"/api/identity-sources/users/{member.id}/identities/{payload['id']}",
@@ -494,6 +557,8 @@ async def test_admin_creates_feishu_source_without_manual_tenant_key(client, set
 
 
 async def test_admin_updates_feishu_source_and_must_reverify_tenant(client, setup) -> None:
+    from server.enterprise_identity.feishu_events import _claim_feishu_listener
+
     http, admin_headers, _member_headers = client
     factory, _admin, _member = setup
     created = await http.post(
@@ -512,6 +577,8 @@ async def test_admin_updates_feishu_source_and_must_reverify_tenant(client, setu
         assert source is not None
         source.tenant_id = "tenant-before"
         source.status = "active"
+        source.event_listener_retry_count = 3
+        source.event_listener_status = FeishuEventSubscriptionStatus.ERROR
         await session.commit()
 
     updated = await http.put(
@@ -535,6 +602,13 @@ async def test_admin_updates_feishu_source_and_must_reverify_tenant(client, setu
             "app_id": "cli_after",
             "app_secret": "secret-after",
         }
+        source.tenant_id = "tenant-after"
+        source.status = EnterpriseIdentitySourceStatus.PENDING_BINDING
+        await session.commit()
+
+    assert await _claim_feishu_listener(
+        factory, source_id, "updated-worker", now=datetime.now(UTC)
+    ) == ("cli_after", "secret-after")
 
 
 async def test_admin_deletes_identity_source_and_its_directory_data(client, setup) -> None:
@@ -556,6 +630,11 @@ async def test_admin_deletes_identity_source_and_its_directory_data(client, setu
         assert source is not None
         source.tenant_id = "tenant-delete"
         source.status = "active"
+        session.add(EnterpriseIdentitySourceEvent(
+            identity_source_id=source_id,
+            event_type="contact.user.deleted_v3",
+            subject_id="u1",
+        ))
         await session.commit()
 
     deleted = await http.delete(f"/api/identity-sources/{source_id}", headers=admin_headers)
@@ -563,12 +642,14 @@ async def test_admin_deletes_identity_source_and_its_directory_data(client, setu
     assert deleted.status_code == 204
     async with factory() as session:
         assert await session.get(EnterpriseIdentitySource, source_id) is None
+        assert await session.scalar(select(EnterpriseIdentitySourceEvent)) is None
 
 
 async def test_admin_starts_feishu_tenant_verification(client, setup, monkeypatch):
     http, admin_headers, _member_headers = client
     factory, _admin, _member = setup
-    config = SimpleNamespace(server=SimpleNamespace(public_base_url="https://pas.example.test"))
+    config = SimpleNamespace(server=SimpleNamespace(public_base_url="https://pas.example.test"),
+                             enterprise_identity_sync=SimpleNamespace(feishu_fallback_after_seconds=86400))
     monkeypatch.setattr("server.api.identity_sources.get_config", lambda: config)
     monkeypatch.setattr("server.auth.router.get_config", lambda: config)
     created = await http.post(
@@ -863,7 +944,8 @@ async def test_sharepoint_user_login_rejects_replayed_state(client, setup, monke
 async def test_feishu_tenant_verification_callback_activates_source(client, setup, monkeypatch):
     http, admin_headers, _member_headers = client
     factory, _admin, _member = setup
-    config = SimpleNamespace(server=SimpleNamespace(public_base_url="https://pas.example.test"))
+    config = SimpleNamespace(server=SimpleNamespace(public_base_url="https://pas.example.test"),
+                             enterprise_identity_sync=SimpleNamespace(feishu_fallback_after_seconds=86400))
     monkeypatch.setattr("server.api.identity_sources.get_config", lambda: config)
     monkeypatch.setattr("server.auth.router.get_config", lambda: config)
     monkeypatch.setattr(
@@ -905,7 +987,10 @@ async def test_feishu_tenant_verification_callback_activates_source(client, setu
 async def test_admin_configures_encrypted_feishu_acl_membership_snapshot(client, setup, monkeypatch):
     http, admin_headers, _member_headers = client
     factory, _admin, _member = setup
-    config = SimpleNamespace(server=SimpleNamespace(public_base_url="https://pas.example.test"))
+    config = SimpleNamespace(
+        server=SimpleNamespace(public_base_url="https://pas.example.test"),
+        enterprise_identity_sync=SimpleNamespace(feishu_fallback_after_seconds=86400),
+    )
     monkeypatch.setattr("server.api.identity_sources.get_config", lambda: config)
     monkeypatch.setattr("server.auth.router.get_config", lambda: config)
     monkeypatch.setattr(
@@ -941,13 +1026,28 @@ async def test_admin_configures_encrypted_feishu_acl_membership_snapshot(client,
             "database": "polar_rag_meta",
             "username": "readonly",
             "password": "snapshot-secret",
+            "dialect": "postgresql",
         },
         headers=admin_headers,
     )
 
     assert saved.status_code == 200
     assert saved.json()["acl_membership_snapshot_configured"] is True
+    assert saved.json()["acl_membership_snapshot"] == {
+        "host": "meta.example.test",
+        "port": 3306,
+        "database": "polar_rag_meta",
+        "username": "readonly",
+        "dialect": "postgresql",
+    }
     assert "snapshot-secret" not in saved.text
+    edited = await http.put(
+        f"/api/identity-sources/{created.json()['id']}/acl-membership-snapshot",
+        json={"host": "meta.example.test", "port": 3306, "username": "readonly", "dialect": "postgresql"},
+        headers=admin_headers,
+    )
+    assert edited.status_code == 200
+    assert "snapshot-secret" not in edited.text
     conflict = await http.put(
         f"/api/identity-sources/{created.json()['id']}/user-principal-memberships",
         json={"users": [{"external_user_id": "ou-1", "principals": []}]},
@@ -965,6 +1065,7 @@ async def test_admin_configures_encrypted_feishu_acl_membership_snapshot(client,
                 "host": "meta.example.test",
                 "port": 3306,
                 "database": "polar_rag_meta",
+                "dialect": "postgresql",
                 "username": "readonly",
                 "password": "snapshot-secret",
             },
@@ -1025,6 +1126,16 @@ async def test_admin_creates_encrypted_feishu_source_and_binds_enabled_space(cli
         )
         session.add(instance)
         await session.flush()
+        agent = Agent(name="identity-source-agent", created_by=admin.id)
+        session.add(agent)
+        await session.flush()
+        session.add(
+            AgentPolarRAGInstanceBinding(
+                agent_id=agent.id,
+                polarrag_instance_id=instance.id,
+                created_by_user_id=admin.id,
+            )
+        )
         space = PolarRAGSpace(
             polarrag_instance_id=instance.id,
             space_id="space-a",
@@ -1052,12 +1163,22 @@ async def test_admin_creates_encrypted_feishu_source_and_binds_enabled_space(cli
             "provider": "feishu",
             "tenant_id": None,
             "status": "pending_tenant_verification",
+            "snapshot_usable": False,
             "last_synced_at": None,
             "stale_after_seconds": 7 * 24 * 60 * 60,
             "last_error": None,
+            "full_sync_in_progress": False,
+            "group_sync_in_progress": False,
+            "last_group_synced_at": None,
+            "last_group_error": None,
             "sync_warning": None,
             "sync_supported": True,
+            "event_subscription": {
+                "status": "connecting",
+                "fallback_after_seconds": 86400,
+            },
             "acl_membership_snapshot_configured": False,
+            "acl_membership_snapshot": None,
             "space_bindings": [knowledge_space_id],
         }
     ]
@@ -1071,6 +1192,10 @@ async def test_admin_creates_encrypted_feishu_source_and_binds_enabled_space(cli
     listed_after_unbind = await http.get("/api/identity-sources", headers=admin_headers)
     assert listed_after_unbind.status_code == 200
     assert listed_after_unbind.json()["items"][0]["space_bindings"] == []
+    async with factory() as session:
+        instance_bindings = (await session.execute(select(AgentPolarRAGInstanceBinding))).scalars().all()
+        assert len(instance_bindings) == 1
+        assert instance_bindings[0].polarrag_instance_id == instance.id
 
 
 async def test_admin_can_save_sharepoint_configuration_for_sync(client, setup) -> None:
@@ -1136,8 +1261,74 @@ async def test_admin_can_force_sync_an_identity_source(client, setup, monkeypatc
         headers=admin_headers,
     )
 
-    assert synced.status_code == 200
-    assert synced.json()["status"] == "active"
+    assert synced.status_code == 202
+    assert synced.json()["full_sync_in_progress"] is True
+    await asyncio.sleep(0.05)
+    async with factory() as session:
+        source = await session.get(EnterpriseIdentitySource, source_id)
+        assert source is not None and source.status == EnterpriseIdentitySourceStatus.ACTIVE
+
+
+async def test_manual_full_sync_is_queued_while_group_reconciliation_runs(client, setup) -> None:
+    http, admin_headers, _ = client
+    factory = setup[0]
+    async with factory() as session:
+        source = EnterpriseIdentitySource.create(
+            name="Group run", provider=IdentitySourceProvider.FEISHU, tenant_id="tenant-group-run",
+        )
+        source.config_ciphertext = "configured"
+        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        source.sync_worker_id = "group-worker"
+        source.sync_kind = "groups"
+        source.sync_lease_until = datetime.now(UTC) + timedelta(minutes=5)
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    response = await http.post(f"/api/identity-sources/{source_id}/sync", headers=admin_headers)
+
+    assert response.status_code == 202
+    assert response.json()["full_sync_in_progress"] is True
+    async with factory() as session:
+        stored = await session.get(EnterpriseIdentitySource, source_id)
+        assert stored.full_sync_requested_at is not None
+
+
+async def test_manual_full_sync_resumes_paused_feishu_subscription(client, setup, monkeypatch) -> None:
+    http, admin_headers, _ = client
+    factory = setup[0]
+    async with factory() as session:
+        source = EnterpriseIdentitySource.create(
+            name="Paused Feishu", provider=IdentitySourceProvider.FEISHU, tenant_id="tenant-paused",
+        )
+        source.config_ciphertext = "configured"
+        source.status = EnterpriseIdentitySourceStatus.ACTIVE
+        source.event_listener_status = FeishuEventSubscriptionStatus.ERROR
+        session.add(source)
+        await session.commit()
+        source_id = source.id
+
+    async def fake_sync(_session, stored):
+        assert stored.event_listener_status == FeishuEventSubscriptionStatus.ACTIVE
+        stored.last_synced_at = datetime.now(UTC)
+
+    async def preconnect(session_factory, source_id):
+        async with session_factory() as session:
+            stored = await session.get(EnterpriseIdentitySource, source_id)
+            stored.event_listener_status = FeishuEventSubscriptionStatus.ACTIVE
+            await session.commit()
+        return True
+
+    monkeypatch.setattr(
+        "server.enterprise_identity.feishu_events.reconnect_feishu_listener_before_full", preconnect,
+    )
+    monkeypatch.setattr("server.api.identity_sources.sync_identity_source", fake_sync)
+    response = await http.post(f"/api/identity-sources/{source_id}/sync", headers=admin_headers)
+    assert response.status_code == 202
+    await asyncio.sleep(0.05)
+    async with factory() as session:
+        stored = await session.get(EnterpriseIdentitySource, source_id)
+        assert stored.event_listener_status == FeishuEventSubscriptionStatus.ACTIVE
 
 
 async def test_force_sync_keeps_the_sanitized_failure_state(client, setup, monkeypatch) -> None:
@@ -1173,8 +1364,8 @@ async def test_force_sync_keeps_the_sanitized_failure_state(client, setup, monke
         headers=admin_headers,
     )
 
-    assert failed.status_code == 502
-    assert failed.json() == {"detail": "Identity source synchronization failed"}
+    assert failed.status_code == 202
+    await asyncio.sleep(0.05)
     async with factory() as session:
         source = await session.get(EnterpriseIdentitySource, source_id)
         assert source is not None
@@ -1211,6 +1402,12 @@ async def test_force_sync_returns_before_timeout_and_continues_in_background(cli
     monkeypatch.setattr("server.api.identity_sources.sync_identity_source", slow_sync)
     monkeypatch.setattr("server.enterprise_identity.sync.sync_identity_source", slow_sync)
     monkeypatch.setattr("server.api.identity_sources.SYNC_REQUEST_TIMEOUT_SECONDS", 0.001)
+    async def preconnect(_session_factory, _source_id):
+        return False
+
+    monkeypatch.setattr(
+        "server.enterprise_identity.feishu_events.reconnect_feishu_listener_before_full", preconnect,
+    )
 
     started = await http.post(
         f"/api/identity-sources/{source_id}/sync",
@@ -1218,10 +1415,93 @@ async def test_force_sync_returns_before_timeout_and_continues_in_background(cli
     )
 
     assert started.status_code == 202
-    assert started.json()["last_error"] == "SYNC_IN_PROGRESS"
+    assert started.json()["full_sync_in_progress"] is True
     await asyncio.sleep(0.1)
     async with factory() as session:
         source = await session.get(EnterpriseIdentitySource, source_id)
         assert source is not None
         assert source.status == EnterpriseIdentitySourceStatus.ACTIVE
         assert source.last_error is None
+
+
+async def test_enterprise_mapping_aliases_separate_target_query_from_body(client, setup):
+    from server.models import AuditLog, User
+    from sqlalchemy import func
+
+    http, headers, member_headers = client
+    factory, admin, member = setup
+    async with factory() as session:
+        source_a = EnterpriseIdentitySource.create(name="Target source", provider=IdentitySourceProvider.SHAREPOINT,
+                                                   tenant_id="target-tenant")
+        source_b = EnterpriseIdentitySource.create(name="Mapping source", provider=IdentitySourceProvider.SHAREPOINT,
+                                                   tenant_id="body-tenant")
+        source_a.status = source_b.status = EnterpriseIdentitySourceStatus.ACTIVE
+        session.add_all([source_a, source_b])
+        await session.flush()
+        session.add_all([UserExternalIdentity(user_id=member.id, identity_provider=identity_provider_key(source_a),
+                                             external_subject="target/subject:encoded"),
+                         EnterpriseDirectoryUser(identity_source_id=source_a.id, external_user_id="target/subject:encoded",
+                                                 display_name="Target"),
+                         UserExternalIdentity(user_id=admin.id, identity_provider=identity_provider_key(source_a),
+                                              external_subject="admin-target")])
+        default_b = await upsert_external_user(session, source_b, external_user_id="body/one:encoded", display_name="One", email=None)
+        await upsert_external_user(session, source_b, external_user_id="body-two", display_name="Two", email=None)
+        await session.commit()
+        source_a_id, source_b_id, default_b_id = source_a.id, source_b.id, default_b.id
+    target = {"identity_source_id": source_a_id, "external_user_id": "target/subject:encoded"}
+    url = "/api/identity-sources/enterprise-users/identities"
+    legacy = f"/api/identity-sources/users/{member.id}/identities"
+    async with factory() as session:
+        before = [await session.scalar(select(func.count()).select_from(model)) for model in (User, UserExternalIdentity, AuditLog)]
+    assert (await http.get(url, headers=member_headers, params=target)).status_code == 403
+    assert (await http.get(url, headers=headers, params={**target, "external_user_id": "missing"})).status_code == 404
+    async with factory() as session:
+        assert [await session.scalar(select(func.count()).select_from(model)) for model in (User, UserExternalIdentity, AuditLog)] == before
+    a = await http.get(url, headers=headers, params={**target, "limit": 1, "search": "target/subject"})
+    b = await http.get(legacy, headers=headers, params={"limit": 1, "search": "target/subject"})
+    assert a.status_code == b.status_code == 200
+    assert a.json() == b.json()
+    created = await http.post(url, headers=headers, params=target,
+                              json={"identity_source_id": source_b_id, "external_user_id": "body/one:encoded"})
+    assert created.status_code == 201, created.text
+    conflict = await http.post(url, headers=headers, params={**target, "external_user_id": "admin-target"},
+                               json={"identity_source_id": source_b_id, "external_user_id": "body/one:encoded"})
+    assert conflict.status_code == 409, conflict.text
+    identity_id = created.json()["id"]
+    assert created.json()["identity_source_id"] == source_b_id
+    # The target identity remains in A, while only B is edited.
+    for method, path, body in (("post", url, {"identity_source_id": source_b_id, "external_user_id": "body-two"}),
+                               ("put", f"{url}/{identity_id}", {"identity_source_id": source_b_id, "external_user_id": "body-two"}),
+                               ("delete", f"{url}/{identity_id}", None)):
+        kwargs = {"json": body} if body is not None else {}
+        denied = await http.request(method, path, headers=member_headers, params=target, **kwargs)
+        assert denied.status_code == 403, denied.text
+    listed = await http.get(url, headers=headers, params=target)
+    assert listed.json()["total"] == 2
+    default = await http.get(f"/api/identity-sources/users/{default_b_id}/identities", headers=headers)
+    assert default.json()["items"] == []
+    updated = await http.put(f"{url}/{identity_id}", headers=headers, params=target,
+                             json={"identity_source_id": source_b_id, "external_user_id": "body-two"})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["external_user_id"] == "body-two"
+    deleted = await http.delete(f"{url}/{updated.json()['id']}", headers=headers, params=target)
+    assert deleted.status_code == 204, deleted.text
+    async with factory() as session:
+        restored = (await session.execute(select(UserExternalIdentity).where(
+            UserExternalIdentity.identity_provider == "sharepoint:body-tenant",
+            UserExternalIdentity.external_subject == "body-two"))).scalar_one()
+        restored_id = restored.user_id
+    synced_target = {"identity_source_id": source_b_id, "external_user_id": "body-two"}
+    synced_edit = await http.delete(f"{url}/{restored.id}", headers=headers, params=synced_target)
+    assert synced_edit.status_code == 409, synced_edit.text
+    assert restored_id != member.id
+
+
+@pytest.mark.parametrize("dialect,port", [("mysql", 3306), ("postgresql", 5432)])
+def test_acl_snapshot_defaults_port_for_selected_dialect(dialect, port):
+    from server.api.identity_sources import AclMembershipSnapshotConfig
+
+    config = AclMembershipSnapshotConfig(
+        host="meta.example.test", username="readonly", password="secret", dialect=dialect
+    )
+    assert config.port == port

@@ -588,6 +588,7 @@ function ManualPrincipalsPanel({
               <Select
                 options={[
                   { value: 'feishu', label: 'Feishu' },
+                  { value: 'dingtalk', label: 'DingTalk' },
                   { value: 'sharepoint', label: 'SharePoint' },
                   { value: 'polarrag', label: 'PolarRAG' },
                 ]}
@@ -599,7 +600,7 @@ function ManualPrincipalsPanel({
               />
             </Form.Item>
             <Form.Item name="principal_type" label={t('principals.principalType')} rules={[{ required: true }]} style={{ flex: 1 }}>
-              <Select disabled={nativePrincipal} options={[{ value: 'user', label: 'User' }, { value: 'group', label: 'Group' }]} />
+              <Select disabled={nativePrincipal} options={[{ value: 'user', label: 'User' }, { value: 'group', label: 'Group', disabled: provider === 'dingtalk' }]} />
             </Form.Item>
           </Space>
           <Form.Item name="principal_id" label={t('principals.principalId')} rules={[{ required: true }]}>

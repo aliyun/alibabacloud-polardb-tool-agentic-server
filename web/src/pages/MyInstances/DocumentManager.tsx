@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
+import './DocumentManager.css'
 import {
   Alert,
   Button,
+  Checkbox,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
+  Popover,
   Select,
   Space,
   Table,
@@ -28,6 +31,7 @@ export interface DocumentManagerResource {
   knowledge_space_name: string
   polarrag_instance_name: string
   name: string
+  force_rechunk_supported?: boolean
 }
 
 export interface ManagedDocument {
@@ -36,9 +40,31 @@ export interface ManagedDocument {
   filename?: string
   file_size_bytes?: number
   created_at?: string
+  updated_at?: string
   status?: string
   chunk_count?: number
   revision_status?: string
+  acl?: DocumentAcl | null
+}
+
+interface DocumentAclPrincipal {
+  provider: string
+  type: string
+  id: string
+}
+
+interface DocumentAclGrant {
+  principal: DocumentAclPrincipal
+  actions: string[]
+}
+
+interface DocumentAcl {
+  identity_domain: string
+  state: string
+  updating: boolean
+  acl_version: number
+  acl_set_id: string
+  grants: DocumentAclGrant[]
 }
 
 interface DocumentManagerProps {
@@ -66,7 +92,7 @@ function formatFileSize(value: number | undefined): string {
   return `${size.toFixed(digits)} ${units[unitIndex]}`
 }
 
-function formatUploadTime(
+function formatDocumentTime(
   value: string | undefined,
   locale: string,
 ): string {
@@ -76,12 +102,23 @@ function formatUploadTime(
   return formatDateTime(timestamp, locale)
 }
 
-function compareUploadTime(left: ManagedDocument, right: ManagedDocument): number {
-  const leftTime = left.created_at ? Date.parse(left.created_at) : Number.NaN
-  const rightTime = right.created_at ? Date.parse(right.created_at) : Number.NaN
+function compareDocumentTime(left: ManagedDocument, right: ManagedDocument): number {
+  const leftValue = left.updated_at || left.created_at
+  const rightValue = right.updated_at || right.created_at
+  const leftTime = leftValue ? Date.parse(leftValue) : Number.NaN
+  const rightTime = rightValue ? Date.parse(rightValue) : Number.NaN
   const normalizedLeft = Number.isNaN(leftTime) ? 0 : leftTime
   const normalizedRight = Number.isNaN(rightTime) ? 0 : rightTime
   return normalizedLeft - normalizedRight
+}
+
+const PERMISSION_ACTION_ORDER = ['READ', 'WRITE', 'MANAGE']
+
+function documentPermissionActions(document: ManagedDocument): string[] {
+  const actions = new Set(
+    document.acl?.grants.flatMap((grant) => grant.actions) ?? [],
+  )
+  return PERMISSION_ACTION_ORDER.filter((action) => actions.has(action))
 }
 
 export default function DocumentManager({
@@ -97,12 +134,14 @@ export default function DocumentManager({
   const [pageIndex, setPageIndex] = useState(0)
   const [pageCursors, setPageCursors] = useState<(string | null)[]>([null])
   const [nextAfterDocId, setNextAfterDocId] = useState<string | null>(null)
+  const [totalDocuments, setTotalDocuments] = useState<number | null>(null)
   const [working, setWorking] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<string | null>(null)
   const [rechunkDocument, setRechunkDocument] = useState<ManagedDocument | null>(null)
   const [chunkStrategy, setChunkStrategy] = useState('inherit')
   const [chunkMaxTokens, setChunkMaxTokens] = useState<number | null>(null)
+  const [forceRechunk, setForceRechunk] = useState(false)
 
   const loadPage = useCallback(async (afterDocId: string | null, index: number) => {
     if (!resource || !agentId) return
@@ -115,9 +154,13 @@ export default function DocumentManager({
         knowledge_resource_id: resource.knowledge_resource_id,
         size: PAGE_SIZE,
         after_doc_id: afterDocId,
+        page: index + 1,
       })
       setDocuments(response.data.documents || [])
       setNextAfterDocId(response.data.next_after_doc_id || null)
+      setTotalDocuments(
+        typeof response.data.total === 'number' ? response.data.total : null,
+      )
       setPageIndex(index)
       setSearchMode(false)
     } catch (requestError) {
@@ -134,6 +177,7 @@ export default function DocumentManager({
     setPageIndex(0)
     setPageCursors([null])
     setNextAfterDocId(null)
+    setTotalDocuments(null)
     setError(null)
     setResult(null)
     setRechunkDocument(null)
@@ -162,7 +206,7 @@ export default function DocumentManager({
   }
 
   const nextPage = () => {
-    if (!nextAfterDocId) return
+    if (!nextAfterDocId && totalDocuments === null) return
     const index = pageIndex + 1
     setPageCursors((current) => [
       ...current.slice(0, index),
@@ -223,6 +267,7 @@ export default function DocumentManager({
           knowledge_resource_id: resource.knowledge_resource_id,
           chunk_strategy: chunkStrategy,
           chunk_max_tokens: chunkStrategy === 'inherit' ? undefined : chunkMaxTokens ?? undefined,
+          force: resource.force_rechunk_supported === true && forceRechunk,
         },
       )
       setDocuments((current) =>
@@ -276,12 +321,12 @@ export default function DocumentManager({
       render: (value) => value ?? '—',
     },
     {
-      title: t('documentManager.uploadedAt'),
-      dataIndex: 'created_at',
+      title: t('documentManager.updatedAt'),
+      dataIndex: 'updated_at',
       width: 190,
-      sorter: compareUploadTime,
-      render: (value) => formatUploadTime(
-        value,
+      sorter: compareDocumentTime,
+      render: (value, document) => formatDocumentTime(
+        value || document.created_at,
         i18n.resolvedLanguage ?? i18n.language,
       ),
     },
@@ -291,6 +336,51 @@ export default function DocumentManager({
       width: 140,
       sorter: (left, right) => (left.status ?? '').localeCompare(right.status ?? ''),
       render: (value) => <Tag>{value || t('documentManager.unknown')}</Tag>,
+    },
+    {
+      title: t('documentManager.permissions'),
+      dataIndex: 'acl',
+      width: 220,
+      render: (_, document) => {
+        if (document.acl === undefined) {
+          return <Typography.Text type="secondary">{t('documentManager.permissionsUnavailable')}</Typography.Text>
+        }
+        if (document.acl === null) {
+          return <Typography.Text type="secondary">{t('documentManager.noPermissionDetails')}</Typography.Text>
+        }
+        const actions = documentPermissionActions(document)
+        const content = (
+          <Space direction="vertical" size={8}>
+            <Typography.Text>
+              {`${document.acl.identity_domain} · ACL v${document.acl.acl_version} · ${document.acl.state}`}
+            </Typography.Text>
+            {document.acl.grants.map((grant) => (
+              <div key={`${grant.principal.provider}:${grant.principal.type}:${grant.principal.id}`}>
+                <Typography.Text>
+                  {`${grant.principal.provider} · ${grant.principal.type} · ${grant.principal.id}`}
+                </Typography.Text>
+                <div>{grant.actions.map((action) => <Tag key={action}>{action}</Tag>)}</div>
+              </div>
+            ))}
+          </Space>
+        )
+        return (
+          <Popover content={content} trigger="hover">
+            <Button
+              type="link"
+              size="small"
+              aria-label={t('documentManager.viewPermissions', { name: documentName(document) })}
+              className="document-manager-permissions"
+            >
+              <span className="document-manager-permission-tags">
+                {actions.length > 0
+                  ? actions.map((action) => <Tag key={action}>{action}</Tag>)
+                  : t('documentManager.noEffectivePermissions')}
+              </span>
+            </Button>
+          </Popover>
+        )
+      },
     },
     {
       title: t('documentManager.actions'),
@@ -306,6 +396,7 @@ export default function DocumentManager({
             onClick={() => {
               setChunkStrategy('inherit')
               setChunkMaxTokens(null)
+              setForceRechunk(false)
               setRechunkDocument(document)
             }}
           >
@@ -373,12 +464,13 @@ export default function DocumentManager({
             {searchMode && <Button onClick={showAll}>{t('documentManager.showAll')}</Button>}
           </Space>
           <Table
+            className="document-manager-table"
             dataSource={documents}
             rowKey="doc_id"
             loading={loading}
             pagination={false}
             tableLayout="fixed"
-            scroll={{ x: 1280 }}
+            scroll={{ x: 1500 }}
             locale={{
               emptyText: searchMode
                 ? t('documentManager.noMatches')
@@ -394,9 +486,21 @@ export default function DocumentManager({
               >
                 {t('documentManager.previous')}
               </Button>
-              <Typography.Text>{t('documentManager.page', { page: pageIndex + 1 })}</Typography.Text>
+              <Typography.Text>
+                {totalDocuments === null
+                  ? t('documentManager.page', { page: pageIndex + 1 })
+                  : t('documentManager.pageWithTotal', {
+                      page: pageIndex + 1,
+                      total: totalDocuments,
+                    })}
+              </Typography.Text>
               <Button
-                disabled={!nextAfterDocId || loading}
+                disabled={
+                  loading || (
+                    !nextAfterDocId
+                    && (totalDocuments === null || (pageIndex + 1) * PAGE_SIZE >= totalDocuments)
+                  )
+                }
                 onClick={nextPage}
               >
                 {t('documentManager.next')}
@@ -444,6 +548,16 @@ export default function DocumentManager({
               onChange={setChunkMaxTokens}
             />
           </label>
+          {resource?.force_rechunk_supported ? (
+            <Checkbox
+              checked={forceRechunk}
+              onChange={(event) => setForceRechunk(event.target.checked)}
+            >
+              {t('documentManager.forceRechunk')}
+            </Checkbox>
+          ) : (
+            <Typography.Text type="secondary">{t('documentManager.forceVersionHint')}</Typography.Text>
+          )}
         </Space>
       </Modal>
     </>

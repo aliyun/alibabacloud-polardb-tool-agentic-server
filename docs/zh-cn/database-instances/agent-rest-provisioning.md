@@ -3,7 +3,7 @@
 [English](../../en/database-instances/agent-rest-provisioning.md)
 
 本文是 Agent 通过 REST 创建、查看和删除 PAS 托管数据库的人类可读契约。
-同一 PAS 部署在 `/mcp/rest/openapi.json` 提供机器可读契约。
+使用对应 PAS 版本的 `python -m server.openapi --surface agent` 离线导出机器可读契约。
 
 ## 认证与隔离
 
@@ -24,11 +24,12 @@ Token 代表唯一 Agent。Agent 只能查看自己的资源；不存在的资�
 
 ## 发现契约
 
-- Agent 详情页展示生命周期 URL，并提供当前服务 API 文档和本指南的入口；REST
+- Agent 详情页展示生命周期 URL，并提供本指南的入口；REST
   复用页面上为 MCP 展示的同一个 Agent Token。
-- `GET /mcp/rest/openapi.json` 只返回 Agent 生命周期 Schema。
-- `GET /mcp/rest/docs` 为人类读者渲染这份独立 Schema。
-- 应用级 `/openapi.json` 有意排除 Agent 生命周期路由。
+- `/mcp/rest/openapi.json`、`/mcp/rest/docs` 和 `/openapi.json` 返回 `404`。
+- 在部署镜像或对应版本的代码中导出独立契约：
+  `python -m server.openapi --surface agent > agent-openapi.json`。
+- 离线应用级 Schema 有意排除 Agent 生命周期路由。
 
 应以实际部署 PAS 版本提供的 Schema 为准。生命周期入口复用 MCP REST 端口，
 但认证主体和入口不同；内部生命周期实现与 MCP Tool 共用。GitHub 指南是补充说明，

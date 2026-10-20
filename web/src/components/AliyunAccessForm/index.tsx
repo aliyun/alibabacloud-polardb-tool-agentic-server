@@ -13,6 +13,9 @@ import './AliyunAccessForm.css'
 import { ModeFields } from './ModeFields'
 import { RetainedSummary } from './RetainedSummary'
 import { useAliyunAccessFormState } from './useAliyunAccessFormState'
+import RegionSelect from '../RegionSelect'
+import { regionAvailable } from '../RegionSelect/useEndpointCatalog'
+import type { OpenAPINetwork } from '../../api/aliyunEndpoints'
 
 interface Props {
   module: ConfigModule
@@ -59,6 +62,14 @@ export default function AliyunAccessForm({
   }, [moduleDraft, moduleEffective])
   const { config, mode: currentMode } = snapshot
   const [mode, setMode] = useState<AliyunCredentialMode>(currentMode)
+  const initialRegion = typeof config.region_id === 'string' ? config.region_id : module.revision > 0 && config.credential_mode ? 'cn-hangzhou' : undefined
+  const initialNetwork = config.openapi_network === 'vpc' || config.openapi_network === 'public' ? config.openapi_network : module.revision > 0 && config.credential_mode ? 'public' : undefined
+  const [region, setRegion] = useState<string | undefined>(initialRegion)
+  const [network, setNetwork] = useState<OpenAPINetwork | undefined>(initialNetwork)
+  const [connectionError, setConnectionError] = useState(false)
+  const catalog = module.ui_hints?.endpoint_catalog
+  const connectionValid = regionAvailable(catalog, region, network, mode === 'assume_role')
+  const connectionErrorRef = useRef<HTMLDivElement>(null)
   const [previousAction, setPreviousAction] = useState<'clear' | 'retain'>('clear')
   const [selectedAction, setSelectedAction] = useState<'replace' | 'reuse_retained' | undefined>('replace')
   const [reuseDirectSource, setReuseDirectSource] = useState(false)
@@ -74,9 +85,10 @@ export default function AliyunAccessForm({
 
   useEffect(() => {
     setMode(snapshot.mode); setPreviousAction('clear'); setSelectedAction('replace')
+    setRegion(initialRegion); setNetwork(initialNetwork); setConnectionError(false)
     setReuseDirectSource(false); setReuseConfirmed(false); setReplaceActive(false); setReplaceExternal(false)
     setDeleteMode(null); setDeleteConfirmed(false); setReuseError(null)
-  }, [snapshot, snapshotId])
+  }, [snapshot, snapshotId, initialRegion, initialNetwork])
 
   const selectedBlock = asRecord(config[mode])
   const currentBlock = asRecord(config[currentMode])
@@ -120,6 +132,11 @@ export default function AliyunAccessForm({
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (disabled) return
+    if (!connectionValid) {
+      setConnectionError(true)
+      connectionErrorRef.current?.focus()
+      return
+    }
     if (targetIsRetained && selectedAction === undefined) {
       showReuseError('choice'); onValuesChange?.(); return
     }
@@ -132,7 +149,7 @@ export default function AliyunAccessForm({
     onSubmit({ ...buildActiveMutation({
       mode, currentMode, selectedAction: effectiveSelectedAction, replaceActive, replaceExternal,
       usesCurrentDirectAsSource, hasStoredAssumeSource, hasStoredExternalId: isMarker(selectedBlock.external_id),
-    }), transition: credentialTransition() })
+    }), region_id: region, openapi_network: network, transition: credentialTransition() })
   }
 
   const deleteRetained = () => {
@@ -203,6 +220,29 @@ export default function AliyunAccessForm({
           </Space>
         }
       />
+
+      <Form.Item label={t('cloudConnection.network')} required>
+        <Radio.Group aria-label={t('cloudConnection.network')} value={network} disabled={disabled}
+          onChange={(event) => { setNetwork(event.target.value); setConnectionError(false); onValuesChange?.() }}>
+          <Radio value="public">{t('cloudConnection.public')}</Radio>
+          <Radio value="vpc">{t('cloudConnection.vpc')}</Radio>
+        </Radio.Group>
+      </Form.Item>
+      <Form.Item label={t('cloudConnection.accessRegion')} htmlFor="aliyun-access-region" required
+        extra={t(network === 'vpc' ? 'cloudConnection.accessRegionVpcHelp' : 'cloudConnection.accessRegionHelp')}>
+        <RegionSelect id="aliyun-access-region" value={region} network={network} catalog={catalog}
+          requireSTS={mode === 'assume_role'} disabled={disabled}
+          onChange={(value) => { setRegion(value); setConnectionError(false); onValuesChange?.() }} />
+      </Form.Item>
+      <Typography.Paragraph type="secondary">{t('cloudConnection.impact')}</Typography.Paragraph>
+      {catalog && <Typography.Paragraph>
+        <Typography.Link href={catalog.sources.polardb} target="_blank" rel="noopener noreferrer">
+          {t('cloudConnection.endpointDocs', { date: catalog.reviewed_at })}
+        </Typography.Link>
+      </Typography.Paragraph>}
+      <div ref={connectionErrorRef} tabIndex={-1}>
+        {connectionError && <Alert role="alert" type="error" showIcon message={t('cloudConnection.required')} />}
+      </div>
 
       <Form.Item label={t('components.aliyunAccess.modeLabel')}>
         <Radio.Group value={mode} onChange={(event) => selectMode(event.target.value)} disabled={disabled} className="aliyun-access-form__modes">

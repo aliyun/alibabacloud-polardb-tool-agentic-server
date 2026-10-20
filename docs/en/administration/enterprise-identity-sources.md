@@ -4,9 +4,10 @@
 
 An enterprise identity source imports a Feishu or SharePoint tenant's directory
 facts for enabled PolarRAG Spaces. PAS encrypts every supplied secret with
-`PAS_ENCRYPTION_KEY`, refreshes the source every 30 minutes by default, and constructs
-`acl_context` on the server. PolarRAG remains the final authority for document
-access.
+`PAS_ENCRYPTION_KEY`. Feishu changes arrive through an outbound long
+connection with conditional full reconciliation; SharePoint keeps the configured
+polling interval. PAS constructs `acl_context` on the server, and PolarRAG
+remains the final authority for document access.
 
 The console **Integration guide** first offers separate **Feishu integration**
 and **SharePoint integration** links. Selecting one shows only that provider's
@@ -25,6 +26,17 @@ Prepare the following:
 Each verified identity source can be bound to multiple enabled Spaces. A
 Space's `identity_domain` comes from the PolarRAG Space catalog; it is not
 operator input and does not need to equal the Space ID.
+
+When adding an identity source, the console selects **Bind all Spaces,
+including future Spaces** by default. PAS creates the parent binding for every
+currently enabled Space and binds later Space registrations for sources that
+retain this default policy. Clear the option when the source should use only
+relationships explicitly created in the **Bind Space** dialog.
+
+Unreadable or malformed stored source configuration disables automatic Space
+binding and emits a warning without logging credentials. Existing bindings are
+unchanged. Legacy configuration without the binding-policy field retains the
+default; a present policy value must be a boolean.
 
 ## Configure a SharePoint identity source
 
@@ -127,14 +139,14 @@ then set that HTTPS base URL in both PAS and Entra. Production uses the same
 In **Users** > **Enterprise identity sources**, select **Add source** >
 **SharePoint**. Choose the same **Global cloud** or **China cloud (21Vianet)**
 environment as step 2, then enter the Entra directory (tenant) ID, application
-(client) ID, and client-secret **Value**. After creation, select **Sync now**
+(client) ID, and client-secret **Value**. After creation, select **Sync users and groups**
 until the status is `active`.
 
 PAS exchanges those credentials for an app-only Graph token against the
 selected cloud, then stores only the encrypted source configuration and
 synchronized directory facts. It marks the source `active` only after a
-complete snapshot is written; a failed refresh is `stale` and its principals
-fail closed.
+complete snapshot is written; a failed refresh is `stale`. Its last complete
+snapshot remains usable until the configured grace period expires.
 
 SharePoint user and group principals use Entra object IDs. The document ingest
 pipeline must therefore write the same object IDs into PolarRAG ACLs. PAS does
@@ -203,17 +215,52 @@ to **All members**. Then grant these **application identity** permissions:
 | --- | --- |
 | `contact:contact.base:readonly` | Directory baseline. |
 | `contact:department.base:readonly` | Department tree. |
-| `contact:user.base:readonly` | Tenant users and department membership. |
+| `contact:department.organize:readonly` | Department parent relationships. |
+| `contact:user.base:readonly` | Tenant users and direct department user lists. |
+| `contact:user.department:readonly` | Read `department_ids` on user events to update department membership. |
 | `contact:user.employee_id:readonly` | Tenant-scoped `user_id` ACL identifier. |
 | `contact:group:readonly` | Contact user groups and their membership. |
 
-These five permissions are sufficient for PAS directory synchronization.
+These seven permissions provide the fields needed for incremental directory
+synchronization. After changing permissions, publish the app version and
+manually trigger a full sync in PAS to restore missing memberships. If a user
+response omits `department_ids`, PAS marks that incremental event as failed
+instead of treating the missing field as an empty department list.
+
+Open **Event subscriptions**, choose **Use long connection to receive events**,
+and add these events before publishing the app version:
+
+- `contact.user.created_v3`, `contact.user.updated_v3`, and
+  `contact.user.deleted_v3`;
+- `contact.department.created_v3`, `contact.department.updated_v3`, and
+  `contact.department.deleted_v3`; and
+- `contact.scope.updated_v3`.
+
+The connection is initiated from PAS to Feishu. Do not configure an event
+callback URL, Verification Token, or Encrypt Key, and do not expose PAS to
+Feishu for event delivery. User events update the affected user and memberships;
+department events read the department's direct users and update memberships.
+A user deletion event disables the synchronized directory identity and its
+dedicated PAS account, and revokes its refresh sessions; it does not delete the
+account or disable a PAS-managed account linked to that identity. Full
+reconciliation applies the same rule to users no longer present in Feishu.
+If a departed user later returns, syncing the active directory identity
+automatically re-enables its dedicated PAS account.
+A scope event requests a full reconciliation. Feishu has no
+equivalent contact-group event family or group change-log cursor. PAS therefore
+reconciles only contact groups and their memberships every hour by default;
+this does not scan all users or departments. An explicit full sync or fallback
+after the configured incremental-unavailability threshold repairs missed-event drift.
+Full and group-only reconciliation enumerate both contact-group types, then page
+each group's direct members; they do not query group membership twice per user.
 
 The document ETL already expands document ACL departments, contact groups, and
 chats, and persists their canonical user memberships in
 `acl_principal_membership`. It also stores optional `acl_group` membership.
-PAS uses this snapshot only for principals unavailable from the directory API;
-users, departments, and contact groups are synchronized directly from Feishu.
+PAS uses this snapshot to supplement directory API facts; users, departments,
+and contact groups are synchronized directly from Feishu.
+When configured, user events re-read that user's ETL memberships, and group-only
+reconciliation retains ETL chat memberships.
 The app used for directory synchronization can differ from the document-ingest
 app, but both must belong to the same Feishu tenant and use tenant-level
 `user_id` values.
@@ -223,19 +270,23 @@ app, but both must belong to the same Feishu tenant and use tenant-level
 In the PAS console, open **Users** > **Enterprise identity sources**:
 
 1. Select **Add identity source**, choose Feishu, and enter only the name, App
-   ID, and App Secret. PAS immediately redirects the administrator to Feishu.
+   ID, and App Secret. **Bind all Spaces** is selected by default: it binds all
+   currently enabled Spaces and automatically binds Spaces registered with PAS
+   later. Clear it to manage bindings individually. PAS then redirects the
+   administrator to Feishu.
 2. Sign in and authorize the app. PAS consumes a one-time state value, obtains
    the verified `tenant_key`, and returns to the console. It never stores the
    administrator's user access token.
 3. PAS synchronizes users, departments, department hierarchy, and contact
    groups directly from Feishu. Assigning an Agent to a department includes
-   users in its descendant departments. The console does not expose optional
-   ACL membership snapshot configuration.
-4. Select **Bind Space**, choose one or more enabled PolarRAG Spaces that
-   should use this source, and confirm the selection. The same dialog lists
-   existing bindings; select **Unbind** beside a Space to remove it. The next
-   ACL evaluation no longer contributes this source's principals for that
-   Space.
+   users in its descendant departments. Select **Permission data source**
+   to configure optional ACL membership and knowledge-scope snapshots.
+4. Select **Bind Space** and manage the relationship in the paginated
+   **Available** and **Bound Spaces** tabs. Both tabs support selecting or
+   clearing the current page. Bind selected rows from the available tab and
+   unbind selected rows from the bound tab. The next ACL evaluation no longer
+   contributes this source's principals for an unbound Space. An explicit API
+   unbind is not recreated by merely reading the console page.
 
 Until tenant verification completes and the first directory refresh succeeds,
 the source remains pending and contributes no ACL principals. A source binding
@@ -257,17 +308,68 @@ URL or repository.
 
 ## Verify synchronization
 
-PAS starts a verified source immediately. After one complete refresh finishes,
-it waits 30 minutes before that source is due again. An incomplete or failed
-refresh resumes from its provider cursor in the background without waiting 30
-minutes. Selecting **Sync now** while a source already runs does not create a
-second run. The administrator API's refresh, status, and failure semantics are documented in the
+PAS starts a verified source immediately. After the first complete Feishu
+refresh, PAS consumes supported user and department events as the long connection
+delivers them; queued events are normally processed within five seconds, subject
+to provider and API latency. It checks fallback eligibility every ten minutes
+by default, and starts a full reconciliation only after incremental updates have
+been unavailable for the configured threshold (24 hours by default) and the
+last full refresh is at least that old. A connection failure gets up to three
+connection attempts. If all fail, PAS reports `error` and stops immediate reconnection;
+periodic group and knowledge permission reconciliation continues. At the threshold, it again tries to connect (up to
+three attempts) before the full reconciliation. The full run proceeds even if
+connection fails, and the subscription remains in `error`. A `contact.scope.updated_v3` event
+also requests a full reconciliation. Independently, PAS scans only contact
+groups and their members, and configured ETL knowledge permissions, every hour by default. Group-only failures retain the
+last complete directory snapshot and are retried without marking the whole
+source stale.
+Failed full reconciliations retry after backoff, including manual and startup runs.
+PAS requests one full reconciliation on startup for sources not in `error` to recover changes missed while
+the service was offline. A full and a group-only reconciliation never run at
+the same time for one source: a requested full run waits for the group run to
+finish. User and department events can be applied during a group-only run;
+events received during a full run remain queued and are applied idempotently
+after it completes.
+SharePoint continues to use
+the configured synchronization interval. An incomplete or failed full refresh
+resumes from its provider cursor in the background. Feishu **Sync users and groups** returns
+immediately and shows **Full sync in progress**; the background job finishes
+already received incremental events before the full refresh. Selecting **Sync users and groups**
+while a source already runs does not create a second run. The administrator
+API's refresh, status, and failure semantics are documented in the
 [Enterprise identity source administrator API](../reference/enterprise-identity-sources-api.md).
 
-The first Feishu refresh uses two concurrent requests by default; incremental
-refreshes use one, while SharePoint uses eight. Administrators can change the
-interval and Feishu limits in **Enterprise identity synchronization** on the
-configuration page. In a Docker deployment, set
+The **Incremental subscription** column reports `connecting`, `active`, or
+`error` (legacy `connected_unconfirmed` also displays as active). An established
+connection is healthy even without events; silence does not trigger a full
+reconciliation. Every subscription status shows the last full-sync time, or
+"Never" when no full sync has completed. In `error`, PAS also shows the sanitized
+subscription warning, waits for the configured unavailability threshold, then tries to connect
+before running a full reconciliation. If connection fails,
+the status stays `error` and the next full run remains threshold-gated. After
+fixing Feishu, operators can select **Sync users and groups** without waiting. Group and knowledge
+permission reconciliation continues on its own interval even while the subscription
+is in `error` and the full-reconciliation threshold has not elapsed.
+The contact-list pagination token is not a replayable change cursor; PAS does
+not rely on a "last sync version" to recover events. It establishes the
+connection before the full snapshot and queues events arriving during that run.
+PAS removes queued event records after seven days. If an unprocessed event expires,
+it requests a full reconciliation before removal so the change is recovered from the provider snapshot.
+
+The **Enterprise identity synchronization** module in the PAS Dashboard configures
+`feishu_check_interval_seconds` (default `600`),
+`feishu_fallback_after_seconds` (default `86400`), and
+`feishu_group_and_knowledge_scope_interval_seconds` (default `3600`). These are respectively a
+fallback scheduler check, an unavailability threshold for full reconciliation,
+and a group and knowledge permission reconciliation interval—not an interval for polling Feishu
+user or department changes. `interval_seconds` remains the SharePoint full
+refresh interval (default `1800`). Activate the configuration change to apply
+it at runtime.
+
+The first Feishu full refresh uses two concurrent requests by default; later
+full reconciliations use one, while SharePoint uses eight. Administrators can
+change the SharePoint interval and Feishu limits in **Enterprise identity
+synchronization** on the configuration page. In a Docker deployment, set
 `PAS_FEISHU_INITIAL_SYNC_CONCURRENCY`, `PAS_FEISHU_SYNC_CONCURRENCY`, or
 `PAS_SHAREPOINT_SYNC_CONCURRENCY` to an integer from `1` to `32` when capacity
 requires a different limit. Different identity sources can run in parallel,
@@ -287,10 +389,18 @@ per-source grace period, seven days by default. The administrator can change
 that grace period while editing the source. After it expires, PAS excludes the
 source until a refresh succeeds. `last_error` contains only a sanitized error
 type. A successful partial Feishu membership refresh instead records a separate
-`sync_warning` with a stable code, skipped-user count, and provider-code counts.
-The dashboard shows the warning and PAS preserves those users' previous
+`sync_warning` with a stable code, skipped-group count, and provider-code counts.
+The dashboard shows the warning and PAS preserves those groups' previous
 memberships; the next complete warning-free refresh clears it. Check protected
 PAS logs by time; never log or share app secrets or snapshot credentials.
+
+The same freshness rule applies to external Token exchange (Feishu UserInfo and
+introspection plus UserInfo), login, Agent membership, ACL context, and source-backed
+PERSONAL owner mapping. An unexpired `stale` source does not by itself block token
+validation; upstream token, tenant, subject, and audience checks still apply.
+Stale sources without a successful snapshot, expired `stale` sources, and disabled or
+pending sources remain unavailable. Source responses expose `snapshot_usable` so
+the external application test dialog uses the server's freshness decision.
 
 For a test user, compare the tenant-level `user_id` and intended principal IDs
 with the PolarRAG document ACL. PAS emits `user`, `department`, `group`, and
@@ -305,8 +415,22 @@ select **Sign in with Feishu** on the PAS login page; PAS validates the
 one-time authorization response against the verified tenant and creates the
 user when it is new. Do not assign passwords to synchronized identities.
 
-When a provider has one active identity source, its sign-in action redirects
-directly to that provider. When it has multiple active sources, PAS first
+For every enterprise identity source, sync keeps dedicated PAS accounts aligned
+with the directory: a missing or disabled directory user disables the account
+and revokes its refresh sessions; an active directory user enables it again.
+PAS status changes to dedicated accounts are overwritten by the next sync.
+PAS-managed accounts linked to an enterprise identity remain under manual
+administration.
+
+Automatic account disabling applies only to a canonical OIDC account owned by
+that source and having exactly one external identity. Linked local accounts,
+accounts with another identity, and accounts owned by another source keep their
+PAS status and sessions. Removal revokes console refresh tokens, OAuth refresh
+tokens and external token sessions; reactivation does not restore revoked tokens.
+
+When a provider has one usable identity source, its sign-in action redirects
+directly to that provider. A recently synchronized `stale` source remains usable
+within its configured snapshot lifetime. When it has multiple usable sources, PAS first
 shows a source-selection page; choose the enterprise identity source before
 continuing the provider sign-in. PAS binds the selected source to the one-time
 state. The callback never accepts a user-supplied source or tenant selection.
@@ -336,7 +460,7 @@ user, PAS also retains the synchronized account's source-generated native alias
 for that source's bound Spaces. Existing Personal knowledge bases and documents
 owned by the synchronized account therefore remain available to the mapped PAS
 user, while the same request also carries the Feishu or SharePoint user and
-group principals. PAS does not project either alias to an unbound or stale
+group principals. PAS does not project either alias to an unbound or expired
 identity source.
 
 Use **Bind enterprise identity** only to associate an existing local PAS
@@ -377,3 +501,201 @@ source-wide grant always requires an explicit administrator choice.
 
 The existing identity-source Space page and Agent user/group controls remain
 available for advanced, fine-grained administration.
+
+## Configure the knowledge permission data source
+
+For a verified Feishu source, select **Permission data source** in the source table.
+Choose MySQL (default port `3306`) or PostgreSQL (default port `5432`), and enter the
+host, database, read-only username, and password. The default database is
+`polar_rag_meta`. PAS needs SELECT access to `acl_principal_membership`,
+`external_kb_scope_snapshots`, and `external_kb_scope_grants`.
+
+The password is encrypted with the PAS configuration secret key and never returned
+by the API or populated in the form. When editing an existing connection, leave
+Password blank to keep it, or enter a replacement. Saving preserves the identity source status, directory synchronization clocks, and
+directory errors. It marks the independent ETL connection result as unverified.
+Bind the intended Space, then open **Sync knowledge permissions**. Select **Verify
+connection** to check SELECT access without importing permissions, or **Sync permissions now** to import the latest KB scope snapshots and reproject enabled Agents.
+Connection results and permission import counts/times are recorded separately.
+ETL failure does not mark the identity source stale or prevent directory login.
+These actions do not synchronize contacts or create directory identities.
+Only one ETL operation per source can run at a time; an operation is bounded to
+120 seconds and an abandoned lease expires after 300 seconds. Configuration edits
+are rejected while an ETL operation is running. **Refresh results** retries a
+failed status read. Existing periodic directory/group synchronization is retained.
+
+This connection synchronizes permissions for existing knowledge bases. It does not
+ingest Feishu documents or create knowledge bases. Automatic Agent bindings require
+an Agent in SCOPED mode, `external_knowledge_auto_bind_enabled` enabled, and an
+existing global KB resource matching the snapshot's Space and KB IDs.
+
+Administrators can open **Agent details → PolarRAG instances → Bind knowledge bases** and use **Automatically bind external knowledge bases**.
+The switch is available only for SCOPED Agents; it is hidden for LEGACY_ALL Agents.
+It shows the saved state and is off by default. The equivalent administrator API is
+`PUT /api/admin/agents/{agent_id}/external-knowledge-auto-bind` with `{"enabled":true}`.
+Enabling it projects existing
+permission snapshots and includes later synchronizations, within the Agent's global
+knowledge scope. It does not change the Agent's access mode: configure knowledge base
+and user permissions first so scoped permissions apply. Disabling it removes this
+Agent's synchronized scope/user bindings and preserves manual bindings. Loading or
+saving failures are displayed; a failed save leaves the prior state visible.
+
+The independent knowledge permission sync streams scope records directly and does not load directory memberships into memory. Connection verification only checks read access.
+
+Memberships and scope grants are read in bounded keyset pages (1,000 rows per query)
+for both dialects. Each paged read uses a read-only repeatable-read transaction;
+a scope is imported only after all its grant pages have been read. A failed page
+cannot publish a partial grant set. Memberships remain assembled for directory
+reconciliation; at most one complete scope's grants are buffered during scope import.
+
+The Dashboard configuration field is
+`feishu_group_and_knowledge_scope_interval_seconds` (default `3600`, minimum `600`).
+Existing configurations using `feishu_group_interval_seconds` remain readable;
+new configuration responses and the schema use the new field name.
+
+
+For a SCOPED Agent with auto-binding enabled, select **Update auto-binding**
+on the knowledge base binding page. It replays PAS snapshots for this Agent only;
+it does not connect to ETL, change the switch, or modify manual scopes. Fetch ETL
+permissions on the identity source first when upstream permissions have changed.
+User identity mappings, Agent user/group access, Space binding, and the Agent global
+KB scope must already exist. The result shows processed/skipped snapshot counts
+and projected binding counts; zero bindings may indicate missing access mappings.
+
+### Discover a knowledge base through document permissions
+
+Feishu ETL also publishes `document_read_discovery` scopes. A user with READ,
+WRITE, or MANAGE permission on at least one successfully indexed document can
+discover its existing KB without being a member of the containing Wiki space.
+PAS imports these scopes through the same ETL permissions database connection.
+Enable **Automatically bind external knowledge bases** on a SCOPED Agent and
+include the target KB in its global scope. No additional database tables or
+console switch are required.
+
+Only active, current ACL generations confirmed as applied by Search contribute
+grants. Pending, stale, deleted, or unsupported document ACLs do not. ETL
+aggregates documents across Links; removing the last readable document removes
+this discovery grant after the next ETL refresh and PAS scope reconciliation.
+Independent Wiki space grants and manual bindings remain effective.
+
+Discovery does not grant access to every document in that KB. PolarRAG continues
+to enforce document permissions for every retrieval. Discovery is eventual: the
+ETL job must refresh first, then PAS imports the scope on its configured interval
+or **Sync permissions now**. An indexed document without a current confirmed ACL may remain
+absent until ACL reconciliation succeeds.
+
+
+### Permission refresh versus auto-binding
+
+Periodic group/knowledge permission reconciliation first fetches Feishu groups,
+then reads the configured permission database using the read-only snapshot client.
+A Feishu API failure can therefore prevent the database read. Enabling or updating
+Agent automatic binding only uses snapshots already imported into MCP; success
+there does not verify upstream database connectivity or freshness. **Sync knowledge
+permissions** fetches upstream scopes using the same database configuration and
+connection client, without the Feishu directory/group API step or directory membership
+assembly. It leaves the identity-source lifecycle state unchanged.
+
+Group/permission failures use the configured group/knowledge interval for fallback
+retry, rather than the full-directory fallback threshold. Existing excessive group
+retry deadlines are bounded on a scheduler pass to one configured interval from that
+pass. Active leases and valid backoff (including HTTP retry backoff up to 30 minutes)
+are preserved. The repair changes only the group retry deadline, not source status
+or successful sync clocks.
+
+## Configure a DingTalk identity source
+
+The user binding picker displays the registered DingTalk identity source name for users linked through DingTalk. This label is separate from the inherited permission origin shown on the binding.
+
+
+When a Space has several identity sources, an Agent permission refresh processes each KB with the sources that have complete snapshots for it. A source with no upstream snapshot and no previously imported snapshot or derived binding for that KB is omitted. If a previously tracked source loses its snapshot, the entire KB refresh stops and retains existing bindings. An explicit complete snapshot with zero grants still revokes access. Skipped source IDs are recorded in each completed KB result.
+
+
+If the sign-in endpoint returns HTTP 409, an administrator must first sign in to PAS, open **Enterprise identity sources**, select **Verify DingTalk enterprise**, complete browser authorization, and synchronize the directory. A pending source cannot start ordinary sign-in. After enterprise verification, **Synchronize users and groups** supports DingTalk through the same registered adapter as periodic reconciliation. The failure page provides these setup steps without exposing source configuration. DingTalk sessions also include the current credential epoch so an existing linked built-in account can authenticate.
+
+
+Use an enterprise-internal application and ordinary employee accounts. In DingTalk,
+configure browser authorization with the callback
+`<PAS external base URL>/auth/dingtalk/callback` and authorize `openid corpid`.
+First configure and activate `runtime_policy.external_base_url` with PAS's
+externally reachable base URL. Verification and sign-in return HTTP 409 when
+this URL is missing or invalid, without starting authorization or creating a
+browser state cookie. Configure the URL and retry; PAS does not infer the
+callback origin from browser or forwarded headers.
+Grant application-visible directory scope and the APIs for unionId-to-userId,
+user details, authorization scope, immediate department children and paginated
+users. Enable Stream subscription for `user_add_org`, `user_active_org`, `user_modify_org`,
+`user_leave_org`, `org_dept_create`, `org_dept_modify`, `org_dept_remove`.
+See the [official Stream SDK](https://github.com/open-dingtalk/dingtalk-stream-sdk-python)
+and [DingTalk authorization guide](https://open.dingtalk.com/document/orgapp/tutorial-obtaining-user-personal-information).
+
+Create the **DingTalk** source with corpId as `tenant_id`, AppKey as `client_id`,
+and AppSecret as `client_secret`. Verify the selected corporation in the browser,
+then bind the target Spaces and synchronize the directory. The verified user token
+must carry the configured corpId; PAS also proves internal employee membership
+through application-authorized unionId conversion and user details. App changes
+invalidate verification and old one-shot browser states. User tokens may be
+exchanged only against the explicitly configured DingTalk trust source; callers
+cannot supply a trusted userId or unionId.
+
+PAS stores enterprise userId under `dingtalk:<corpId>`. Departments use native
+numeric IDs as strings. USER, DEPT and ORG are supported; TAG, CONVERSATION and
+DYNAMIC_GROUP do not grant discovered KB access. One `identity_domain` may bind
+to only one DingTalk corporation. PAS local departments and manually assigned
+principals do not substitute for DingTalk directory facts.
+
+Directory reconciliation runs every five minutes and its maximum validity is
+15 minutes, including while status is ACTIVE. Stream notifications are persisted and
+deduplicated by source/event/subject before acknowledgment, then processed through
+the same inbox, retry and transaction-fencing framework as Feishu. User events
+suspend only the affected directory user and memberships; department events suspend
+that department's inherited access. PAS refetches current facts and application
+visibility rather than applying notification diffs. Delayed leave/delete events
+cannot override a currently existing user or department. Missing IDs, unresolved
+subtrees and exhausted event retries request a full reconciliation. Normal socket
+rotation reconnects without increasing the error counter. Each newly established
+connection requests a compensating full reconciliation for potentially missed events. Disabled/deleted source
+listeners are released. Full scans cannot publish over newer events or changed credentials. Failed/partial
+pages never publish a partial directory. Full scans are bounded to 50,000 entries;
+restarts rescan rather than resume a partial cursor.
+
+Configure the ETL permission database using a read-only account. PAS reads only
+`source=DINGTALK` snapshots for the configured corporation. The ETL observation
+marker must be within 15 minutes; unchanged permissions preserve their generation
+and semantic update time. Document-read discovery requires already-applied Search
+ACLs, completed nondeleted uploads and matching document IDs. Permissions are
+aggregated per source/corporation/Space/KB; all links contribute. Agent membership,
+SCOPED mode, explicit auto-binding and global resource scope remain required.
+Discovery never grants access to every document; Search still checks document ACLs.
+Use a synchronization interval of at most five minutes for the test link so
+permission observations remain fresh.
+
+### Maintenance deployment boundary
+
+This adaptation is a **CONTRACT** schema release, generation 2. It extends released
+provider CHECK constraints and adds browser-state/health storage. Ordinary managed
+rolling migration refuses an existing older database. Stop every older reader and
+writer, save a paired metadata/root-key/configuration backup, then run:
+
+```shell
+pas database inspect
+pas database migrate --maintenance --operation-id dingtalk-identity-v1
+pas database migrate --maintenance --operation-id dingtalk-identity-v1
+pas database check
+```
+
+Test the complete path on an isolated database copy first. Old images deliberately
+reject generation 2; rollback restores the pre-maintenance database and configuration
+with the old image. New empty databases can initialize without a compatibility
+window; completed migrations can be replayed. Do not use this branch for ordinary
+managed rolling upgrades until a separately reviewed compatibility design exists.
+
+Stream transport has bounded connection and shutdown timeouts. A connected socket is shown as **Subscription healthy**; failures are recorded as **Subscription error** and retried with exponential backoff up to 60 seconds. A full directory sync does not prove Stream health. Full reconciliation uses the shorter of the configured interval and 300 seconds, with 100 users per department page. Top-level authorized departments retain their actual names. Transient upstream network/429/5xx failures retain only an existing snapshot within its freshness limit; rejected snapshots and configuration errors invalidate it immediately. Incremental events never advance the full-directory freshness marker. An unresolved user event prevents that source's imported user grants and legacy manual group claims from bypassing suspension. Full reconciliation remains capped at 300 seconds to preserve the existing 900-second trust limit; Feishu's longer fallback schedule is not applied to DingTalk. Conflicting DingTalk corporations in one identity domain return HTTP 409 on both manual and automatic bindings.
+
+### DingTalk compatibility and conversation boundary
+
+DingTalk external users use the same directory freshness checks as Feishu users. External-token configuration preserves the `dingtalk` provider and a configured static identity source. Manual user-principal mappings accept `dingtalk`; identity-domain user lists include them. Manual DingTalk conversation groups are rejected before persistence; use identity-source directory departments for supported department access. This follow-up requires no schema migration.
+
+ETL preserves `CONVERSATION` and `TAG` grants, but they do not confer knowledge-base discovery or produce inferred user memberships. `DYNAMIC_GROUP` fails strict normalization. Group metadata lookup success does not prove member-list access. Current application-token member queries remain blocked; no public reverse `openConversationId` to `chatId` API has been established.
+
+Browser DingTalk login verifies identity only. It does not retain delegated DingTalk tokens or grant access to DWS Chat MCP. A future user-delegated resolver requires separate authorization, token lifecycle handling, complete member pagination and verified employee-ID mapping. It is outside the current acceptance scope.

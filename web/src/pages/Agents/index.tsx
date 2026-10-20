@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   Alert,
   Button,
+  Checkbox,
+  Radio,
   Empty,
   Form,
   Input,
@@ -21,6 +23,7 @@ import {
   listAgents,
   updateAgent,
   type Agent,
+  type AgentKnowledgeScopeMode,
 } from '../../api/agents'
 import { getAPIErrorMessage } from '../../api/client'
 import PageContainer from '../../components/PageContainer'
@@ -30,6 +33,8 @@ const { Text, Title } = Typography
 const PAGE_SIZE = 20
 
 interface CreateAgentForm {
+  knowledge_scope_mode: AgentKnowledgeScopeMode
+  external_knowledge_auto_bind_enabled?: boolean
   name: string
   description?: string
   max_active_resources?: number
@@ -49,6 +54,7 @@ export default function Agents() {
   const [statusLoading, setStatusLoading] = useState(false)
   const [reconnectNotice, setReconnectNotice] = useState(false)
   const [form] = Form.useForm<CreateAgentForm>()
+  const knowledgeMode = Form.useWatch("knowledge_scope_mode", form)
 
   const loadAgents = useCallback(async (nextPage = page, nextSearch = search) => {
     setLoading(true)
@@ -79,6 +85,8 @@ export default function Agents() {
     try {
       await createAgent({
         name: values.name.trim(),
+        knowledge_scope_mode: values.knowledge_scope_mode,
+        external_knowledge_auto_bind_enabled: values.knowledge_scope_mode === "SCOPED" && !!values.external_knowledge_auto_bind_enabled,
         description: values.description?.trim() || null,
         max_active_resources: values.max_active_resources ?? null,
       })
@@ -180,6 +188,7 @@ export default function Agents() {
             <Form
               form={form}
               layout="vertical"
+              initialValues={{ knowledge_scope_mode: "LEGACY_ALL", external_knowledge_auto_bind_enabled: false }}
               onFinish={(values) => void handleCreate(values)}
               style={{ maxWidth: 640, marginTop: 16 }}
             >
@@ -204,6 +213,17 @@ export default function Agents() {
               >
                 <Input.TextArea rows={3} />
               </Form.Item>
+              <Form.Item name="knowledge_scope_mode" label={t('agents.knowledgeMode')} extra={t('agents.knowledgeModeHint')}>
+                <Radio.Group onChange={(event) => {
+                  if (event.target.value === 'LEGACY_ALL') form.setFieldValue('external_knowledge_auto_bind_enabled', false)
+                }} options={[
+                  { value: 'LEGACY_ALL', label: t('agents.legacyKnowledgeMode') },
+                  { value: 'SCOPED', label: t('agents.scopedKnowledgeMode') },
+                ]} />
+              </Form.Item>
+              {knowledgeMode === 'SCOPED' && <Form.Item name="external_knowledge_auto_bind_enabled" valuePropName="checked" extra={t('agents.knowledgeAutoBindHint')}>
+                <Checkbox>{t('agents.knowledgeAutoBind')}</Checkbox>
+              </Form.Item>}
               <Form.Item
                 name="max_active_resources"
                 label={t('agents.maxResources')}

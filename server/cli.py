@@ -378,6 +378,7 @@ def build_parser() -> argparse.ArgumentParser:
     database_check.set_defaults(handler=_handle_database_check)
     database_migrate = database_commands.add_parser("migrate")
     database_migrate.add_argument("--operation-id")
+    database_migrate.add_argument("--maintenance", action="store_true", help="CONTRACT migration after stopping older readers/writers and taking a paired backup")
     database_migrate.set_defaults(handler=_handle_database_migrate)
     database_inspect = database_commands.add_parser("inspect")
     database_inspect.add_argument("--format", choices=("human", "json"), default="json")
@@ -478,11 +479,11 @@ def _handle_database_migrate(_args: argparse.Namespace) -> None:
 
     report('PAS database migration: status="starting"')
     if getattr(_args, "operation_id", None) is None:
-        migrate_database(reporter=report)
+        migrate_database(reporter=report, maintenance=getattr(_args, "maintenance", False))
     else:
         migrate_database(
             operation_id=_args.operation_id,
-            reporter=report,
+            reporter=report, maintenance=getattr(_args, "maintenance", False),
         )
     print("Database migration completed.")
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-import re
 import time
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -55,7 +54,10 @@ from server.polarrag.access import (
     plan_exhaustive_knowledge_access,
     plan_knowledge_access,
 )
-from server.polarrag.client import client_from_instance
+from server.polarrag.client import (
+    client_from_instance,
+    supports_optimized_document_apis,
+)
 from server.polarrag.contracts import (
     PolarRAGClient,
     PolarRAGErrorCode,
@@ -84,6 +86,12 @@ _SENSITIVE_KEY_PARTS = (
     "index_name",
 )
 _SAFE_ERROR_MESSAGES = {
+    PolarRAGErrorCode.CITATION_SOURCE_CHANGED.value: (
+        "The document source changed. Discard the old hit and context. "
+        "Re-run the original search at most once, then fetch with the new hit's "
+        "chunk_index and doc_generation. Never retry without the generation pin. "
+        "If automatic recovery with query already failed, stop and report the conflict."
+    ),
     PolarRAGErrorCode.CREDENTIAL_UNAVAILABLE.value: (
         "PolarRAG credentials are unavailable. Ask an administrator to verify the instance configuration."
     ),
@@ -179,7 +187,11 @@ def _image_resources(source: dict[str, Any]) -> list[dict[str, Any]]:
     return [dict(resource) for resource in resources if isinstance(resource, dict)]
 
 
-def _with_image_resources(payload: dict[str, Any]) -> dict[str, Any]:
+def _with_image_resources(
+    payload: dict[str, Any],
+    *,
+    filename: str | None = None,
+) -> dict[str, Any]:
     hits = payload.get("hits")
     if not isinstance(hits, dict):
         return payload
@@ -197,6 +209,8 @@ def _with_image_resources(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         normalized_source = dict(source)
         normalized_source["image_resources"] = _image_resources(source)
+        if filename is not None:
+            normalized_source["filename"] = filename
         normalized_hit = dict(raw_hit)
         normalized_hit["_source"] = normalized_source
         normalized_hits.append(normalized_hit)
@@ -318,7 +332,9 @@ def _search_hits(
                 "knowledge_space_id": resource.knowledge_space_id,
                 "knowledge_space_name": resource.space.name,
                 "doc_id": source.get("doc_id"),
+                "doc_generation": source.get("doc_generation"),
                 "filename": source.get("filename"),
+                "source_uri": source.get("source_uri"),
                 "chunk_index": source.get("chunk_index"),
                 "page_numbers": source.get("page_numbers") or [],
                 "headings": source.get("headings") or [],
@@ -329,13 +345,6 @@ def _search_hits(
             }
         )
     return normalized
-
-
-def _supports_multi_kb_search(version: str | None) -> bool:
-    if version is None:
-        return False
-    match = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$", version.strip())
-    return bool(match and tuple(int(value) for value in match.groups()) >= (1, 0, 7))
 
 
 def _search_hits_many(
@@ -385,8 +394,6 @@ async def _run_search_calls_in_waves(
             for (resources, _call), response in zip(wave, responses)
         )
     return completed
-
-
 async def handle_list_knowledge_resources(
     session: AsyncSession,
     user: User,
@@ -470,7 +477,7 @@ async def handle_kb_search(
     try:
         for plan in exhaustive_plan.plans:
             client = client_factory(plan.instance)
-            multi_kb = _supports_multi_kb_search(plan.instance.plugin_version)
+            multi_kb = len(plan.resources) > 1
             calls: list[
                 tuple[
                     list[Any],
@@ -485,12 +492,14 @@ async def handle_kb_search(
                         1,
                     ):
                         capabilities = await client.get_search_capabilities()
+                    multi_kb = capabilities.multi_kb_search
                 except PolarRAGUpstreamError as exc:
                     if exc.status_code not in {400, 404, 501}:
                         raise
                     multi_kb = False
             if multi_kb:
                 batch_size = capabilities.max_kb_ids
+                assert batch_size is not None
                 batches = [
                     plan.resources[offset : offset + batch_size]
                     for offset in range(0, len(plan.resources), batch_size)
@@ -529,6 +538,7 @@ async def handle_kb_search(
                                 min_score=min_score,
                                 reranker=reranker,
                                 acl_context=plan.acl_context,
+                                legacy_protocol=True,
                             ),
                         ),
                     )
@@ -656,6 +666,7 @@ async def _authorized_document_info(
         resource.space_id,
         doc_id,
         acl_context=acl_context,
+        kb_id=resource.kb_id,
     )
     if (
         payload.get("doc_id") != doc_id
@@ -676,26 +687,76 @@ async def handle_kb_fetch_context(
     doc_id: str,
     chunk_index: int,
     window_size: int = 2,
+    expected_doc_generation: int | None = None,
+    query: str | None = None,
     resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
     if not doc_id or chunk_index < 0 or window_size < 0 or window_size > 100:
         return _error("INVALID_ARGUMENT")
+    if expected_doc_generation is not None and (
+        type(expected_doc_generation) is not int or not 0 <= expected_doc_generation <= 2147483647
+    ):
+        return _error("INVALID_ARGUMENT")
+    if query is not None and (not query.strip() or len(query) > 10000):
+        return _error("INVALID_ARGUMENT")
 
     async def operation(client, resource, acl_context):
-        await _authorized_document_info(
+        document = await _authorized_document_info(
             client,
             resource,
             doc_id,
             acl_context,
         )
-        return _with_image_resources(await client.fetch_context(
-            resource.space_id,
-            doc_id,
-            chunk_index=chunk_index,
-            window_size=window_size,
-            acl_context=acl_context,
-        ))
+        async def fetch(index, generation):
+            return _with_image_resources(
+                await client.fetch_context(
+                    resource.space_id,
+                    doc_id,
+                    chunk_index=index,
+                    window_size=window_size,
+                    acl_context=acl_context,
+                    kb_id=resource.kb_id,
+                    expected_doc_generation=generation,
+                ),
+                filename=document.get("filename"),
+            )
+
+        try:
+            return await fetch(chunk_index, expected_doc_generation)
+        except PolarRAGUpstreamError as exc:
+            if exc.code != PolarRAGErrorCode.CITATION_SOURCE_CHANGED or query is None:
+                raise
+            # Re-locate the passage once; an old chunk index cannot identify the new content.
+            recalled = _search_hits(
+                await client.recall_document(
+                    resource.space_id,
+                    doc_id,
+                    kb_id=resource.kb_id,
+                    query=query.strip(),
+                    top_k=1,
+                    acl_context=acl_context,
+                ),
+                resource,
+            )
+            if not recalled:
+                raise exc
+            hit = recalled[0]
+            generation = hit["doc_generation"]
+            if (
+                hit["doc_id"] != doc_id
+                or hit["chunk_index"] < 0
+                or type(generation) is not int
+                or not 0 <= generation <= 2147483647
+            ):
+                raise exc
+            document = await _authorized_document_info(
+                client,
+                resource,
+                doc_id,
+                acl_context,
+            )
+            return await fetch(hit["chunk_index"], generation)
 
     return await _single_resource_call(
         session,
@@ -723,19 +784,23 @@ async def handle_doc_list_chunks(
         return _error("INVALID_ARGUMENT")
 
     async def operation(client, resource, acl_context):
-        await _authorized_document_info(
+        document = await _authorized_document_info(
             client,
             resource,
             doc_id,
             acl_context,
         )
-        return _with_image_resources(await client.list_document_chunks(
-            resource.space_id,
-            doc_id,
-            offset=offset,
-            limit=limit,
-            acl_context=acl_context,
-        ))
+        return _with_image_resources(
+            await client.list_document_chunks(
+                resource.space_id,
+                doc_id,
+                offset=offset,
+                limit=limit,
+                acl_context=acl_context,
+                kb_id=resource.kb_id,
+            ),
+            filename=document.get("filename"),
+        )
 
     return await _single_resource_call(
         session,
@@ -772,25 +837,64 @@ async def handle_doc_find_by_name(
         return _error(exc.code.value)
     governor = governor or get_polarrag_tool_governor()
     try:
+        client = client_factory(plan.instance)
+        use_multi_kb = bool(getattr(client, "supports_plugin_107", False))
+        responses: list[dict[str, Any] | BaseException]
+        multi_batches: list[list[KnowledgeResource]] = []
+        if use_multi_kb:
+            try:
+                async with governor.reserve_instance(
+                    "doc_find_by_name",
+                    plan.instance.id,
+                    1,
+                ):
+                    capabilities = await client.get_search_capabilities()
+                use_multi_kb = capabilities.multi_kb_search
+            except PolarRAGUpstreamError as exc:
+                if exc.status_code not in {400, 404, 501}:
+                    raise
+                use_multi_kb = False
+        if use_multi_kb:
+            batch_size = capabilities.max_kb_ids
+            assert batch_size is not None
+            multi_batches = [
+                plan.resources[offset : offset + batch_size]
+                for offset in range(0, len(plan.resources), batch_size)
+            ]
         async with governor.reserve_instance(
             "doc_find_by_name",
             plan.instance.id,
-            len(plan.resources),
+            len(multi_batches) if use_multi_kb else len(plan.resources),
         ):
-            client = client_factory(plan.instance)
-            responses = await asyncio.gather(
-                *[
-                    client.find_by_name(
-                        resource.space_id,
-                        kb_id=resource.kb_id,
-                        filename=filename.strip(),
-                        limit=limit,
-                        acl_context=plan.acl_context,
-                    )
-                    for resource in plan.resources
-                ],
-                return_exceptions=True,
-            )
+            if use_multi_kb:
+                responses = await asyncio.gather(
+                    *[
+                        client.find_by_name(
+                            plan.space.space_id,
+                            kb_id=[resource.kb_id for resource in batch],
+                            filename=filename.strip(),
+                            limit=limit,
+                            acl_context=plan.acl_context,
+                        )
+                        for batch in multi_batches
+                    ],
+                    return_exceptions=True,
+                )
+            else:
+                responses = await asyncio.gather(
+                    *[
+                        client.find_by_name(
+                            resource.space_id,
+                            kb_id=resource.kb_id,
+                            filename=filename.strip(),
+                            limit=limit,
+                            acl_context=plan.acl_context,
+                            legacy_protocol=True,
+                        )
+                        for resource in plan.resources
+                    ],
+                    return_exceptions=True,
+                )
     except PolarRAGGovernanceError as exc:
         return _governance_error(exc)
     except PolarRAGUpstreamError as exc:
@@ -798,6 +902,41 @@ async def handle_doc_find_by_name(
     items: list[dict[str, Any]] = []
     partial_failures = list(plan.partial_failures)
     successful = 0
+    if use_multi_kb:
+        resources_by_kb = {resource.kb_id: resource for resource in plan.resources}
+        for batch, response in zip(multi_batches, responses):
+            if isinstance(response, BaseException):
+                code = (
+                    response.code.value
+                    if isinstance(response, PolarRAGUpstreamError)
+                    else PolarRAGErrorCode.UNAVAILABLE.value
+                )
+                return _error(code)
+            hits = response.get("hits") if isinstance(response, dict) else None
+            raw_hits = hits.get("hits") if isinstance(hits, dict) else None
+            if not isinstance(raw_hits, list):
+                return _error(PolarRAGErrorCode.INVALID_RESPONSE.value)
+            for raw_hit in raw_hits:
+                source = raw_hit.get("_source") if isinstance(raw_hit, dict) else None
+                source_kb_id = (
+                    source.get("kb_id") if isinstance(source, dict) else None
+                )
+                resource = (
+                    resources_by_kb.get(source_kb_id)
+                    if isinstance(source_kb_id, str)
+                    else None
+                )
+                if resource is None:
+                    return _error(PolarRAGErrorCode.INVALID_RESPONSE.value)
+                items.append(
+                    {
+                        "knowledge_resource_id": resource.id,
+                        "knowledge_space_id": resource.knowledge_space_id,
+                        "document": _sanitize_payload(source),
+                    }
+                )
+            successful += len(batch)
+        responses = []
     for resource, response in zip(plan.resources, responses):
         if isinstance(response, BaseException):
             partial_code = _partial_failure_code(response)
@@ -1010,6 +1149,7 @@ async def handle_doc_rechunk(
     doc_id: str,
     chunk_strategy: str = "inherit",
     chunk_max_tokens: int | None = None,
+    force: bool = False,
     resource_scope: KnowledgeResourceScope | None = None,
     client_factory: ClientFactory = client_from_instance,
 ) -> CallToolResult:
@@ -1032,11 +1172,16 @@ async def handle_doc_rechunk(
             doc_id,
             acl_context,
         )
+        if force:
+            instance = await session.get(PolarRAGInstance, resource.polarrag_instance_id)
+            if instance is None or not supports_optimized_document_apis(instance.plugin_version):
+                raise PolarRAGUpstreamError(PolarRAGErrorCode.VERSION_UNSUPPORTED)
         payload = await client.rechunk_document(
             resource.space_id,
             doc_id,
             chunk_strategy=None if strategy == "inherit" else strategy,
             chunk_max_tokens=chunk_max_tokens,
+            force=force,
             acl_context=acl_context,
         )
         if payload.get("doc_id") != doc_id:
@@ -1193,7 +1338,7 @@ async def _execute_tool(
             )
             agent_id = agent_context.agent.id
         elif workspace.agent is None:
-            resource_scope = None
+            resource_scope = KnowledgeResourceScope({}, personal_only=True)
             agent_id = None
         else:
             resource_scope = await resolve_polarrag_resource_scope_for_agent(
@@ -1390,7 +1535,12 @@ def register_polarrag_tools(mcp) -> None:
             "chunks. Pass the hit's knowledge_resource_id, doc_id, and "
             "chunk_index; window_size controls how many chunks on each side "
             "are returned. Call this after kb_search or doc_recall when the hit "
-            "needs more surrounding text."
+            "needs more surrounding text. Pass the hit's doc_generation as "
+            "expected_doc_generation to pin the source. Optionally pass the original "
+            "query to re-locate a passage within this document and KB once on "
+            "citation_source_changed. If query was provided and recovery fails, stop. "
+            "Otherwise discard old context and re-run the original search at most "
+            "once, then use the new hit's chunk_index and generation. Never remove the pin."
         ),
         annotations=annotations,
     )
@@ -1399,6 +1549,8 @@ def register_polarrag_tools(mcp) -> None:
         doc_id: Annotated[str, Field(min_length=1, max_length=512)],
         chunk_index: Annotated[int, Field(ge=0)],
         window_size: Annotated[int, Field(ge=0, le=100)] = 2,
+        expected_doc_generation: Annotated[int, Field(strict=True, ge=0, le=2147483647)] | None = None,
+        query: Annotated[str, Field(min_length=1, max_length=10000)] | None = None,
     ) -> CallToolResult:
         return await _execute_tool(
             "kb_fetch_context",
@@ -1407,6 +1559,8 @@ def register_polarrag_tools(mcp) -> None:
             doc_id=doc_id,
             chunk_index=chunk_index,
             window_size=window_size,
+            expected_doc_generation=expected_doc_generation,
+            query=query,
         )
 
     @mcp.tool(
@@ -1575,6 +1729,7 @@ def register_polarrag_tools(mcp) -> None:
         chunk_max_tokens: Annotated[
             int | None, Field(ge=1, le=100_000)
         ] = None,
+        force: bool = False,
     ) -> CallToolResult:
         return await _execute_tool(
             "doc_rechunk",
@@ -1583,6 +1738,7 @@ def register_polarrag_tools(mcp) -> None:
             doc_id=doc_id,
             chunk_strategy=chunk_strategy,
             chunk_max_tokens=chunk_max_tokens,
+            force=force,
         )
 
     @mcp.tool(

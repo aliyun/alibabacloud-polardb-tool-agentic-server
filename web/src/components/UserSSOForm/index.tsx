@@ -123,7 +123,7 @@ export default function UserSSOForm({
       ...storedExternalTrust,
       ...(startsInTokenOnlyMode ? {
         enabled: true,
-        provider: ['oauth2_introspection', 'oauth2_userinfo', 'feishu'].includes(
+        provider: ['oauth2_introspection', 'oauth2_userinfo', 'feishu', 'dingtalk'].includes(
           String(storedExternalTrust.provider ?? ''),
         )
           ? storedExternalTrust.provider
@@ -175,11 +175,11 @@ export default function UserSSOForm({
     ['external_token_trust', 'identity_source_id'],
     form,
   ) ?? (
-    storedExternalTrust.provider === 'feishu'
+    ['feishu', 'dingtalk'].includes(String(storedExternalTrust.provider))
       ? storedExternalTrust.identity_source_id
       : undefined
   )
-  const directMCPRequiresStaticFeishuSource = externalProvider === 'feishu'
+  const directMCPRequiresStaticEnterpriseSource = ['feishu', 'dingtalk'].includes(externalProvider)
     && !staticIdentitySourceId
 
   const loadIdentitySources = useCallback(async () => {
@@ -189,10 +189,10 @@ export default function UserSSOForm({
       const { data } = await listEnterpriseIdentitySources()
       setIdentitySources(
         data.items.filter(
-          (source) => source.status === 'active'
+          (source) => (source.snapshot_usable ?? source.status === 'active')
             && (
-              externalProvider !== 'feishu'
-              || source.provider === 'feishu'
+              !['feishu', 'dingtalk'].includes(externalProvider)
+              || source.provider === externalProvider
             ),
         ),
       )
@@ -241,14 +241,14 @@ export default function UserSSOForm({
         )
           ? externalTokenTrust as Record<string, unknown>
           : undefined
-        if (externalTokenTrustConfig?.provider === 'feishu') {
+        if (externalTokenTrustConfig && ['feishu', 'dingtalk'].includes(String(externalTokenTrustConfig.provider))) {
           const enabled = externalTokenTrustConfig.enabled === true
-          const identitySourceId = storedExternalTrust.provider === 'feishu'
+          const identitySourceId = storedExternalTrust.provider === externalTokenTrustConfig.provider
             ? storedExternalTrust.identity_source_id
             : undefined
           values.external_token_trust = {
             enabled,
-            provider: 'feishu',
+            provider: externalTokenTrustConfig.provider,
             direct_mcp_enabled: enabled
               && externalTokenTrustConfig.direct_mcp_enabled === true,
             ...(identitySourceId ? {
@@ -527,6 +527,10 @@ export default function UserSSOForm({
                         label: t('setup.userSSO.providerFeishu'),
                       },
                       {
+                        value: 'dingtalk',
+                        label: t('setup.userSSO.providerDingTalk'),
+                      },
+                      {
                         value: 'buc',
                         label: t('setup.userSSO.providerBUC'),
                       },
@@ -660,12 +664,12 @@ export default function UserSSOForm({
                     </Form.Item>
                   ) : null}
 
-                  {externalProvider === 'feishu' ? (
+                  {['feishu', 'dingtalk'].includes(externalProvider) ? (
                     <Alert
                       type="info"
                       showIcon
-                      message={t('setup.userSSO.feishuTrustWarning')}
-                      description={t('setup.userSSO.feishuDirectIdentityHelp')}
+                      message={externalProvider === 'dingtalk' ? t('setup.userSSO.providerDingTalk') : t('setup.userSSO.feishuTrustWarning')}
+                      description={externalProvider === 'dingtalk' ? t('setup.userSSO.dingtalkDirectIdentityHelp') : t('setup.userSSO.feishuDirectIdentityHelp')}
                     />
                   ) : null}
 
@@ -769,13 +773,13 @@ export default function UserSSOForm({
                     name={['external_token_trust', 'direct_mcp_enabled']}
                     label={t('setup.userSSO.directMCP')}
                     valuePropName="checked"
-                    extra={directMCPRequiresStaticFeishuSource
-                      ? t('setup.userSSO.feishuDirectMCPUnavailable')
+                    extra={directMCPRequiresStaticEnterpriseSource
+                      ? externalProvider === 'dingtalk' ? t('setup.userSSO.dingtalkDirectMCPUnavailable') : t('setup.userSSO.feishuDirectMCPUnavailable')
                       : undefined}
                   >
                     <Switch
                       aria-label={t('setup.userSSO.directMCP')}
-                      disabled={directMCPRequiresStaticFeishuSource}
+                      disabled={directMCPRequiresStaticEnterpriseSource}
                     />
                   </Form.Item>
                   {directMCPEnabled ? (

@@ -14,6 +14,7 @@ from server.enterprise_identity.service import identity_provider_key
 from server.models import (
     Agent,
     AgentGroupAssignment,
+    AgentKnowledgeScopeMode,
     AgentPolarRAGInstanceBinding,
     AgentUserAssignment,
     AuditLog,
@@ -492,6 +493,44 @@ async def test_enterprise_access_legacy_payload_derives_and_binds_instances(
     }
 
 
+async def test_enterprise_access_can_bind_spaces_without_subjects_and_defer_kbs(
+    client, setup
+) -> None:
+    http, admin_headers, _member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+    selection = {
+        "identity_source_id": seeded.source_id,
+        "all_synced_users": False,
+        "directory_group_ids": [],
+        "pas_user_ids": [],
+        "polarrag_instance_ids": [seeded.unbound_instance_id],
+        "knowledge_space_ids": [seeded.unbound_space_id],
+        "bind_all_knowledge_resources": False,
+    }
+
+    preview = await _preview(http, admin_headers, seeded, selection)
+    assert preview.status_code == 200
+    assert preview.json()["selection"]["bind_all_knowledge_resources"] is False
+
+    applied = await http.post(
+        f"/api/agents/{seeded.agent_id}/enterprise-access/apply",
+        json={**selection, "preview_hash": preview.json()["preview_hash"]},
+        headers=admin_headers,
+    )
+    assert applied.status_code == 200
+    await _assert_relation_counts(
+        setup,
+        groups=0,
+        users=0,
+        space_bindings=1,
+    )
+    factory, _admin, _member = setup
+    async with factory() as session:
+        agent = await session.get(Agent, seeded.agent_id)
+        assert agent is not None
+        assert agent.knowledge_scope_mode == AgentKnowledgeScopeMode.SCOPED
+
+
 async def test_enterprise_access_apply_is_atomic_and_idempotent(
     client, setup
 ) -> None:
@@ -959,3 +998,135 @@ async def test_enterprise_access_request_forbids_client_identity_context(
         users=0,
         space_bindings=0,
     )
+
+
+async def test_enterprise_selectors_are_readonly_source_isolated_and_current(client, setup):
+    from server.api.enterprise_user_identity import enterprise_identities_by_user, resolve_enterprise_user_ids
+    from server.models import User
+
+    seeded = await _seed_enterprise_access(setup)
+    factory, admin, member = setup
+    async with factory() as session:
+        other = await session.get(EnterpriseIdentitySource, seeded.other_source_id)
+        session.add(UserExternalIdentity(user_id=admin.id, identity_provider=identity_provider_key(other),
+                                         external_subject="member-subject"))
+        await session.commit()
+    models = (User, UserExternalIdentity, AgentUserAssignment, AuditLog)
+    before = [await _count_rows(setup, model) for model in models]
+    async with factory() as session:
+        assert await resolve_enterprise_user_ids(session, seeded.source_id, ["member-subject"]) == [member.id]
+        assert await resolve_enterprise_user_ids(session, seeded.other_source_id, ["member-subject"]) == [admin.id]
+        identities = await enterprise_identities_by_user(session, [member.id])
+        assert identities[member.id] == [{"identity_source_id": seeded.source_id, "external_user_id": "member-subject"}]
+        identity = (await session.execute(select(UserExternalIdentity).where(
+            UserExternalIdentity.user_id == member.id))).scalar_one()
+        identity.user_id = admin.id
+        await session.commit()
+        assert await resolve_enterprise_user_ids(session, seeded.source_id, ["member-subject"]) == [admin.id]
+    assert [await _count_rows(setup, model) for model in models] == before
+
+
+async def test_external_selection_preview_apply_hash_and_stale_mapping(client, setup):
+    http, headers, member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+    old = _selection(seeded)
+    new = {**old, "pas_user_ids": [], "external_user_ids": ["member-subject"]}
+    before = await _count_rows(setup, AuditLog)
+    a = await _preview(http, headers, seeded, old)
+    b = await _preview(http, headers, seeded, new)
+    assert a.status_code == b.status_code == 200, b.text
+    assert a.json()["preview_hash"] == b.json()["preview_hash"]
+    assert b.json()["selection"]["pas_user_ids"] == [seeded.user_id]
+    assert b.json()["selection"]["external_user_ids"] == ["member-subject"]
+    for payload, status in (({**new, "pas_user_ids": [seeded.user_id]}, 422),
+                            ({**new, "external_user_ids": ["unknown"]}, 404),
+                            ({**new, "external_user_ids": [""]}, 422)):
+        response = await _preview(http, headers, seeded, payload)
+        assert response.status_code == status, response.text
+    denied = await _preview(http, member_headers, seeded, new)
+    assert denied.status_code == 403
+    assert await _count_rows(setup, AuditLog) == before
+    factory, admin, _ = setup
+    async with factory() as session:
+        identity = (await session.execute(select(UserExternalIdentity).where(
+            UserExternalIdentity.user_id == seeded.user_id))).scalar_one()
+        identity.user_id = admin.id
+        await session.commit()
+    stale = await http.post(f"/api/agents/{seeded.agent_id}/enterprise-access/apply", headers=headers,
+                            json={**new, "preview_hash": b.json()["preview_hash"]})
+    assert stale.status_code == 409, stale.text
+    assert await _count_rows(setup, AuditLog) == before
+    applied = await _apply_previewed(http, headers, seeded, new)
+    assert applied.status_code == 200, applied.text
+    async with factory() as session:
+        assignments = (await session.execute(select(AgentUserAssignment))).scalars().all()
+        assert {row.user_id for row in assignments} == {admin.id}
+    assert await _count_rows(setup, AuditLog) > before
+
+
+async def test_enterprise_assignment_old_new_and_paged_outputs(client, setup):
+    http, headers, member_headers = client
+    seeded = await _seed_enterprise_access(setup)
+    pair = {"identity_source_id": seeded.source_id, "external_user_id": "member-subject"}
+    url = f"/api/agents/{seeded.agent_id}/user-assignments"
+    before = await _count_rows(setup, AuditLog)
+    for payload, status in (({"user_id": None}, 422),
+                            ({**pair, "user_id": None}, 422),
+                            ({"external_user_id": "member-subject"}, 422),
+                            ({"identity_source_id": seeded.source_id}, 422),
+                            ({**pair, "user_id": seeded.user_id}, 422),
+                            ({**pair, "external_user_id": "missing"}, 404)):
+        response = await http.post(url, headers=headers, json=payload)
+        assert response.status_code == status, response.text
+    assert (await http.post(url, headers=member_headers, json=pair)).status_code == 403
+    assert await _count_rows(setup, AuditLog) == before
+    assert await _count_rows(setup, AgentUserAssignment) == 0
+    created = await http.post(url, headers=headers, json=pair)
+    assert created.status_code == 201, created.text
+    assert created.json()["user_id"] == seeded.user_id
+    assert created.json()["enterprise_identities"] == [pair]
+    assert (await http.post(url, headers=headers, json={"user_id": seeded.user_id})).status_code == 409
+    page = await http.get(url, headers=headers, params={"offset": 0, "limit": 1})
+    assert page.status_code == 200
+    assert page.json()["total"] == 1
+    assert page.json()["items"][0]["enterprise_identities"] == [pair]
+    options = await http.get(f"/api/agents/{seeded.agent_id}/user-options", headers=headers,
+                             params={"search": "Member", "limit": 1, "binding_status": "bound"})
+    assert options.status_code == 200, options.text
+    assert options.json()["items"][0]["enterprise_identities"] == [pair]
+    assert (await http.delete(f"{url}/{created.json()['id']}", headers=headers)).status_code == 204
+    assert (await http.post(url, headers=headers, json={"user_id": seeded.user_id})).status_code == 201
+
+
+async def test_identity_output_canonical_fallback_never_returns_rebound_subject(setup):
+    from server.api.enterprise_user_identity import enterprise_identities_by_user
+    from server.models import AuthProvider, User
+
+    seeded = await _seed_enterprise_access(setup)
+    factory, _admin, member = setup
+    async with factory() as session:
+        source = await session.get(EnterpriseIdentitySource, seeded.source_id)
+        provider = identity_provider_key(source)
+        legacy = User(external_id=f"{provider}:legacy/subject", display_name="Legacy", auth_provider=AuthProvider.OIDC)
+        session.add(legacy)
+        await session.commit()
+        pair = {"identity_source_id": seeded.source_id, "external_user_id": "legacy/subject"}
+        assert (await enterprise_identities_by_user(session, [legacy.id]))[legacy.id] == [pair]
+        session.add(UserExternalIdentity(user_id=member.id, identity_provider=provider, external_subject="legacy/subject"))
+        await session.commit()
+        identities = await enterprise_identities_by_user(session, [legacy.id, member.id, "deleted-user"])
+        assert identities[legacy.id] == identities["deleted-user"] == []
+        assert pair in identities[member.id]
+
+
+def test_user_assignment_selector_preserves_string_schema_and_legacy_range():
+    from server.api.agent_polarrag_access import UserAssignmentRequest
+    from server.app import create_app
+
+    schema = create_app().openapi()["components"]["schemas"]["UserAssignmentRequest"]
+    assert schema["properties"]["user_id"]["type"] == "string"
+    assert "user_id" not in schema.get("required", [])
+    assert "anyOf" not in schema["properties"]["user_id"]
+    for user_id in ("", "legacy-user", "x" * 256):
+        assert UserAssignmentRequest(user_id=user_id).user_id == user_id
+    assert UserAssignmentRequest(identity_source_id="source", external_user_id="subject").user_id is None

@@ -94,7 +94,9 @@ changes, and is consumed atomically during activation.
 For one binding, administrators list eligible synchronized ACTIVE PUBLIC
 resources with
 `GET /api/agents/{agent_id}/polarrag-bindings/{binding_id}/public-resources`
-and update the scope with `PUT` on the same route. The request field
+and update the scope with `PUT` on the same route. Each GET `items` entry returns
+`knowledge_resource_id`, `space_id`, `kb_id`, `name`, and `knowledge_space_name`.
+The Space/KB fields are additive; the existing resource ID and pagination remain unchanged. The request field
 `public_knowledge_resource_ids` is `null` for all instance PUBLIC resources, an
 array for a selected scope, and an empty array for no PUBLIC resources.
 PERSONAL IDs are rejected. Updates are audited as
@@ -209,12 +211,29 @@ customer client.
 
 ## OpenAPI discovery
 
-The application schema at `/openapi.json` excludes Agent lifecycle routes.
-Agents use the canonical scoped schema at `/mcp/rest/openapi.json`; humans can
-view `/mcp/rest/docs`. CI verifies both surfaces so a principal cannot discover
-or accidentally use the other contract. Treat the deployed version's schema
-as authoritative and use the immutable release tag's documentation for
-examples.
+Online documentation is disabled: `/docs`, `/docs/oauth2-redirect`, `/redoc`,
+`/openapi.json`, `/api/openapi.json`, `/mcp/rest/docs`, and
+`/mcp/rest/openapi.json` return `404`, including browser and trailing-slash requests.
+Export contracts offline from the deployed image or matching source version:
+
+```bash
+python -m server.openapi --surface application > application-openapi.json
+python -m server.openapi --surface agent > agent-openapi.json
+```
+
+No listener, database connection, or application startup is required. The application
+contract includes optional knowledge APIs but excludes Agent lifecycle routes;
+exporting it does not enable those APIs on a deployment. Use version-matched guides.
+
+`GET /mcp/rest/tools` requires the same user authentication as REST tool calls.
+The online `/help/enterprise-identity-sources` and
+`/help/enterprise-identity-sources-api` pages require administrator authentication.
+The published repository guides remain available without a PAS login.
+
+Public ingress must not forward the separate management listener. Keep `/livez`,
+`/readyz`, and `/healthz/dependencies` internal at the public gateway while allowing
+Kubernetes and operator probes. Their application response contracts and the
+internal `trusted-network` management mode are unchanged.
 
 ## Account/resource console APIs
 
@@ -230,3 +249,87 @@ examples.
 | DELETE | `/api/me/personal-tokens/{token_id}` | Current token owner only |
 
 Account/resource lists and grants use `offset`, `limit` pagination; account and resource lists support `search`. Grant `kind` is `personal` or `service`. Personal token plaintext is returned once on POST; GET returns status only. These endpoints reuse existing identities and binding storage.
+
+
+## Enterprise user selectors and identity responses
+
+Administrator authentication remains required. An enterprise identity pair is a
+user selector, not an authentication credential. Existing PAS IDs and all old
+endpoints remain supported; pagination, ordering, names and encoded `external_id`
+keep their original meaning.
+
+For `USER` knowledge subjects, provide either `user_id` or the complete pair:
+
+```json
+{"type":"USER","identity_source_id":"source-id","external_user_id":"enterprise-subject"}
+```
+
+Agent user assignment uses the same selector without `type`. Half a pair or both
+selectors returns 422. Unknown sources or current mappings return 404 without
+creating, synchronizing or allocating a user. Other subject types retain their
+original field combinations. In a batch, old and enterprise selectors for the
+same account are deduplicated before the existing binding transaction. The source
+in an external scope path describes that scope; each enterprise USER must still
+specify its own identity source.
+
+Enterprise-access preview/apply accepts `external_user_ids` under the existing
+`identity_source_id`, up to 500 IDs of 1–255 characters each. `pas_user_ids` still
+defaults to `[]`; explicitly passing this empty array with enterprise IDs is
+supported. Both arrays nonempty returns 422. PAS resolves the current mapping
+before the existing service calculates its unchanged preview hash. A mapping
+change can invalidate the preview: refresh preview after a stale 409 before apply.
+Response `selection` retains `pas_user_ids` and adds `external_user_ids` for the
+selected source.
+
+User-assignment items, user options, knowledge binding USER subjects and knowledge
+subject options add `enterprise_identities`. Each element has only
+`identity_source_id` and `external_user_id`. All current identities are returned
+in deterministic order, with `[]` for unmapped or deleted users. Explicit mapping
+ownership takes precedence over legacy canonical identity fallback; an identity
+reassigned to another account is not returned to the old account. Scope responses
+retain `user_ids` and add `enterprise_users`, each containing `user_id` and
+`enterprise_identities`. Agent create/list/get/patch retain `created_by` and add
+`created_by_enterprise_identities`; this is output information, not an input that
+can override the authenticated creator.
+
+The four identity-mapping compatibility endpoints are:
+
+| Method | Path |
+| --- | --- |
+| GET | `/api/identity-sources/enterprise-users/identities` |
+| POST | `/api/identity-sources/enterprise-users/identities` |
+| PUT | `/api/identity-sources/enterprise-users/identities/{identity_id}` |
+| DELETE | `/api/identity-sources/enterprise-users/identities/{identity_id}` |
+
+All require query `identity_source_id` and `external_user_id` to select the target
+PAS account. GET retains `offset`, `limit` and `search`. POST/PUT body fields
+`identity_source_id` and `external_user_id` describe the identity being bound or
+replaced, which can belong to a different source from the target query. Encode
+query values normally, including subjects containing `/` or `:`. Existing synced
+identity edit/unbind restrictions, conflict checks, default-account restoration
+and audit semantics remain in force. The four old `/users/{user_id}/identities`
+operations continue to work.
+
+The following existing operations support the selectors or additive identity
+responses described above:
+
+| Method | Path |
+| --- | --- |
+| POST | `/api/agents/{agent_id}/enterprise-access/preview` |
+| POST | `/api/agents/{agent_id}/enterprise-access/apply` |
+| GET | `/api/admin/agents/{agent_id}/knowledge-bindings` |
+| POST | `/api/admin/agents/{agent_id}/knowledge-binding-status` |
+| POST | `/api/admin/agents/{agent_id}/knowledge-subject-options` |
+| POST | `/api/admin/agents/{agent_id}/knowledge-bindings:batch` |
+| PUT | `/api/admin/identity-sources/{source_id}/agents/{agent_id}/knowledge-bindings/{external_scope_id}` |
+| GET | `/api/agents/{agent_id}/user-assignments` |
+| POST | `/api/agents/{agent_id}/user-assignments` |
+| GET | `/api/agents/{agent_id}/user-options` |
+| POST | `/api/agents` |
+| GET | `/api/agents` |
+| GET | `/api/agents/{agent_id}` |
+| PATCH | `/api/agents/{agent_id}` |
+| GET | `/api/identity-sources/users/{user_id}/identities` |
+| POST | `/api/identity-sources/users/{user_id}/identities` |
+| PUT | `/api/identity-sources/users/{user_id}/identities/{identity_id}` |
+| DELETE | `/api/identity-sources/users/{user_id}/identities/{identity_id}` |

@@ -24,7 +24,7 @@ Fill in the Alibaba Cloud credentials and region:
 - `access_key_id` / `access_key_secret`: a RAM credential with PolarDB cluster
   management permissions.
 - `region_id`: the target region.
-- `endpoint_network`: choose `public` or `vpc` to decide which network reaches
+- `openapi_network`: choose `public` or `vpc` to decide which network reaches
   the PolarDB OpenAPI. If PAS runs in the same VPC as PolarDB, prefer `vpc`.
 
 <p align="center">

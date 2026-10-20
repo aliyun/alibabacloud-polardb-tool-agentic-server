@@ -1,8 +1,13 @@
 from server.models.agent import Agent, AgentKnowledgeScopeMode, AgentStatus
+from server.models.external_knowledge_scope import (
+    ExternalKnowledgeScopeGrant,
+    ExternalKnowledgeScopeSnapshot,
+)
 from server.models.agent_api_token import AgentAPIToken, AgentTokenRevealLimit
 from server.models.agent_polarrag_access import (
     AgentGroupAssignment,
     AgentGroupKind,
+    AgentKnowledgePolicy,
     AgentKnowledgeScope,
     AgentKnowledgeScopeBinding,
     AgentKnowledgeScopeOrigin,
@@ -82,8 +87,12 @@ from server.models.identity_source import (
     EnterpriseIdentitySourceSpaceBinding,
     EnterpriseIdentitySourceStatus,
     ExternalUserPrincipalMembership,
+    EnterpriseIdentitySourceEvent,
+    EnterpriseIdentitySourceEventStatus,
+    FeishuEventSubscriptionStatus,
     FeishuTenantVerificationState,
     FeishuUserLoginState,
+    DingTalkLoginState,
     IdentitySourceProvider,
     IdentitySourceGroupMembership,
     IdentitySourceGroupMembershipType,
@@ -231,10 +240,14 @@ __all__ = [
     "UserExternalIdentity",
     "EnterpriseIdentitySource",
     "EnterpriseIdentitySourceStatus",
+    "EnterpriseIdentitySourceEvent",
+    "EnterpriseIdentitySourceEventStatus",
+    "FeishuEventSubscriptionStatus",
     "IdentitySourceProvider",
     "EnterpriseIdentitySourceSpaceBinding",
     "FeishuTenantVerificationState",
     "FeishuUserLoginState",
+    "DingTalkLoginState",
     "SharePointUserLoginState",
     "EnterpriseDirectoryEntryStatus",
     "EnterpriseDirectoryUser",
@@ -274,6 +287,9 @@ __all__ = [
     "PolarRAGUploadStatus",
     "AgentKnowledgeScopeMode",
     "AgentKnowledgeScope",
+    "AgentKnowledgePolicy",
     "AgentKnowledgeScopeBinding",
     "AgentKnowledgeScopeOrigin",
+    "ExternalKnowledgeScopeGrant",
+    "ExternalKnowledgeScopeSnapshot",
 ]

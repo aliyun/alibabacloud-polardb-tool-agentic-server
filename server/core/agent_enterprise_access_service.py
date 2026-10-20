@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from typing import TypeVar
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +20,8 @@ from server.models import (
     Agent,
     AgentGroupAssignment,
     AgentGroupKind,
+    AgentKnowledgeScopeMode,
+    AgentKnowledgeScopeBinding,
     AgentPolarRAGInstanceBinding,
     AgentUserAssignment,
     AuditStatus,
@@ -46,6 +48,7 @@ class EnterpriseAccessSelection:
     pas_user_ids: tuple[str, ...]
     polarrag_instance_ids: tuple[str, ...]
     knowledge_space_ids: tuple[str, ...]
+    bind_all_knowledge_resources: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,7 @@ class EnterpriseAccessAuditError(Exception):
 @dataclass(frozen=True)
 class _PreparedEnterpriseAccess:
     preview: EnterpriseAccessPreview
+    agent: Agent
     source: EnterpriseIdentitySource
     groups: tuple[EnterpriseDirectoryGroup, ...]
     users: tuple[User, ...]
@@ -114,6 +118,7 @@ def _normalize(selection: EnterpriseAccessSelection) -> EnterpriseAccessSelectio
         knowledge_space_ids=tuple(
             sorted({item.strip() for item in selection.knowledge_space_ids if item.strip()})
         ),
+        bind_all_knowledge_resources=selection.bind_all_knowledge_resources,
     )
 
 
@@ -149,6 +154,7 @@ async def _prepare_enterprise_access(
         normalized.all_synced_users
         or normalized.directory_group_ids
         or normalized.pas_user_ids
+        or normalized.bind_all_knowledge_resources is not None
     ):
         raise _validation_error(
             "ENTERPRISE_ACCESS_SUBJECT_REQUIRED",
@@ -513,6 +519,7 @@ async def _prepare_enterprise_access(
                 "id": binding.id,
                 "instance_id": binding.polarrag_instance_id,
                 "public_scope": binding.public_knowledge_resource_ids_json,
+                "public_exclusions": binding.public_excluded_resource_ids_json,
             }
             for binding in agent_bindings
         ],
@@ -547,6 +554,7 @@ async def _prepare_enterprise_access(
     )
     return _PreparedEnterpriseAccess(
         preview=preview,
+        agent=agent,
         source=source,
         groups=groups,
         users=users,
@@ -663,6 +671,46 @@ async def apply_enterprise_access(
     )
     if prepared.preview.preview_hash != preview_hash:
         raise EnterpriseAccessPreviewStaleError(prepared.preview)
+
+    if prepared.preview.selection.bind_all_knowledge_resources is not None:
+        prepared.agent.knowledge_scope_mode = (
+            AgentKnowledgeScopeMode.LEGACY_ALL
+            if prepared.preview.selection.bind_all_knowledge_resources
+            else AgentKnowledgeScopeMode.SCOPED
+        )
+
+    if not prepared.preview.selection.all_synced_users:
+        all_users_assignment = (
+            await session.execute(
+                select(AgentGroupAssignment).where(
+                    AgentGroupAssignment.agent_id == agent_id,
+                    AgentGroupAssignment.group_kind
+                    == AgentGroupKind.IDENTITY_SOURCE_ALL,
+                    AgentGroupAssignment.identity_source_id
+                    == prepared.source.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if all_users_assignment is not None:
+            await session.execute(
+                delete(AgentKnowledgeScopeBinding).where(
+                    AgentKnowledgeScopeBinding.group_assignment_id
+                    == all_users_assignment.id
+                )
+            )
+            await _required_audit(
+                session,
+                admin=admin,
+                action="agent_group_assignment.delete",
+                target_type="agent_group_assignment",
+                target_id=all_users_assignment.id,
+                metadata={
+                    "agent_id": agent_id,
+                    "identity_source_id": prepared.source.id,
+                    "mode": "enterprise_access",
+                },
+            )
+            await session.delete(all_users_assignment)
 
     creates: list[EnterpriseAccessImpact] = []
     reuses: list[EnterpriseAccessImpact] = []
@@ -856,6 +904,9 @@ async def apply_enterprise_access(
         metadata={
             "identity_source_id": prepared.source.id,
             "all_synced_users": prepared.preview.selection.all_synced_users,
+            "bind_all_knowledge_resources": (
+                prepared.preview.selection.bind_all_knowledge_resources
+            ),
             "agent_creates": len(creates),
             "global_creates": len(global_changes),
             "reuses": len(reuses),

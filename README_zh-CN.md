@@ -159,13 +159,16 @@ Web 控制台是运行时实例访问配置的事实来源：
 不提供资源自动过期，请显式调用 `delete_db_instance`。
 
 Agent 也可以通过仅接受 Bearer Token 的 `/mcp/rest/db-instances` REST 端点使用
-同一生命周期；规范 Schema 位于 `/mcp/rest/openapi.json`。Dedicated 删除先断开
+同一生命周期；使用 `python -m server.openapi --surface agent` 离线导出对应版本
+Schema（在线文档已禁用）。Dedicated 删除先断开
 访问，再等待配置的冷却时间，随后执行 destroy 或 sanitize/reuse。
 
 完整 UI 流程、安全模型、Tool 示例和生命周期参见
 [数据库实例访问与供应指南](docs/zh-cn/database-instances/access-and-provisioning.md)。
 
 ## 文档
+
+- [浏览器端到端测试](docs/zh-cn/operations/browser-e2e.md)
 
 - [English documentation](docs/en/README.md)
 - [简体中文文档](docs/zh-cn/README.md)
@@ -176,6 +179,7 @@ Agent 也可以通过仅接受 Bearer Token 的 `/mcp/rest/db-instances` REST �
 - [自动供给池（AgenticDB Dedicated）](docs/zh-cn/database-instances/dedicated-hot-pools.md)
 - [Agent REST 数据库供应](docs/zh-cn/database-instances/agent-rest-provisioning.md)
 - [启用与停用知识库](docs/zh-cn/knowledge/activation.md)
+- [Polar 知识库问答 Skill](skills/polar-knowledge/README.md)
 - [PolarRAG 管理员接入](docs/zh-cn/knowledge/polarrag-onboarding.md)
 - [PolarRAG MCP 与企业身份](docs/zh-cn/knowledge/polarrag-mcp.md)
 - [PolarRAG 知识库平台 HTTP API](docs/zh-cn/knowledge/polarrag-platform-http-api.md)

@@ -444,3 +444,8 @@ describe('Instances page', () => {
     ).not.toBeInTheDocument()
   })
 })
+
+vi.mock('../../api/aliyunEndpoints', async () => {
+  const { endpointCatalog } = await import('../../test/endpointCatalog')
+  return { getEndpointCatalog: vi.fn().mockResolvedValue(endpointCatalog) }
+})

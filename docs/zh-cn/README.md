@@ -58,6 +58,8 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
 
 ## 知识
 
+- [Polar 知识库问答 Skill](../../skills/polar-knowledge/README.md)：Qwen Work 安装、
+  中英文分路检索与基于证据的回答。
 - [启用与停用知识库](knowledge/activation.md)
 - [PolarRAG 管理员接入](knowledge/polarrag-onboarding.md)：从用户、原生身份、
   公共与个人知识库、Agent Token、OSS 上传到 MCP 验收的端到端流程。
@@ -116,6 +118,8 @@ Alibaba Cloud PolarDB Tool Agentic Server 的用户与运维文档。
   认证、独立 OpenAPI、创建/轮询/删除工作流、状态、幂等、错误和凭证安全。
 
 ## 运维
+
+- [浏览器端到端测试](operations/browser-e2e.md)：真实服务、控制台和管理功能回归测试。
 
 - [健康与就绪](operations/health-and-readiness.md)：存活、配置收敛、探针和
   告警。

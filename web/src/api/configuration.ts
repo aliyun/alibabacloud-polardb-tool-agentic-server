@@ -1,4 +1,5 @@
 import api from './client'
+import type { EndpointCatalog } from './aliyunEndpoints'
 
 export type ModuleState =
   | 'NOT_CONFIGURED'
@@ -28,6 +29,7 @@ export interface ConfigModule {
     required?: string[]
   }
   ui_hints?: {
+    endpoint_catalog?: EndpointCatalog
     secret_fields?: string[]
     docs?: { label: string; url: string; description?: string }[]
   }
@@ -120,6 +122,9 @@ export interface ExternalValidation {
     identity_hint?: string
     expires_at?: number
     request_id?: string
+    region_id?: string
+    stage?: string
+    error_code?: string
   }[]
 }
 

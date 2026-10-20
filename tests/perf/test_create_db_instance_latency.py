@@ -66,7 +66,14 @@ def _event(text: str) -> dict:
 
 
 def _payload(response: httpx.Response) -> dict:
-    event = _event(response.text)
+    try:
+        event = _event(response.text)
+    except AssertionError as error:
+        raise AssertionError(
+            f"Missing MCP SSE event: status={response.status_code}, "
+            f"content_type={response.headers.get('content-type')!r}, "
+            f"response_bytes={len(response.content)}"
+        ) from error
     if "error" in event:
         raise AssertionError(f"MCP JSON-RPC error: {event['error']}")
     result = event["result"]
@@ -153,9 +160,15 @@ async def test_create_db_instance_reports_configured_environment_latency():
                 server_latencies_ms.append(_server_duration_ms(response))
 
         try:
-            await asyncio.gather(
-                *(create_one(index) for index in range(REQUEST_COUNT))
+            # Settle every create before cleanup, including when one response is
+            # invalid; otherwise in-flight creates can outlive the delete pass.
+            create_results = await asyncio.gather(
+                *(create_one(index) for index in range(REQUEST_COUNT)),
+                return_exceptions=True,
             )
+            for result in create_results:
+                if isinstance(result, BaseException):
+                    raise result
         finally:
             async def delete_one(index: int, instance_id: str) -> None:
                 async with semaphore:

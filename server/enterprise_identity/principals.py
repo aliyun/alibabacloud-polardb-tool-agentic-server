@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.models import (
     EnterpriseDirectoryPrincipalType,
     ExternalUserPrincipalMembership,
+    EnterpriseIdentitySource,
+    IdentitySourceProvider,
 )
 
 
@@ -18,6 +20,11 @@ async def resolve_external_user_principals(
     *,
     now: datetime | None = None,
 ) -> set[tuple[EnterpriseDirectoryPrincipalType, str]]:
+    source = await session.get(EnterpriseIdentitySource, identity_source_id)
+    # DingTalk claims must come from its authoritative directory. Manual
+    # legacy group mappings cannot override event-based suspension/revocation.
+    if source is not None and source.provider == IdentitySourceProvider.DINGTALK:
+        return set()
     current = now or datetime.now(UTC)
     rows = (
         await session.execute(
@@ -25,10 +32,8 @@ async def resolve_external_user_principals(
                 ExternalUserPrincipalMembership.principal_type,
                 ExternalUserPrincipalMembership.principal_id,
             ).where(
-                ExternalUserPrincipalMembership.identity_source_id
-                == identity_source_id,
-                ExternalUserPrincipalMembership.external_user_id
-                == external_user_id,
+                ExternalUserPrincipalMembership.identity_source_id == identity_source_id,
+                ExternalUserPrincipalMembership.external_user_id == external_user_id,
                 or_(
                     ExternalUserPrincipalMembership.expires_at.is_(None),
                     ExternalUserPrincipalMembership.expires_at > current,

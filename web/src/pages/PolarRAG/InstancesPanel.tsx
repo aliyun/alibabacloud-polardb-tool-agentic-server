@@ -58,6 +58,7 @@ import './PolarRAG.css'
 const { Text } = Typography
 const KNOWLEDGE_RESOURCE_PAGE_SIZE = 20
 const UNCLAIMED_KNOWLEDGE_BASE_PAGE_SIZE = 20
+const POLARRAG_VERSION_UNSUPPORTED = 'POLARRAG_VERSION_UNSUPPORTED'
 
 function ownerOptionValue(candidate: PolarRAGOwnerCandidate) {
   return candidate.principal_assignment_id
@@ -70,6 +71,11 @@ function statusColor(status: PolarRAGInstance['status']) {
   if (status === 'error' || status === 'disabled') return 'red'
   if (status === 'capability_missing') return 'orange'
   return 'blue'
+}
+
+function isVersionUnsupported(instance: PolarRAGInstance) {
+  return instance.status === 'capability_missing'
+    && instance.last_error_code === POLARRAG_VERSION_UNSUPPORTED
 }
 
 interface InstancesPanelProps {
@@ -153,8 +159,9 @@ export default function InstancesPanel({
     void loadInstances()
   }, [loadInstances])
 
-  const blockedCount = instances.filter(
-    (item) => item.status === 'capability_missing',
+  const versionUnsupportedCount = instances.filter(isVersionUnsupported).length
+  const capabilityMissingCount = instances.filter(
+    (item) => item.status === 'capability_missing' && !isVersionUnsupported(item),
   ).length
 
   const check = async (instance: PolarRAGInstance) => {
@@ -516,12 +523,24 @@ export default function InstancesPanel({
   return (
     <Space direction="vertical" size={20} style={{ width: '100%' }}>
       {error && <Alert type="error" showIcon message={error} />}
-      {blockedCount > 0 && (
+      {versionUnsupportedCount > 0 && (
         <Alert
           type="warning"
           showIcon
-          message={<code>POLARRAG_CATALOG_CAPABILITY_MISSING</code>}
-          description={`${blockedCount} instance${blockedCount === 1 ? '' : 's'} cannot be enabled until PolarRAG provides trusted Space and KB catalog APIs with immutable identity_domain and structured PERSONAL owner.`}
+          message={t('polarragAdmin.versionUnsupported')}
+          description={t('polarragAdmin.versionUnsupportedSummary', {
+            count: versionUnsupportedCount,
+          })}
+        />
+      )}
+      {capabilityMissingCount > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={t('polarragAdmin.capabilityMissing')}
+          description={t('polarragAdmin.capabilityMissingSummary', {
+            count: capabilityMissingCount,
+          })}
         />
       )}
 
@@ -564,8 +583,16 @@ export default function InstancesPanel({
                   <Alert
                     type="warning"
                     showIcon
-                    message={instance.last_error_code}
-                    description={t('polarragAdmin.capabilityDescription')}
+                    message={t(
+                      isVersionUnsupported(instance)
+                        ? 'polarragAdmin.versionUnsupported'
+                        : 'polarragAdmin.capabilityMissing',
+                    )}
+                    description={t(
+                      isVersionUnsupported(instance)
+                        ? 'polarragAdmin.versionUnsupportedDescription'
+                        : 'polarragAdmin.capabilityDescription',
+                    )}
                   />
                 )}
                 <Descriptions size="small" column={3}>
@@ -619,8 +646,16 @@ export default function InstancesPanel({
               title: 'Status',
               dataIndex: 'status',
               width: 140,
-              render: (status: PolarRAGInstance['status']) => (
-                <Tag color={statusColor(status)}>{status}</Tag>
+              render: (status: PolarRAGInstance['status'], record) => (
+                <Tag color={statusColor(status)}>
+                  {status === 'capability_missing'
+                    ? t(
+                      isVersionUnsupported(record)
+                        ? 'polarragAdmin.versionUnsupported'
+                        : 'polarragAdmin.capabilityMissing',
+                    )
+                    : status}
+                </Tag>
               ),
             },
             {

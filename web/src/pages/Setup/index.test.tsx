@@ -1,3 +1,4 @@
+import { endpointCatalog } from '../../test/endpointCatalog'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import {
@@ -86,7 +87,7 @@ function coreAdmin(revision = 0): ConfigModule {
         password: {
           type: 'string',
           title: 'Administrator password',
-          minLength: 12,
+          minLength: 8,
         },
       },
     },
@@ -231,7 +232,7 @@ function aliyunAccess(revision = 0): ConfigModule {
     dependencies: [],
     dependents: [],
     ui_hints: {
-      secret_fields: ['access_key_id', 'access_key_secret'],
+      endpoint_catalog: endpointCatalog, secret_fields: ['access_key_id', 'access_key_secret'],
     },
     schema: {
       type: 'object',
@@ -751,6 +752,9 @@ it('requires an explicit confirmation before activating a confirmable external f
   )
   await claimInstallation(user)
   await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.click(screen.getByRole('radio', { name: /^public$/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Hangzhou) · cn-hangzhou'))
   await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
   await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
@@ -817,6 +821,9 @@ it.each([
   render(<MemoryRouter><Setup /></MemoryRouter>)
   await claimInstallation(user)
   await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.click(screen.getByRole('radio', { name: /^public$/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Hangzhou) · cn-hangzhou'))
   await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
   await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
@@ -890,6 +897,9 @@ it('keeps submitted Aliyun mode and endpoint repair guidance without a candidate
   render(<MemoryRouter><Setup /></MemoryRouter>)
   await claimInstallation(user)
   await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.click(screen.getByRole('radio', { name: /^public$/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Hangzhou) · cn-hangzhou'))
   await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
   await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
@@ -924,6 +934,9 @@ it('does not retain a candidate for a locally invalid plan even when confirmatio
   )
   await claimInstallation(user)
   await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.click(screen.getByRole('radio', { name: /^public$/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Hangzhou) · cn-hangzhou'))
   await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
   await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
@@ -958,6 +971,9 @@ it('invalidates a confirmable candidate and returns keyboard focus after modal d
   )
   await claimInstallation(user)
   await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.click(screen.getByRole('radio', { name: /^public$/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Hangzhou) · cn-hangzhou'))
   await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
   await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
@@ -991,7 +1007,7 @@ it('shows backend OpenAPI endpoints returned by an Aliyun dry-run', async () => 
     effective: null,
     dependencies: [],
     dependents: [],
-    ui_hints: { secret_fields: ['access_key_id', 'access_key_secret'] },
+    ui_hints: { endpoint_catalog: endpointCatalog, secret_fields: ['access_key_id', 'access_key_secret'] },
     schema: {
       type: 'object',
       properties: {
@@ -1039,6 +1055,9 @@ it('shows backend OpenAPI endpoints returned by an Aliyun dry-run', async () => 
   await user.click(
     screen.getByRole('button', { name: /alibaba cloud access credentials/i }),
   )
+  await user.click(screen.getByRole('radio', { name: /^public$/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Hangzhou) · cn-hangzhou'))
   await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(
     screen.getByLabelText(/accesskey secret/i),
@@ -1102,6 +1121,9 @@ it('keeps Setup usable when a dry-run response contains malformed nested details
   render(<MemoryRouter><Setup /></MemoryRouter>)
   await claimInstallation(user)
   await user.click(await screen.findByRole('button', { name: /alibaba cloud access credentials/i }))
+  await user.click(screen.getByRole('radio', { name: /^public$/i }))
+  await user.click(screen.getByLabelText(/PAS access \/ default region/i))
+  await user.click(screen.getByText('China (Hangzhou) · cn-hangzhou'))
   await user.type(screen.getByLabelText(/accesskey id/i), 'test-ak')
   await user.type(screen.getByLabelText(/accesskey secret/i), 'test-secret')
   await user.click(screen.getByRole('button', { name: /^run dry-run$/i }))
@@ -1327,4 +1349,9 @@ it('allows an administrator to dry-run an active module update', async () => {
     module: 'runtime_policy',
     config: { config_poll_interval_seconds: 2 },
   })
+})
+
+vi.mock('../../api/aliyunEndpoints', async () => {
+  const { endpointCatalog } = await import('../../test/endpointCatalog')
+  return { getEndpointCatalog: vi.fn().mockResolvedValue(endpointCatalog) }
 })
