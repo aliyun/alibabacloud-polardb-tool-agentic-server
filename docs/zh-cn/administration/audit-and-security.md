@@ -38,6 +38,16 @@ certifi 证书包已移除受影响的 `emSign ECC Root CA - G3` 信任根，并
 aiohttp 保持 Cookie 的 Secure 和 host-only 边界，并在处理超大过期时间时
 保持客户端连接可复用；multidict 在 items-view 集合运算后释放临时引用。
 
+## 控制台依赖基线
+
+在 `web/` 中使用已提交的 `web/package-lock.json` 运行 `npm ci` 构建控制台。
+安全基线要求 Axios 1.20.0 或更高版本及 follow-redirects 1.16.1；自定义构建时，
+保留重定向依赖的 override 配置。重新构建并部署前端静态资源或自定义镜像，
+再刷新现有浏览器会话以加载更新后的资源包。仅修改锁文件不会更新已经向用户提供的资源。
+
+控制台请求使用 Cookie 凭据和 `X-PAS-CSRF` 信号。自定义 API 客户端时，
+应在会话刷新和请求重试中保留这些保护。
+
 ## 破坏性操作
 
 PAS 执行能力校验和确认要求，但 MySQL 账号仍是最终数据库权限边界。确认标志

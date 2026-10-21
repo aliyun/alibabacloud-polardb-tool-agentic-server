@@ -1010,7 +1010,7 @@
     {
       "ecosystem": "npm",
       "name": "axios",
-      "version": "1.18.1",
+      "version": "1.20.0",
       "license": "MIT"
     },
     {
@@ -1418,7 +1418,7 @@
     {
       "ecosystem": "npm",
       "name": "follow-redirects",
-      "version": "1.16.0",
+      "version": "1.16.1",
       "license": "MIT"
     },
     {
