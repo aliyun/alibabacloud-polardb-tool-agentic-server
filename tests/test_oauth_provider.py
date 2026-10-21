@@ -1171,6 +1171,21 @@ class TestAccessToken:
         result = await provider.load_access_token("not-a-jwt")
         assert result is None
 
+    @pytest.mark.parametrize("nested_part", ["header", "payload"])
+    async def test_load_deeply_nested_token_is_rejected(self, provider, nested_part):
+        header = '{"alg":"RS256"}'
+        payload = "{}"
+        nested = '{"nested":' + "[" * 2000 + "0" + "]" * 2000 + "}"
+        if nested_part == "header":
+            header = nested
+        else:
+            payload = nested
+
+        def encode(value: str) -> str:
+            return base64.urlsafe_b64encode(value.encode()).rstrip(b"=").decode()
+
+        assert await provider.load_access_token(f"{encode(header)}.{encode(payload)}.") is None
+
     async def test_direct_external_token_is_validated_and_mapped(
         self,
         provider,

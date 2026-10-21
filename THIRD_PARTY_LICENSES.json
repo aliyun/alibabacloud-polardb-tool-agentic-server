@@ -2588,7 +2588,7 @@
     {
       "ecosystem": "python",
       "name": "anyio",
-      "version": "4.13.0",
+      "version": "4.14.2",
       "license": "MIT"
     },
     {
@@ -2888,7 +2888,7 @@
     {
       "ecosystem": "python",
       "name": "pyjwt",
-      "version": "2.13.0",
+      "version": "2.15.0",
       "license": "MIT"
     },
     {
@@ -3026,7 +3026,7 @@
     {
       "ecosystem": "python",
       "name": "urllib3",
-      "version": "2.7.0",
+      "version": "2.8.0",
       "license": "MIT"
     },
     {

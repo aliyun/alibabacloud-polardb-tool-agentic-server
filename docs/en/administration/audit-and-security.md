@@ -25,6 +25,16 @@ OIDC secrets, ciphertext, and SQL parameters must not appear in ordinary logs
 or public error messages. Credential reveal and rotation are explicit audited
 administrator workflows.
 
+## Runtime dependency baseline
+
+Deploy from the repository's `uv.lock`. The runtime requires PyJWT 2.15.0 or
+later, AnyIO 4.14.2 or later, and urllib3 2.8.0 or later. Preserve these minimums
+when installing PAS with custom dependency constraints.
+
+Malformed JWT headers and payloads are rejected as authentication failures.
+Keep TLS certificate and hostname verification enabled for identity-provider,
+cloud SDK, and other outbound HTTPS connections.
+
 ## Destructive operations
 
 PAS applies capability checks and confirmation requirements, but the MySQL
