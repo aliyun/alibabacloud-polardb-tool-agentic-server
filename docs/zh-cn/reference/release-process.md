@@ -42,6 +42,27 @@ Source-Develop: 0123456789abcdef0123456789abcdef01234567
 较早的功能内容可能已经以不同 commit 身份进入公开 `main`。新 commit 的
 `Source-Develop` trailer 必须填写本次已审核导出 tree 对应的准确内部 commit。
 
+`public-boundary` 会在 PR 和 `main` push 两个阶段校验快照，并拉取完整历史。
+直接提交或 squash commit 必须带有上述主题和 trailer。使用 GitHub 的
+**Create a merge commit** 时，自动生成的 merge message 仅作为合并包装；
+校验器检查保留下来的第二父快照提交。该快照本身不能是 merge commit，必须
+包含此次 merge 的第一父 `main` 提交，并且 Git tree 必须与合并结果完全一致。
+包装提交的 message 不能代替快照中缺失或非法的元数据。多头合并和额外修改了
+tree 的合并都会被拒绝。
+
+应基于当前 `main` 准备快照，并要求 PR 的 `public-boundary` 检查通过后再合并。
+如果 `main` 已前进，应重新准备包含该基线的快照并评审，不得只在最终 merge
+中处理额外改动。Squash merge 的最终提交 message 必须保留两个必需 trailer，
+每种恰好一个。合并后拉取 `main` 并执行：
+
+```bash
+python3 scripts/release/validate-public-commit.py github/main
+```
+
+命令会报告实际校验元数据的快照 SHA。只能在验证后的最终 `main` 提交上打 tag，
+该提交可以是快照的 merge 包装。集成失败时应通过新的、经过评审的 PR 修复，
+不得重写已有 `main` 历史。旧提交上的检查会保留其历史结果。
+
 ## Draft 检查
 
 受保护工作流生成不可变的多架构镜像与 Chart、分架构离线镜像、SPDX SBOM、

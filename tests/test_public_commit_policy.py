@@ -18,10 +18,9 @@ VALID_BODY = (
 
 
 def _load_validator():
-    path = ROOT / "scripts/release/validate-public-commit.py"
     specification = importlib.util.spec_from_file_location(
         "validate_public_commit",
-        path,
+        SCRIPT,
     )
     assert specification is not None
     assert specification.loader is not None

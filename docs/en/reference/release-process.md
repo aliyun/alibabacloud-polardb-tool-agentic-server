@@ -50,6 +50,32 @@ cherry-pick an internal commit range: earlier feature content may already be in
 public `main` under different commit identities. Set the new `Source-Develop`
 trailer to the exact internal commit whose exported tree was reviewed.
 
+`public-boundary` validates the snapshot on both pull requests and pushes to
+`main`. The job fetches full history. For a direct or squash commit, that
+commit must carry the subject and trailers above. For GitHub's **Create a
+merge commit** method, the generated merge message is only an integration
+wrapper: the validator checks the preserved second-parent snapshot instead.
+That snapshot must not itself be a merge, must include the merge's
+first-parent `main` commit, and must have exactly the same Git tree as the
+merge result. The wrapper's message cannot substitute for missing or invalid
+snapshot metadata. Octopus merges and merges with additional tree changes
+are rejected.
+
+Prepare the snapshot against current `main` and require the PR
+`public-boundary` check before merging. If `main` advances, prepare and review
+a refreshed snapshot containing that base; do not resolve extra changes only
+in the final merge. Squash merging must preserve exactly one of each required
+trailer in its final commit message. After merging, fetch `main` and run:
+
+```bash
+python3 scripts/release/validate-public-commit.py github/main
+```
+
+The command reports the snapshot SHA whose metadata was checked. Tag only the
+verified final `main` commit, which may be its merge wrapper. Repair a failed
+integration through a new reviewed PR; never rewrite existing `main` history.
+Checks attached to an older commit retain their historical result.
+
 ## Draft inspection
 
 The protected workflow produces immutable multi-architecture image and Chart
