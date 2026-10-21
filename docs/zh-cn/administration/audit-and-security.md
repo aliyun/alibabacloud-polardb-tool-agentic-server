@@ -24,10 +24,19 @@ Secret、密文和 SQL 参数不得出现在普通日志或公开错误消息中
 ## 运行时依赖基线
 
 使用仓库的 `uv.lock` 部署。运行时要求 PyJWT 2.15.0 及以上、AnyIO 4.14.2
-及以上、urllib3 2.8.0 及以上。使用自定义依赖约束安装 PAS 时，保留这些最低版本要求。
+及以上、urllib3 2.8.0 及以上、certifi 2026.10.19 及以上、aiohttp 3.14.5
+及以上，以及 multidict 6.9.1 及以上。使用自定义依赖约束安装 PAS 时，保留
+这些最低版本要求。aiohttp 还要求在其支持的版本范围内使用 yarl 1.25.1 及以上。
 
 畸形 JWT header 和 payload 会作为认证失败拒绝。身份提供方、云 SDK 及其他出站
 HTTPS 连接应保持 TLS 证书和主机名校验启用。
+
+certifi 证书包已移除受影响的 `emSign ECC Root CA - G3` 信任根，并保留未受
+影响的根证书。自定义镜像应基于更新后的 lockfile 重新构建，并重启现有进程以
+加载新的信任库；仅修改 lockfile 不会更新运行中的容器。如果使用自定义 CA
+证书包或系统信任库，应单独检查并移除受影响的信任根。保持证书校验启用。
+aiohttp 保持 Cookie 的 Secure 和 host-only 边界，并在处理超大过期时间时
+保持客户端连接可复用；multidict 在 items-view 集合运算后释放临时引用。
 
 ## 破坏性操作
 

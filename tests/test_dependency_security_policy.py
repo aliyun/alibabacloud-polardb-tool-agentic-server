@@ -26,13 +26,15 @@ def test_installed_python_dependencies_meet_the_security_baseline() -> None:
         assert removed_dependency not in versions
 
     minimum_versions = {
-        "aiohttp": Version("3.14.3"),
+        "aiohttp": Version("3.14.5"),
         "alibabacloud-credentials": Version("1.0.8"),
         "alibabacloud-tea-openapi": Version("0.4.6"),
         "anyio": Version("4.14.2"),
         "asyncmy": Version("0.2.12"),
+        "certifi": Version("2026.10.19"),
         "cryptography": Version("50.0.1"),
         "mcp": Version("1.28.1"),
+        "multidict": Version("6.9.1"),
         "pydantic-settings": Version("2.14.2"),
         "pyjwt": Version("2.15.0"),
         "sqlparse": Version("0.6.0"),

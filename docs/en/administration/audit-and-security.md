@@ -28,12 +28,24 @@ administrator workflows.
 ## Runtime dependency baseline
 
 Deploy from the repository's `uv.lock`. The runtime requires PyJWT 2.15.0 or
-later, AnyIO 4.14.2 or later, and urllib3 2.8.0 or later. Preserve these minimums
-when installing PAS with custom dependency constraints.
+later, AnyIO 4.14.2 or later, urllib3 2.8.0 or later, certifi 2026.10.19 or
+later, aiohttp 3.14.5 or later, and multidict 6.9.1 or later. Preserve these
+minimums when installing PAS with custom dependency constraints. aiohttp also
+requires yarl 1.25.1 or later within its supported version range.
 
 Malformed JWT headers and payloads are rejected as authentication failures.
 Keep TLS certificate and hostname verification enabled for identity-provider,
 cloud SDK, and other outbound HTTPS connections.
+
+The certifi bundle excludes the compromised `emSign ECC Root CA - G3` trust
+root while retaining unaffected roots. Rebuild custom images from the updated
+lockfile and restart existing processes to load the new trust store; changing
+the lockfile alone does not update a running container. If you supply a custom
+CA bundle or system trust store, review it separately and remove the affected
+root. Keep certificate verification enabled. aiohttp preserves Secure and
+host-only cookie boundaries and handles oversized cookie expiry values without
+breaking client connection reuse; multidict releases temporary references
+after items-view set operations.
 
 ## Destructive operations
 
