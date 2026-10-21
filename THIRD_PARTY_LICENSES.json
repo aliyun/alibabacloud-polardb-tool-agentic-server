@@ -2492,7 +2492,7 @@
     {
       "ecosystem": "python",
       "name": "aiohttp",
-      "version": "3.14.3",
+      "version": "3.14.5",
       "license": "Apache-2.0 AND MIT"
     },
     {
@@ -2630,7 +2630,7 @@
     {
       "ecosystem": "python",
       "name": "certifi",
-      "version": "2026.5.20",
+      "version": "2026.10.19",
       "license": "MPL-2.0"
     },
     {
@@ -2804,7 +2804,7 @@
     {
       "ecosystem": "python",
       "name": "multidict",
-      "version": "6.7.1",
+      "version": "6.9.1",
       "license": "Apache-2.0"
     },
     {
@@ -3062,7 +3062,7 @@
     {
       "ecosystem": "python",
       "name": "yarl",
-      "version": "1.24.2",
+      "version": "1.25.1",
       "license": "Apache-2.0"
     }
   ]
