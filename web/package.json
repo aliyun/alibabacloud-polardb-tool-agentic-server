@@ -18,7 +18,7 @@
   "dependencies": {
     "@ant-design/icons": "^5.6.1",
     "antd": "^5.20.0",
-    "axios": "^1.7.0",
+    "axios": "^1.20.0",
     "i18next": "^26.3.6",
     "prism-react-renderer": "^2.4.1",
     "react": "^18.3.0",
@@ -47,6 +47,7 @@
     "vitest": "^4.1.10"
   },
   "overrides": {
+    "follow-redirects": "1.16.1",
     "https-proxy-agent": "7.0.6"
   }
 }

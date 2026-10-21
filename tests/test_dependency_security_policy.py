@@ -52,10 +52,12 @@ def test_locked_web_dependencies_meet_the_security_baseline() -> None:
     packages = lock["packages"]
 
     minimum_versions = {
+        "node_modules/axios": Version("1.20.0"),
         "node_modules/@typescript-eslint/typescript-estree/node_modules/brace-expansion": Version(
             "5.0.9"
         ),
         "node_modules/brace-expansion": Version("1.1.18"),
+        "node_modules/follow-redirects": Version("1.16.1"),
         "node_modules/js-yaml": Version("4.3.1"),
         "node_modules/nanoid": Version("3.3.18"),
         "node_modules/react-router": Version("7.18.2"),

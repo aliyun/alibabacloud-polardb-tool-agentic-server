@@ -47,6 +47,19 @@ host-only cookie boundaries and handles oversized cookie expiry values without
 breaking client connection reuse; multidict releases temporary references
 after items-view set operations.
 
+## Console dependency baseline
+
+Build the console with `npm ci` in `web/` using the committed
+`web/package-lock.json`. The security baseline requires Axios 1.20.0 or later
+and follow-redirects 1.16.1; preserve the redirect dependency override when
+customizing the build. Rebuild and redeploy frontend assets or custom images,
+then reload existing browser sessions to load the updated bundle. Editing the
+lockfile alone does not update assets already served to users.
+
+Console requests use cookie credentials and the `X-PAS-CSRF` signal. Preserve
+these protections when customizing the API client, including session refresh
+and retries.
+
 ## Destructive operations
 
 PAS applies capability checks and confirmation requirements, but the MySQL
