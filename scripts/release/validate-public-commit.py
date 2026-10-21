@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the new public main snapshot commit message."""
+"""Validate a public snapshot, directly or inside an unchanged merge wrapper."""
 
 from __future__ import annotations
 
@@ -109,14 +109,63 @@ def _commit_message(commit: str) -> tuple[str, str]:
     return parts[0].rstrip("\n"), parts[1]
 
 
+def _git(*arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments], capture_output=True, text=True, check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError("cannot read public commit graph; fetch full history")
+    return result.stdout.strip()
+
+
+def _parents(commit: str) -> list[str]:
+    # Object headers retain parent IDs even at a shallow checkout boundary.
+    # `git show --format=%P` can hide those missing parents instead.
+    headers = _git("cat-file", "-p", commit).split("\n\n", maxsplit=1)[0]
+    return [
+        line.removeprefix("parent ")
+        for line in headers.splitlines()
+        if line.startswith("parent ")
+    ]
+
+
+def validate_commit(commit: str) -> str:
+    """Return the checked snapshot SHA without trusting merge-wrapper metadata."""
+    commit = _git("rev-parse", "--verify", "--end-of-options", f"{commit}^{{commit}}")
+    parents = _parents(commit)
+    snapshot = commit
+    if len(parents) > 2:
+        raise ValueError("a public snapshot merge must have exactly two parents")
+    if len(parents) == 2:
+        main, snapshot = parents
+        if len(_parents(snapshot)) > 1:
+            raise ValueError("the snapshot must not itself be a merge")
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", main, snapshot],
+            capture_output=True, text=True, check=False,
+        )
+        if ancestry.returncode == 1:
+            raise ValueError(
+                "snapshot must include the first-parent main commit; "
+                "refresh the snapshot against current main"
+            )
+        if ancestry.returncode != 0:
+            raise ValueError("cannot read public commit graph; fetch full history")
+        if _git("rev-parse", f"{commit}^{{tree}}") != _git("rev-parse", f"{snapshot}^{{tree}}"):
+            raise ValueError("merge tree differs from the snapshot; prepare and review a new snapshot")
+
+    subject, body = _commit_message(snapshot)
+    validate_message(subject, body)
+    return snapshot
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("commit")
     args = parser.parse_args()
     try:
-        subject, body = _commit_message(args.commit)
-        validate_message(subject, body)
-        print("public commit message: ok")
+        snapshot = validate_commit(args.commit)
+        print(f"public commit message: ok (snapshot {snapshot})")
         return 0
     except (OSError, ValueError) as exc:
         print(f"public commit validation failed: {exc}", file=sys.stderr)

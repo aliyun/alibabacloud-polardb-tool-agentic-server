@@ -110,7 +110,7 @@ def test_migration_ci_fetches_schema_policy_base_history() -> None:
     assert checkout["with"]["fetch-depth"] == 0
 
 
-def test_public_commit_policy_validates_only_the_pushed_main_head() -> None:
+def test_public_commit_policy_checks_pr_merges_and_pushed_main_with_full_history() -> None:
     workflow = _workflow("ci.yml")
     steps = workflow["jobs"]["public-boundary"]["steps"]
     validators = [
@@ -120,13 +120,18 @@ def test_public_commit_policy_validates_only_the_pushed_main_head() -> None:
     ]
 
     assert len(validators) == 1
-    assert validators[0]["if"] == (
-        "${{ github.event_name == 'push' "
-        "&& github.ref == 'refs/heads/main' }}"
-    )
+    assert "if" not in validators[0]
     assert validators[0]["run"] == (
         'python scripts/release/validate-public-commit.py "$GITHUB_SHA"'
     )
+    checkout = next(
+        step for step in steps
+        if step.get("uses", "").startswith("actions/checkout@")
+    )
+    assert checkout["with"]["fetch-depth"] == 0
+    dependencies = next(step for step in steps if step.get("run") == "uv sync --locked --extra dev")
+    assert steps.index(validators[0]) < steps.index(dependencies)
+    assert any("tests/test_public_commit_policy.py" in step.get("run", "") for step in steps)
 
 
 def test_all_current_workflow_actions_are_pinned() -> None:
